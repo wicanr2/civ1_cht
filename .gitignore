@@ -1,0 +1,47 @@
+# Original game binaries — NEVER commit (copyright)
+*.EX$
+*.EXE
+*.FO$
+*.FON
+*.HL$
+*.HLP
+*.RSC
+*.rsc
+*.RS$
+*.rs$
+*.WA$
+*.wa$
+*.wav
+*.WAV
+*.BMP
+*.bmp
+SETUP.*
+INSTALL.*
+READ.ME*
+CIV*
+Civ*
+
+# But DO keep our docs / tools / source
+!docs/**
+!tools/**
+!README.md
+!.gitignore
+!LICENSE*
+
+# Build / runtime artifacts
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db
+
+# Wine prefix
+.wine*/
+prefix/
+
+# Editor
+.vscode/
+.idea/
+*.swp
