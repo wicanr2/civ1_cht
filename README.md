@@ -30,7 +30,7 @@
 | Phase | 任務 | 狀態 |
 |------|------|------|
 | **0** | EDILZSS2 RE + wine 6.0.3 bring-up | ✅ **2026-05-24 完成** |
-| 1 | RT_DIALOG (24 個) Big5 patch | 📋 規劃中 |
+| **1** | RT_DIALOG (24 個) Big5 patch — 54 instances / 34 unique | ✅ **2026-05-24 完成** |
 | 2 | CIVFONTS.FON glyph 換 Big5 12×16 點陣 | 📋 規劃中 |
 | 3 | CIV.EXE inline string 數百條 in-place 翻譯 | 📋 規劃中 |
 | 4 | EDILZSS2 compressor（重打包 .EX$） | ⏸ 可選 |
@@ -142,7 +142,10 @@ wine ./CIV.EXE
 ![SID MEIER intro](docs/screenshots/01_intro_sid_meier.png)
 *1993 Civ for Windows 開場：「Designed by SID MEIER with BRUCE SHELLEY」 — CIVTIMES 字型 + 星雲背景 + 256 色 palette 全部正常。截圖來源：wine 6.0.3 / WSL Ubuntu 22.04 / 2026-05-24。*
 
-*更多 phase 截圖將陸續新增到 `docs/screenshots/`。*
+### Phase 1：RT_DIALOG patch 完成後
+
+![intro after Phase 1 patch](docs/screenshots/02_intro_after_phase1.png)
+*54 個 RT_DIALOG 字串 patched 成 Big5 後，intro 動畫照樣播放——證明 NE 結構未被破壞、resource table walker 正常。dialog 文字本身的 Big5 字模要等 Phase 2 (CIVFONTS Big5 glyph) 才能正確顯示。*
 
 ---
 
@@ -218,14 +221,65 @@ CIV.EXE 沒有 RT_STRING resources → 不能像 Win32 程式那樣動 string ta
 
 ---
 
+<a name="phase1-done"></a>
+## ✅ Phase 1 完成記錄（2026-05-24）
+
+24 個 `RT_DIALOG` 全部反組譯、字串抽出、Big5 patched。
+
+### 工作流程
+
+```
+CIV.EXE
+  ↓ ne_dialog_extract.py
+civ_dialogs.json (24 dialogs / 78 strings / 35 unique)
+  ↓ 過濾 class="CIVDIALOG" 不可譯
+54 translatable instances / 34 unique English strings
+  ↓ data/dialog_translations.json (人工翻譯)
+  ↓ ne_dialog_patch.py (Big5 cp950 encode + ASCII space pad)
+CIV.EXE.cht (832,512 bytes, identical to original size)
+  ↓ wine smoke test
+✅ NE 結構未壞，intro 正常播放
+```
+
+### 關鍵技術 — Win16 dialog walker 約束
+
+Win16 `DLGITEMTEMPLATE` 中字串是 **null-terminated**，緊接的 `createInfoSize` byte 位置由 walker 走到 null 後的下一個位置決定。**如果直接把短 Big5 字串塞進原 slot**：
+
+```
+原: "Cancel\0" (7 bytes: 6 text + 1 null)  → walker idx 走到 7
+新: "取消\0"   (5 bytes: 4 text + 1 null)  → walker idx 走到 5
+                                              然後讀 byte 5 = 'l' (0x6C)
+                                              當成 createInfoSize=108
+                                              跳過 108 bytes → 解析爆掉
+```
+
+解法：Big5 譯文不足 slot 時，**以 ASCII space (0x20) 補滿到原 slot byte 長度**。這樣 walker 走到 null 的位置不變，後續 field 解析正確。
+
+### 翻譯範例
+
+| 英文 | slot | Big5 | 補空格 |
+|------|------|------|------|
+| `OK` | 2B | `確` | (剛好) |
+| `Cancel` | 6B | `取消` | + 2 spaces |
+| `Open Game` | 9B | `開啟` | + 5 spaces |
+| `What shall we build in ` | 23B | `在此城建造甚麼? ` | + 8 spaces |
+| `Are you sure you want` | 21B | `您確定要` | + 13 spaces |
+
+button 右側多空格通常被 dialog rect 裁掉看不到。Static text 多空格在 left-aligned mode 也不影響。
+
+### Phase 1 deliverables
+
+- [`tools/ne_dialog_extract.py`](tools/ne_dialog_extract.py) — Win16 RT_DIALOG parser
+- [`tools/ne_dialog_extract_v2.py`](tools/ne_dialog_extract_v2.py) — 翻譯候選 worksheet generator
+- [`tools/ne_dialog_patch.py`](tools/ne_dialog_patch.py) — Big5 patcher with ASCII-space padding
+- [`data/dialog_translations.json`](data/dialog_translations.json) — 34 unique English → Big5 mapping
+
+---
+
 <a name="phases"></a>
-## 🗺️ Phase 規劃
+## 🗺️ 未來 Phase 規劃
 
-### Phase 1：RT_DIALOG 24 個 dialog 中文化（2-3 天）
-
-CIV.EXE 內有 24 個 `RT_DIALOG` resource（dialog template），承載按鈕、標籤、選項等 UI 文字。Resource table 乾淨可重寫，沒有 inline string 的 slot length 困境。
-
-### Phase 2：CIVFONTS.FON 換 Big5 字模（3-5 天）
+### Phase 2：CIVFONTS.FON 換 Big5 字模（3-5 天，下一步）
 
 CIVFONTS.FON 是標準 Win16 NE 字型庫，內含 RT_FONT resources。計畫：
 - 保留 face name `CIVTIMES12` / `CIVTIMES24`（程式可能 hardcode 找這 face）
