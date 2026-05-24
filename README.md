@@ -101,33 +101,98 @@ DOS 版（1991）紅遍全球，但**真正讓 Civ 走進台灣家庭**的是 19
 ---
 
 <a name="quick-start"></a>
-## ⚡ 快速開始 (Phase 0：原版 + wine)
+## ⚡ 快速開始 — 在另一台 Linux 機重建開發環境
 
-目前 Phase 0 階段，這個 repo 只包含 RE 文檔與工具，**翻譯尚未開始**。如果你想復現 wine bring-up：
+**現在主推路線**: Linux / WSL2 + wine 6.0.3+ 跑繁中版 Civ1（otvdm v0.9.0 在 Win10 portable 路線卡關，詳見 Phase 5 BLOCKER 章節）。
 
 ### 需要準備
 
-- **WSL2 Ubuntu 22.04** (Windows 10/11)
-- **wine 6.0.3+** (含 `wine32:i386` for Win16 NE)
-- **1993 Civilization for Windows 原版安裝檔**（自行取得合法拷貝；本 repo 不提供）
+- **Linux desktop (X11/Wayland)** 或 **WSL2 Ubuntu 20.04 / 22.04**（純 Linux desktop 較佳，WSLg 有 input 限制）
+- **1993 Civilization for Windows 原版安裝檔**（自行取得合法拷貝；本 repo 不含）
+- sudo 權限（裝 wine + i386 + Big5 字型）
 
-### 三步驟
+### 一鍵 setup（推薦）
 
 ```bash
-# 1. 安裝 wine 32-bit (for Win16 NE)
-sudo dpkg --add-architecture i386 && sudo apt update
-sudo apt install -y wine wine32:i386 wine64
+# 1. clone repo
+git clone https://github.com/wicanr2/civ1_cht.git
+cd civ1_cht
 
-# 2. 用本 repo 的 Python 工具解開 EDILZSS2 壓縮檔
-python3 tools/edilzss2_decode.py /path/to/CIV.EX\$ ./CIV.EXE
-python3 tools/edilzss2_decode.py /path/to/CIVFONTS.FO\$ ./CIVFONTS.FON
-# ... 其餘 .HL$ .RS$ .WA$ 同樣處理
+# 2. 把 1993 原版安裝檔放到 orig/
+mkdir -p orig
+cp /path/to/civ1_cdrom/* orig/        # CIV.EX$, CIVFONTS.FO$, *.wa$ etc.
 
-# 3. 跑 wine
-export WINEARCH=win32 WINEPREFIX=~/.wine-civ1
-wine reg add 'HKCU\Software\Wine' /v Version /d win31 /f
-wine ./CIV.EXE
+# 3. 跑一鍵 script
+bash tools/setup_wsl_wine.sh
 ```
+
+`setup_wsl_wine.sh` 會：
+1. `apt install wine + wine32:i386 + wine64 + python3 + fonts-arphic-uming + bsmi00lp`
+2. 用 `tools/edilzss2_decode.py` 解開原版壓縮檔到 `build/extracted/`
+3. Apply Phase 1 (RT_DIALOG) + Phase 2 (CIVFONTS dfCharSet) + Phase 3 (inline Big5) → `build/patched/`
+4. 建 wine prefix `~/.wine-civ1`（win32 + win31 mode）
+5. 跑 `tools/wine_setup_phase2.sh` 注 ACP=950 + FontSubstitutes registry
+6. Copy patched 遊戲 + 原版 assets 到 `~/.wine-civ1/drive_c/CIV/`
+
+### 啟動
+
+```bash
+export WINEPREFIX=~/.wine-civ1
+cd $WINEPREFIX/drive_c/CIV
+wine CIV.EXE
+```
+
+### 手動 setup（如果一鍵腳本卡住）
+
+```bash
+sudo dpkg --add-architecture i386 && sudo apt update
+sudo apt install -y wine wine32:i386 wine64 fonts-arphic-uming fonts-arphic-bsmi00lp
+
+# 解 EDILZSS2
+python3 tools/edilzss2_decode.py orig/CIV.EX\$  build/extracted/CIV.EXE
+python3 tools/edilzss2_decode.py orig/CIVFONTS.FO\$ build/extracted/CIVFONTS.FON
+# ...
+
+# Apply Phase 1/2/3
+python3 tools/ne_dialog_extract.py build/extracted/CIV.EXE build/civ_dialogs.json
+python3 tools/ne_dialog_patch.py    build/extracted/CIV.EXE build/civ_dialogs.json \
+                                    data/dialog_translations.json build/patched/CIV.EXE.p1
+python3 tools/ne_font_patch_charset.py build/extracted/CIVFONTS.FON build/patched/CIVFONTS.FON.cht
+python3 tools/inline_string_patch.py build/patched/CIV.EXE.p1 \
+                                     data/inline_translations.json \
+                                     build/patched/CIV.EXE.p3 --apply
+
+# Wine prefix
+export WINEARCH=win32 WINEPREFIX=~/.wine-civ1
+wineboot -i
+wine reg add 'HKCU\Software\Wine' /v Version /d win31 /f
+bash tools/wine_setup_phase2.sh
+
+# Deploy + run
+mkdir -p $WINEPREFIX/drive_c/CIV
+cp build/patched/CIV.EXE.p3       $WINEPREFIX/drive_c/CIV/CIV.EXE
+cp build/patched/CIVFONTS.FON.cht $WINEPREFIX/drive_c/CIV/CIVFONTS.FON
+cp build/extracted/Civdata*.RSC build/extracted/*.wav build/extracted/CIVHELP.HLP \
+   $WINEPREFIX/drive_c/CIV/
+cd $WINEPREFIX/drive_c/CIV && wine CIV.EXE
+```
+
+### 把 Claude skill + memory 也帶過去
+
+如果想讓另一台機的 Claude Code 也能 load 此專案的 skill 跟 memory（接續開發）：
+
+```bash
+# Install skill
+mkdir -p ~/.claude/skills/civ1-cht
+cp docs/SKILL.md ~/.claude/skills/civ1-cht/SKILL.md
+
+# Install project memory
+PROJ_KEY=$(echo "$PWD" | sed 's|/|-|g')
+mkdir -p ~/.claude/projects/$PROJ_KEY/memory/
+cp docs/PROJECT_MEMORY.md ~/.claude/projects/$PROJ_KEY/memory/project_civ1_cht.md
+```
+
+下次新 Claude session 提到 "Civ1 / 文明帝國 / CIV.EXE / EDILZSS2" 時就會自動觸發 skill，並可讀到 project 進度與雷區紀錄。
 
 ---
 

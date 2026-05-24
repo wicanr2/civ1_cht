@@ -32,10 +32,13 @@ Civ*
 !Civilization-CHT.bat
 !Civilization-CHT-portable.bat
 
-# Build / runtime artifacts
+# Build / runtime artifacts (setup_wsl_wine.sh 產出，全是 patched binaries)
 build/
 dist/
 __pycache__/
+
+# 使用者放原版安裝檔的地方 (著作權, 絕不入 repo)
+orig/
 *.pyc
 *.pyo
 .DS_Store
