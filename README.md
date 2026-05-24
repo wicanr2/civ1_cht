@@ -34,7 +34,7 @@
 | **2** | CIVFONTS.FON dfCharSet patch + FontSubstitutes infra | ✅ **2026-05-24 infra 完成**（視覺驗證待 Phase 3 dialog 觸發） |
 | **3** | CIV.EXE inline string Batch A 翻譯 — 48 條（含主選單 / 難度 / 14 領袖） | ✅ **2026-05-24 Batch A 完成** |
 | 4 | EDILZSS2 compressor（重打包 .EX$） | ⏸ 可選 |
-| **5** | Win10 portable SFX：**Civilization-CHT-portable.exe (5.21 MB)**，含 otvdm + patched 遊戲 | ✅ **2026-05-24 build 完成**（實機測試 pending） |
+| **5** | Win10 portable SFX 嘗試 | ⚠️ **otvdm v0.9.0 + Civ1 SEGV bug 卡住**，已轉走 WSL+wine 路線（見下方說明） |
 | 6 | 256-color shim | ⏸ 預期不需要 |
 
 ---
@@ -491,19 +491,66 @@ launcher `Civilization-CHT.bat` 兩件事：
 - [`launcher/Civilization-CHT.bat`](launcher/Civilization-CHT.bat) — Win10 launcher with font subst
 - (本地 build artifact: `D:\03_game_tmp\_sfx_build_civ1\Civilization-CHT-portable.exe` — 不入 repo，5.21 MB 含著作權遊戲檔)
 
-### 視覺驗證計畫
+### ⚠️ Phase 5 BLOCKER — otvdm v0.9.0 + Civ1 SEGV bug
 
-雙擊 portable .exe 後預期應該看到：
-1. SFX 對話框「解壓並啟動?」按是
-2. 解壓進度條
-3. otvdm console window (背景)
-4. Civilization intro 動畫 (CIVTIMES 字 + 星雲)
-5. Click 進主選單 → **中文菜單**「開始新局/載入存檔/...」
+實機測試踩到 **otvdm v0.9.0 跟 1993 Civ for Windows 之間的已知 bug**：
 
-如果第 5 步中文沒出來/變方塊：
-- 缺 MingLiU subst → 改 launcher .bat 試 `PMingLiU` 或其他 Win10 內建 Big5 字
-- otvdm registry redirection 沒生效 → 改用真實 HKLM（會污染系統 registry）
-- Big5 dfCharSet patch 沒被 otvdm 讀懂 → 退回 ANSI charset 走字節對照
+```
+SEGV  address=6B078402  access address=0x0000D460  IP:06AA
+EAX:00FC ECX:17A6 EDX:161F0000 EBX:92FC  (3 次 dump register 全等 = deterministic)
+```
+
+3 次 SEGV register state 完全一樣 → 同一個 instruction 撞同一個壞 access。
+就算用**完全未 patched 的原版 CIV.EXE** (test_0_orig.bat) 也 SEGV (黑畫面 → crash)，**證明跟我們的繁中 patches 無關**。
+
+**Root cause**: cracyc 在 otvdm 引入的 `sndPlaySound` 改動有 bug，**修正已在 cracyc/winevdm master HEAD `cd84ae2` (2025-11-30, PR #1536) merge**，但 v0.9.0 release (2023-09) 不含。
+
+相關 upstream issues:
+- [otya128/winevdm#1545](https://github.com/otya128/winevdm/issues/1545) — Civilization I crashes (CLOSED Dec 2025)
+- [otya128/winevdm#1480](https://github.com/otya128/winevdm/issues/1480) — Civilization I crashes from program group shortcut (OPEN)
+
+### 走 Option C：改推 WSL+wine 路線（已驗證 100% 可跑）
+
+Phase 0 已確認 **wine 6.0.3 on WSL Ubuntu 22.04 完美跑 Civ1**。Win10/11 用戶請走：
+
+```bash
+# Win10 啟用 WSL2
+wsl --install -d Ubuntu-22.04
+
+# 進 WSL2
+sudo dpkg --add-architecture i386 && sudo apt update
+sudo apt install -y wine wine32:i386 wine64 cabextract fonts-arphic-uming
+
+# 拿本 repo
+git clone https://github.com/wicanr2/civ1_cht.git
+cd civ1_cht
+
+# 解 EDILZSS2
+python3 tools/edilzss2_decode.py /path/to/CIV.EX\$  ./CIV.EXE
+python3 tools/edilzss2_decode.py /path/to/CIVFONTS.FO\$ ./CIVFONTS.FON
+
+# Apply patches (Phase 1/2/3)
+python3 tools/ne_dialog_patch.py ./CIV.EXE ... ./CIV.EXE.cht
+python3 tools/ne_font_patch_charset.py ./CIVFONTS.FON ./CIVFONTS.FON.cht
+python3 tools/inline_string_patch.py ./CIV.EXE.cht data/inline_translations.json ./CIV.EXE.p3 --apply
+
+# Wine setup
+export WINEARCH=win32 WINEPREFIX=~/.wine-civ1
+wineboot -i
+wine reg add 'HKCU\Software\Wine' /v Version /d win31 /f
+bash tools/wine_setup_phase2.sh
+
+# Run
+cp CIV.EXE.p3 CIVFONTS.FON.cht *.RSC *.wav $WINEPREFIX/drive_c/CIV/
+cd $WINEPREFIX/drive_c/CIV
+wine CIV.EXE
+```
+
+### 重啟 Win10 portable 路線的條件 (任一)
+
+1. **otya128/winevdm 出 v0.9.1+ release** 含 sndPlaySound fix
+2. **找到 cracyc master `cd84ae2` 的 build artifact** (forks / community mirrors 可能有)
+3. **自己用 VS 2017+ build cracyc winevdm master from source**（root 沒 .sln 要找 build system）
 
 ---
 
