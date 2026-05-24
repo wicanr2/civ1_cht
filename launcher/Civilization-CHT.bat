@@ -1,24 +1,27 @@
 @echo off
-REM Civilization 1 Windows 繁體中文化版 portable launcher
-REM 1993 Sid Meier MicroProse / 繁中化 2026 wicanr2
+rem ============================================================
+rem  Civilization 1 (1993 MicroProse) Traditional Chinese launcher
+rem  Pure ASCII only - cmd.exe parses .bat as system ANSI codepage
+rem  so any non-ASCII char here may break parsing.
+rem ============================================================
 
-REM Set Big5 font substitution for CIVTIMES* faces (Win10 native MingLiU has Big5 glyphs)
-REM Uses otvdm's redirected registry so we don't touch real HKLM
 setlocal
-
 set DIR=%~dp0
 
-REM Add CIVTIMES -> MingLiU font subst (Big5 charset 136 = CHINESEBIG5_CHARSET)
-reg add "HKCU\Software\otvdm\HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes" /v "CIVTIMES10,0"  /d "MingLiU,136" /f >nul 2>&1
-reg add "HKCU\Software\otvdm\HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes" /v "CIVTIMES12,0"  /d "MingLiU,136" /f >nul 2>&1
-reg add "HKCU\Software\otvdm\HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes" /v "CIVTIMES14,0"  /d "MingLiU,136" /f >nul 2>&1
-reg add "HKCU\Software\otvdm\HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes" /v "CIVTIMES18,0"  /d "MingLiU,136" /f >nul 2>&1
-reg add "HKCU\Software\otvdm\HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes" /v "CIVTIMES24,0"  /d "MingLiU,136" /f >nul 2>&1
-reg add "HKCU\Software\otvdm\HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes" /v "CIVTIMES30,0"  /d "MingLiU,136" /f >nul 2>&1
-reg add "HKCU\Software\otvdm\HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes" /v "CIVTIMES36,0"  /d "MingLiU,136" /f >nul 2>&1
+rem Inject Big5 font substitution into otvdm redirected registry.
+rem Charset 136 = 0x88 = CHINESEBIG5_CHARSET. MingLiU is Win10 built-in TC.
+set KEY=HKCU\Software\otvdm\HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes
+reg add "%KEY%" /v "CIVTIMES10,0" /d "MingLiU,136" /f >nul 2>&1
+reg add "%KEY%" /v "CIVTIMES12,0" /d "MingLiU,136" /f >nul 2>&1
+reg add "%KEY%" /v "CIVTIMES14,0" /d "MingLiU,136" /f >nul 2>&1
+reg add "%KEY%" /v "CIVTIMES18,0" /d "MingLiU,136" /f >nul 2>&1
+reg add "%KEY%" /v "CIVTIMES24,0" /d "MingLiU,136" /f >nul 2>&1
+reg add "%KEY%" /v "CIVTIMES30,0" /d "MingLiU,136" /f >nul 2>&1
+reg add "%KEY%" /v "CIVTIMES36,0" /d "MingLiU,136" /f >nul 2>&1
 
-REM Launch via otvdmw (windowed Win16 NTVDM replacement)
+rem Launch CIV.EXE via otvdmw (windowed Win16 NTVDM replacement)
 cd /d "%DIR%game"
-"%DIR%otvdm\otvdmw.exe" "%DIR%game\CIV.EXE"
+start "" "%DIR%otvdm\otvdmw.exe" "%DIR%game\CIV.EXE"
 
 endlocal
+exit /b 0
