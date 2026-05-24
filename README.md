@@ -32,9 +32,9 @@
 | **0** | EDILZSS2 RE + wine 6.0.3 bring-up | ✅ **2026-05-24 完成** |
 | **1** | RT_DIALOG (24 個) Big5 patch — 54 instances / 34 unique | ✅ **2026-05-24 完成** |
 | **2** | CIVFONTS.FON dfCharSet patch + FontSubstitutes infra | ✅ **2026-05-24 infra 完成**（視覺驗證待 Phase 3 dialog 觸發） |
-| **3** | CIV.EXE inline string Batch A 翻譯 — 48 條（含主選單 / 難度 / 14 領袖） | ✅ **2026-05-24 Batch A 完成**（視覺驗證待 Win10 實機 / 真實 input） |
+| **3** | CIV.EXE inline string Batch A 翻譯 — 48 條（含主選單 / 難度 / 14 領袖） | ✅ **2026-05-24 Batch A 完成** |
 | 4 | EDILZSS2 compressor（重打包 .EX$） | ⏸ 可選 |
-| 5 | Win10 portable SFX（wine32 + game bundle） | 📋 規劃中 |
+| **5** | Win10 portable SFX：**Civilization-CHT-portable.exe (5.21 MB)**，含 otvdm + patched 遊戲 | ✅ **2026-05-24 build 完成**（實機測試 pending） |
 | 6 | 256-color shim | ⏸ 預期不需要 |
 
 ---
@@ -425,6 +425,88 @@ P3:   5f b6 7d a9 6c b7 73 a7 bd 5f b8 fc a4 4a a6 73  _開始新局_載入存
 
 ---
 
+<a name="phase5-done"></a>
+## ✅ Phase 5 完成記錄（2026-05-24）
+
+**`Civilization-CHT-portable.exe` (5.21 MB) 單檔 Win10 portable build 完成。**
+
+### 為什麼需要 otvdm
+
+Civ1 for Windows 1993 是 **Win16 NE** 格式。**Win10 64-bit 已 drop WoW16 sub-system**，無法原生跑。三條路：
+1. **otvdm** (winevdm，1.5MB) — 開源 Win16-on-Win10 reimplementation，最成熟
+2. wine for Windows — 150MB+ 太大
+3. 32-bit Win10 (有 WoW16) — 用戶罕見
+
+選 **otvdm v0.9.0**（github.com/otya128/winevdm，420k+ 下載），自含完整 Win16 NE loader + GDI/USER/KERNEL 模擬，1.5MB。
+
+### Bundle 結構
+
+```
+Civilization-CHT-portable.exe   (5.21 MB single-file 7z SFX)
+└─[解壓後執行]
+   ├─ Civilization-CHT.bat       (launcher：注入 font subst + 呼叫 otvdmw)
+   ├─ game/                       (5.75 MB — 全 patched 遊戲檔)
+   │  ├─ CIV.EXE       832 KB   Phase 1+3 patched (Big5 dialog + 主選單 + 領袖名)
+   │  ├─ CIVFONTS.FON  244 KB   Phase 2 patched (dfCharSet 0x88)
+   │  ├─ CIVHELP.HLP            原版 WinHelp
+   │  ├─ Civdata0-4.RSC         遊戲資源 (圖片/音樂/動畫)
+   │  └─ *.wav                  領袖語音解壓版 (Alex/Ceas/Eliz/Fred/Gand/...)
+   └─ otvdm/                     (3.88 MB — Win16 runtime)
+      ├─ otvdmw.exe              (windowed Win16 launcher)
+      ├─ libwine.dll, dll/, ...
+      └─ winhlp32.exe            (for .HLP)
+```
+
+### Launcher 設計關鍵
+
+launcher `Civilization-CHT.bat` 兩件事：
+
+1. **注入 Big5 font subst 到 otvdm 重定向 registry**：
+   ```bat
+   reg add "HKCU\Software\otvdm\HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes" ^
+       /v "CIVTIMES12,0" /d "MingLiU,136" /f
+   ```
+   利用 otvdm 的 `EnableRegistryRedirection` — Win16 query 系統 registry 時被 otvdm 重定向到 `HKCU\Software\otvdm\...`，不污染 Win10 系統 registry，**完全 portable**。映射目標 `MingLiU` 是 Win10 內建 Big5 細明體。
+
+2. **call otvdmw.exe with game**：
+   ```bat
+   "%DIR%otvdm\otvdmw.exe" "%DIR%game\CIV.EXE"
+   ```
+
+### 7z SFX 打包技術
+
+模式延用 `wing-portable-sfx` skill (原為 Panzer General 開發)：
+
+| Step | 動作 |
+|------|------|
+| 1 | `7z a -mx9 civ1cht.7z stage\*` — max 壓縮 (LZMA) |
+| 2 | 寫 UTF-8 BOM SFX config (Title / BeginPrompt / RunProgram / GUIMode=1) |
+| 3 | `cat 7z.sfx + config + civ1cht.7z > Civilization-CHT-portable.exe` |
+
+最終 5.21 MB。雙擊 → 對話框「解壓並啟動?」→ 解壓到 temp → 自動跑 launcher → otvdm 啟 CIV.EXE。
+
+### Phase 5 deliverables
+
+- [`tools/build_portable_sfx.ps1`](tools/build_portable_sfx.ps1) — 全自動打包腳本
+- [`launcher/Civilization-CHT.bat`](launcher/Civilization-CHT.bat) — Win10 launcher with font subst
+- (本地 build artifact: `D:\03_game_tmp\_sfx_build_civ1\Civilization-CHT-portable.exe` — 不入 repo，5.21 MB 含著作權遊戲檔)
+
+### 視覺驗證計畫
+
+雙擊 portable .exe 後預期應該看到：
+1. SFX 對話框「解壓並啟動?」按是
+2. 解壓進度條
+3. otvdm console window (背景)
+4. Civilization intro 動畫 (CIVTIMES 字 + 星雲)
+5. Click 進主選單 → **中文菜單**「開始新局/載入存檔/...」
+
+如果第 5 步中文沒出來/變方塊：
+- 缺 MingLiU subst → 改 launcher .bat 試 `PMingLiU` 或其他 Win10 內建 Big5 字
+- otvdm registry redirection 沒生效 → 改用真實 HKLM（會污染系統 registry）
+- Big5 dfCharSet patch 沒被 otvdm 讀懂 → 退回 ANSI charset 走字節對照
+
+---
+
 <a name="phases"></a>
 ## 🗺️ 未來 Phase 規劃
 
@@ -440,9 +522,9 @@ P3:   5f b6 7d a9 6c b7 73 a7 bd 5f b8 fc a4 4a a6 73  _開始新局_載入存
 
 把翻譯後 CIV.EXE 重新壓回 CIV.EX$，讓使用者可以走原 SETUP.EXE 安裝流程。或者跳過，直接 ship 預解開檔。
 
-### Phase 5：Win10 portable SFX（2-3 天）
+### Phase 5：Win10 portable SFX (✅ 已完成)
 
-Bundle `wine32 + prefix + 翻譯後 CIV` → 單一 .exe（7z self-extractor）。使用者雙擊即玩，不需自己裝 wine。技術直接複用既有 `wing-portable-sfx` skill（最初為 Panzer General 開發）。
+詳見上方「✅ Phase 5 完成記錄」章節。產出 `Civilization-CHT-portable.exe` 5.21 MB。實機測試 pending。
 
 ### Phase 6：256-color shim（預期不需要，0-3 天）
 
