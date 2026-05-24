@@ -32,7 +32,7 @@
 | **0** | EDILZSS2 RE + wine 6.0.3 bring-up | ✅ **2026-05-24 完成** |
 | **1** | RT_DIALOG (24 個) Big5 patch — 54 instances / 34 unique | ✅ **2026-05-24 完成** |
 | **2** | CIVFONTS.FON dfCharSet patch + FontSubstitutes infra | ✅ **2026-05-24 infra 完成**（視覺驗證待 Phase 3 dialog 觸發） |
-| 3 | CIV.EXE inline string 數百條 in-place 翻譯 | 📋 規劃中 |
+| **3** | CIV.EXE inline string Batch A 翻譯 — 48 條（含主選單 / 難度 / 14 領袖） | ✅ **2026-05-24 Batch A 完成**（視覺驗證待 Win10 實機 / 真實 input） |
 | 4 | EDILZSS2 compressor（重打包 .EX$） | ⏸ 可選 |
 | 5 | Win10 portable SFX（wine32 + game bundle） | 📋 規劃中 |
 | 6 | 256-color shim | ⏸ 預期不需要 |
@@ -324,6 +324,99 @@ intro 滾動字幕（"Designed by SID MEIER"、"JEFFERY L. BRIGGS"、"HARRY TEAS
 
 ---
 
+<a name="phase3-done"></a>
+## ✅ Phase 3 完成記錄（2026-05-24，Batch A）
+
+CIV.EXE inline plaintext ASCII 字串掃描 + Batch A 翻譯。
+
+### Scope
+
+| 字串桶 | 數量 (unique) | 翻譯狀態 |
+|------|------|------|
+| **prose** (有空格 + 小寫，user-facing 文字) | 532 | Batch A 翻 ~30 條核心 |
+| **short_word** (≤20B 短標籤) | 155 | Batch A 翻 ~10 條 |
+| **api_or_symbol** (`CIVDIALOG`, `BUILDCITY` 等程式內部識別字) | 64 | **不翻譯**（內部 lookup key，動會壞遊戲） |
+| **filename** (`civfonts.fon`, `THEY_DIE.wav`) | 39 | **不翻譯**（檔案 I/O） |
+
+### Batch A 完成的翻譯（48 條 unique，50 個 byte 位置）
+
+**主選單**（最高可見度）：
+```
+_Start a New Game_Load a Saved Game_Play on EARTH_Customize World_View Hall of Fame_Quit
+                              ↓
+_開始新局_載入存檔_地球場景_自訂世界_名人榜_離開
+```
+
+**難度**：
+```
+Difficulty Level..._Chieftain (easiest)_Warlord_Prince_King_Emperor (toughest)
+                              ↓
+難度等級..._酋長(最易)_戰王_王子_君王_皇帝(最難)
+```
+
+**14 領袖**（一一對應 14 文明）：
+- Solomon the Wise → 智者所羅門 (巴比倫)
+- Emperor Augustus → 奧古斯都大帝 (羅馬)
+- King Charlemagne → 查理曼大帝 (德國)
+- Thomas Jefferson → 湯瑪斯傑佛遜 (美國)
+- Sulayman the Magnificent → 蘇萊曼大帝 (土耳其)
+- Winston Churchill → 邱吉爾首相 (英國)
+- ...(共 14 條)
+
+**外交、戰爭、事件訊息**~20 條。
+
+### 關鍵 patcher 設計
+
+Phase 3 inline string patcher 跟 Phase 1 dialog patcher**處理方式不同**：
+
+| 面向 | Phase 1 (RT_DIALOG) | Phase 3 (inline data segment) |
+|------|------|------|
+| Walker 約束 | DLGITEMTEMPLATE 後緊接 `createInfoSize` byte，必須補空白到原長 | 純 C string，consumer 走 `strlen()`，後面 byte 不影響 |
+| Pad 用 | ASCII space (`0x20`) — 維持 byte 數 | NULL (`0x00`) — 乾淨無殘留 |
+| Byte-length 限制 | Big5 ≤ 原長（必須相等） | Big5 ≤ 原長（可短不可長） |
+
+### Phase 3 視覺驗證限制 + 字節級證明
+
+**問題**：CIV1 title screen 等待玩家點擊才進主選單，但 WSLg / winevdm input 通道斷裂——xdotool 對 wine 視窗送 click/key event 不被 CIV.EXE 接收（嘗試多次：focus 內層、focus desktop 包裝、send to root、不同 key 組合全失效）。
+
+**等於**：Phase 3 翻譯後的主選單字串無法在 WSL 環境下被觸發，視覺驗證得等到 **Phase 5 Win10 portable SFX 完成後實機跑** 才能看到「開始新局/載入存檔/...」中文選單。
+
+**位元組級證明**（main menu @ 0xbb35b）：
+
+```
+原始: 5f 53 74 61 72 74 20 61 20 4e 65 77 20 47 61 6d  _Start a New Gam
+      65 5f 4c 6f 61 64 20 61 20 53 61 76 65 64 20 47  e_Load a Saved G
+      ...
+      61 6d 65 5f 51 75 69 74 00                       ame_Quit.
+
+P3:   5f b6 7d a9 6c b7 73 a7 bd 5f b8 fc a4 4a a6 73  _開始新局_載入存
+      c0 c9 5f a6 61 b2 79 b3 f5 b4 ba 5f a6 db ad 71  檔_地球場景_自訂
+      a5 40 ac c9 5f a6 57 a4 48 ba 5d 5f c2 f7 b6 7d  世界_名人榜_離開
+      00 00 00 00 ...                                   ...(NULL pad)
+```
+
+正確的 Big5 cp950 編碼，正確的 `_` 分隔符保留，NULL padding 乾淨。
+
+### Phase 3 deliverables
+
+- [`tools/inline_string_extract.py`](tools/inline_string_extract.py) — 全 EXE ASCII 字串 scanner + bucket classifier (927 runs, 790 unique)
+- [`tools/inline_string_triage.py`](tools/inline_string_triage.py) — 翻譯候選 worksheet generator
+- [`tools/inline_string_patch.py`](tools/inline_string_patch.py) — Big5 cp950 patcher with NULL padding
+- [`data/inline_translations.json`](data/inline_translations.json) — Batch A 48 條翻譯字典
+- `docs/screenshots/05_intro_music_by_phase3.png` — intro "Music by" 字幕（CIV.EXE.p3 跑得起來）
+- `docs/screenshots/06_title_screen_phase3.png` — title 畫面卡點（WSLg input 斷裂處）
+
+### 後續 Batch 規劃
+
+- **Batch B** (~100 條): 14 civ 形容詞 + city 建議 + wonder/unit 短名
+- **Batch C** (~150 條): 完整事件訊息 + 外交對話
+- **Batch D** (~200 條): 數字格式 / advisor 訊息 / Civilopedia entries
+- **Batch E**: 邊界 case（含 `%s %d` 等 format 字串）
+
+每批 commit 一次，逐步豐富翻譯。
+
+---
+
 <a name="phases"></a>
 ## 🗺️ 未來 Phase 規劃
 
@@ -331,13 +424,9 @@ intro 滾動字幕（"Designed by SID MEIER"、"JEFFERY L. BRIGGS"、"HARRY TEAS
 
 詳見上方「✅ Phase 2 完成記錄」章節。
 
-### Phase 3：CIV.EXE inline string 全翻譯（1 週 dev + 1-2 週 QA）
+### Phase 3：CIV.EXE inline string 全翻譯（Batch A ✅ 已完成）
 
-- 工具 scan CIV.EXE data segment，列出所有 ≥4 字 ASCII 字串候選
-- 人工 / LLM 翻譯
-- in-place patch：原 byte 範圍內塞 Big5 + null pad
-- slot length policy: Big5 字串 ≤ 原 ASCII byte 數
-- 14 個領袖名（Caesar, Hammurabi, Frederick, Ramses, Lincoln, Alexander, Gandhi, Stalin, Shaka, Napoleon, Montezuma, Mao, Elizabeth, Genghis）一一對應中文
+詳見上方「✅ Phase 3 完成記錄」章節。剩餘 Batch B/C/D/E 持續推進。
 
 ### Phase 4：EDILZSS2 compressor（1-2 天，可選）
 

@@ -1,0 +1,76 @@
+{
+  "_comment": "Phase 3 Batch A: high-visibility UI strings. Big5 byte length must <= original byte length. Patcher cp950-encodes + pads with NULL bytes (no walker constraint like Phase 1 dialogs — these are plain C strings consumed via strlen).",
+  "_policy": "Preserve _ delimiters (menu group separator), %s %d ^0 ^1 format placeholders, leading/trailing spaces, and punctuation",
+  "_batch_a": "Main menu / difficulty / quit / replay / diplomat menu (most visible after intro)",
+
+  "_Start a New Game_Load a Saved Game_Play on EARTH_Customize World_View Hall of Fame_Quit": "_開始新局_載入存檔_地球場景_自訂世界_名人榜_離開",
+
+  "Difficulty Level..._Chieftain (easiest)_Warlord_Prince_King_Emperor (toughest)": "難度等級..._酋長(最易)_戰王_王子_君王_皇帝(最難)",
+
+  " Are you sure you want to quit?_Keep playing_Yes, Quit": " 確定要離開嗎?_繼續玩_是, 離開",
+  "Are you sure you want to Quit?_Keep Playing_Yes, Quit": "確定要離開嗎?_繼續玩_是, 離開",
+
+  "See Replay?_No replay_Quick Replay_Complete Replay_Write Replay to Disk": "看回顧?_不要回顧_快速回顧_完整回顧_存檔回顧到磁碟",
+
+  "..._Establish Embassy_Investigate City_Steal Technology_Industrial Sabotage_Incite a Revolt_Meet with King_No Action": "..._建立大使館_偵察城市_竊取科技_工業破壞_煽動叛亂_謁見國王_無動作",
+
+  "Will you?_Keep moving_Establish trade route": "如何?_繼續移動_建立貿易路線",
+
+  "Type?_Habitation_Life Support_Solar Panel": "類型?_居住艙_維生系統_太陽能板",
+
+  "!_Cancel action._Break treaty.": "!_取消動作._破壞條約.",
+
+  "_batch_b_leaders": "Civ1 leader names (14)",
+  "Solomon the Wise": "智者所羅門",
+  "Emperor Augustus": "奧古斯都大帝",
+  "King Charlemagne": "查理曼大帝",
+  "Thomas Jefferson": "湯瑪斯傑佛遜",
+  "Shogun Tokugawa": "德川幕府將軍",
+  "Franklin Roosevelt": "羅斯福總統",
+  "Sulayman the Magnificent": "蘇萊曼大帝",
+  "Winston Churchill": "邱吉爾首相",
+  "Charles De Gaulle": "戴高樂將軍",
+  "Vladimir Lenin": "列寧",
+  "Simon Bolivar": "玻利瓦",
+  "Otto von Bismarck": "俾斯麥",
+  "Eric the Red": "紅鬍子艾瑞克",
+  "Kaiser Wilhelm": "威廉皇帝",
+  "Louis the XVI": "路易十六",
+  "Neville Chamberlain": "張伯倫首相",
+
+  "_batch_c_short_status": "Short common status / labels",
+  "CIVILIZATION SCORE": "文明分數",
+  "CIVILIZATION QUIZ": "文明測驗",
+  "CIVILIZATION RATING: ": "文明評等: ",
+  "CIVILIZATION Error": "文明錯誤",
+  "CIVILIZATION for Windows": "文明帝國 視窗版",
+  "CIVIL DISORDER": "民變",
+  "DISORDER": "騷亂",
+  "EXTRA!": "號外!",
+  "FINAL WARNING": "最終警告",
+  "SCORING COMPLETED": "計分完成",
+
+  "_batch_d_event_messages": "Event / status messages (mid length)",
+  "You have discovered a friendly tribe of skilled mercenaries.": "您發現了一支友善的傭兵部落.",
+  "Global temperature rises! Icecaps melt. Severe Drought.": "全球暖化! 冰帽融化. 嚴重乾旱.",
+  "Could not load saved game.  Corrupted or out of memory.": "無法載入存檔. 檔案損毀或記憶體不足.",
+  "Your civilization has conquered the entire planet!": "您的文明征服了整個星球!",
+  "You are overruled by the Senate. Treaty signed.": "參議院推翻決議. 條約已簽署.",
+  "Overruled by the Senate. Action canceled.": "參議院推翻決議. 動作取消.",
+  "You have unleashed a horde of barbarians! ": "您釋出了一群蠻族! ",
+  "Scientists alarmed by rising temperatures. Global Warming feared!": "科學家對升溫提出警告. 恐有全球暖化!",
+  "A City must have five population units to support taxmen or scientists.": "城市需要五個人口單位才能支援稅吏或科學家.",
+  "Our words are backed with NUCLEAR WEAPONS!": "本國以核武為後盾!",
+  "Please Insert the disk ^0 containing the file ^1.": "請插入含檔案 ^1 的磁片 ^0.",
+
+  "_batch_e_short_words": "Common short labels visible in UI",
+  "Cancel": "取消",
+  "OK": "確",
+  "Help": "說明",
+  "Exit": "離開",
+  "King": "君主",
+  "Prince": "王子",
+  "Warlord": "戰王",
+  "Emperor (toughest)": "皇帝(最難)",
+  "Expansionistic": "擴張型"
+}
