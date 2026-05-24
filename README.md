@@ -152,6 +152,14 @@ wine ./CIV.EXE
 ![intro credits — Harry Teasley after Phase 2](docs/screenshots/04_intro_harry_teasley_after_phase2.png)
 *Phase 2 後：intro 滾動字幕「HARRY TEASLEY」（Civ1 設計師）。字型視覺幾乎一致——強烈暗示這些 intro 字幕是 **pre-rendered bitmap**（1993 年常見手法把固定字幕 bake 成 BMP），不走 GDI `TextOut`，故不受 FontSubstitutes 影響。視覺驗證 Big5 字型替換需要等 Phase 3 觸發真正的 dialog/menu（走 `DrawText` 路徑）。*
 
+### Phase 3：inline string Batch A patch 後
+
+![intro Music by frame — Phase 3 patched build](docs/screenshots/05_intro_music_by_phase3.png)
+*Phase 3 patched build (CIV.EXE.p3, 1567 bytes modified) 跑 wine——intro "Music by" 字幕正常播放。主選單 / 14 領袖名 / 難度等 48 條 Big5 譯文已在 byte 層完成 in-place patch，等到玩家從 title screen 點下去就會看到中文選單。*
+
+![title screen — WSL input pipeline blocked here](docs/screenshots/06_title_screen_phase3.png)
+*Phase 3 視覺驗證限制：CIV1 title screen 等玩家點擊才進主選單，但 WSLg + winevdm 的 input pipeline 對 CIV.EXE 完全不通——xdotool click/key 到 wine 視窗一律被吞。**翻譯後的主選單視覺證明要等到 Phase 5 Win10 portable 實機跑**才能看到。位元組層 hex dump 已證明 `_開始新局_載入存檔_地球場景_自訂世界_名人榜_離開` 正確 Big5 編碼在位 (`@0xbb35b`)。*
+
 ---
 
 <a name="edilzss2"></a>
