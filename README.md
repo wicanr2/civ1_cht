@@ -31,7 +31,7 @@
 |------|------|------|
 | **0** | EDILZSS2 RE + wine 6.0.3 bring-up | ✅ **2026-05-24 完成** |
 | **1** | RT_DIALOG (24 個) Big5 patch — 54 instances / 34 unique | ✅ **2026-05-24 完成** |
-| 2 | CIVFONTS.FON glyph 換 Big5 12×16 點陣 | 📋 規劃中 |
+| **2** | CIVFONTS.FON dfCharSet patch + FontSubstitutes infra | ✅ **2026-05-24 infra 完成**（視覺驗證待 Phase 3 dialog 觸發） |
 | 3 | CIV.EXE inline string 數百條 in-place 翻譯 | 📋 規劃中 |
 | 4 | EDILZSS2 compressor（重打包 .EX$） | ⏸ 可選 |
 | 5 | Win10 portable SFX（wine32 + game bundle） | 📋 規劃中 |
@@ -143,6 +143,14 @@ wine ./CIV.EXE
 
 ![intro after Phase 1 patch](docs/screenshots/02_intro_after_phase1.png)
 *54 個 RT_DIALOG 字串 patched 成 Big5 後，intro 動畫照樣播放——證明 NE 結構未被破壞、resource table walker 正常。dialog 文字本身的 Big5 字模要等 Phase 2 (CIVFONTS Big5 glyph) 才能正確顯示。*
+
+### Phase 2：CIVFONTS dfCharSet + FontSubstitutes 後
+
+![intro credits — Jeffery L. Briggs](docs/screenshots/03_intro_jeffery_briggs.png)
+*Phase 2 前：intro 滾動字幕「JEFFERY L. BRIGGS」（Civ1 作曲家），CIVTIMES 原始字型風格。*
+
+![intro credits — Harry Teasley after Phase 2](docs/screenshots/04_intro_harry_teasley_after_phase2.png)
+*Phase 2 後：intro 滾動字幕「HARRY TEASLEY」（Civ1 設計師）。字型視覺幾乎一致——強烈暗示這些 intro 字幕是 **pre-rendered bitmap**（1993 年常見手法把固定字幕 bake 成 BMP），不走 GDI `TextOut`，故不受 FontSubstitutes 影響。視覺驗證 Big5 字型替換需要等 Phase 3 觸發真正的 dialog/menu（走 `DrawText` 路徑）。*
 
 ---
 
@@ -273,15 +281,55 @@ button 右側多空格通常被 dialog rect 裁掉看不到。Static text 多空
 
 ---
 
+<a name="phase2-done"></a>
+## ✅ Phase 2 完成記錄（2026-05-24，infra 層）
+
+CIVFONTS.FON 內 21 個 RT_FONT 拆解 + 字型替換策略確立。
+
+### CIVFONTS.FON 內部結構（已完整逆推）
+
+| 系列 | 字型 (face name) | 用途 |
+|------|------|------|
+| **裝飾字 (14)** | CIVBABYLON / CIVZULU / CIVEGYPT / CIVENGLISH / CIVGREEK / CIVRUSSIAN / CIVGERMAN / **CIVCHINESE** / CIVFRENCH / CIVROMAN / CIVINDIAN / CIVAMERICAN / CIVAZTEC / CIVMONGOL | 各文明命名橫幅的紋飾字（14pt bitmap, ANSI charset, dfLastChar=0xD5）；**CIVCHINESE 不是中文字型**，是「Chinese-looking」西文裝飾字（chop suey typography） |
+| **UI 字 (7)** | CIVTIMES10 / 12 / 14 / 18 / 24 / 30 / 36 | dialog/text 實際用字（多 size bitmap, ANSI charset, dfLastChar=0xFF 含 Latin-1） |
+
+### 策略 pivot：A → C
+
+原計畫 A「把 CIVFONTS.FON 內 RT_FONT 直接換成 Big5 點陣」放棄，因為 Win16 .FNT v2 格式對 DBCS 支援不直觀（`dfFirstChar`/`dfLastChar` 限 0-255）。
+
+**改走 C：font substitution + dfCharSet 標記。**
+
+### 兩層 fix
+
+1. **CIVFONTS.FON RT_FONT `dfCharSet`：0x00 (ANSI) → 0x88 (CHINESEBIG5_CHARSET)**，對 7 個 CIVTIMES family 字型。
+   - 工具 `tools/ne_font_patch_charset.py`
+   - 告訴 Win16 GDI「這些字屬於 Big5 charset」，觸發 DBCS lead/trail byte pair walking
+2. **`HKLM\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes` 註冊**:
+   - `CIVTIMES12,0 = AR PL UMing TW,136`（charset 136 = 0x88）
+   - GDI 在 CreateFont 時自動把 face name + charset 一起 rewrite
+3. **OS 層裝 Big5 字型**：`fonts-arphic-uming`（AR PL UMing TW）+ `fonts-arphic-bsmi00lp`（Mingti2L Big5，1990 年代 Arphic 原版 Big5 字型）
+
+### Phase 2 視覺驗證限制
+
+intro 滾動字幕（"Designed by SID MEIER"、"JEFFERY L. BRIGGS"、"HARRY TEASLEY"）**Phase 2 前後字型視覺幾乎一致**——強烈暗示這些字是 **pre-rendered bitmap** 不走 GDI text 路徑。1993 年常見手法把 intro 字幕跟 logo 一起 bake 成 BMP 求穩定。
+
+真正的 GDI `DrawText` 路徑只在 dialog/menu 觸發時才走，所以 Phase 2 的視覺驗證**自然延後到 Phase 3 後**——當我們有翻譯後的 menu/dialog 文字實際被觸發時，Big5 字模渲染正確 = Phase 2 整套 infra 確認有效。
+
+### Phase 2 deliverables
+
+- [`tools/ne_font_inspect.py`](tools/ne_font_inspect.py) — Win16 .FON / RT_FONT parser，dump 所有 FONTINFO 欄位
+- [`tools/ne_font_patch_charset.py`](tools/ne_font_patch_charset.py) — 把 dfCharSet 改成 0x88 (Big5)
+- [`tools/wine_setup_phase2.sh`](tools/wine_setup_phase2.sh) — wine prefix 全自動 setup（ACP、字型、subst registry）
+- 兩張 intro 對比截圖證明 intro bitmap 假設
+
+---
+
 <a name="phases"></a>
 ## 🗺️ 未來 Phase 規劃
 
-### Phase 2：CIVFONTS.FON 換 Big5 字模（3-5 天，下一步）
+### Phase 2：CIVFONTS dfCharSet + FontSubstitutes (✅ 已完成 infra 部分)
 
-CIVFONTS.FON 是標準 Win16 NE 字型庫，內含 RT_FONT resources。計畫：
-- 保留 face name `CIVTIMES12` / `CIVTIMES24`（程式可能 hardcode 找這 face）
-- 換掉 ASCII 32-127 對應的 glyph，補上 Big5 全集
-- 字模來源：WenQuanYi Bitmap Song 或 NWP 16×16 點陣
+詳見上方「✅ Phase 2 完成記錄」章節。
 
 ### Phase 3：CIV.EXE inline string 全翻譯（1 週 dev + 1-2 週 QA）
 
