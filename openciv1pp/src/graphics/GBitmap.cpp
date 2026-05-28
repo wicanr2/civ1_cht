@@ -201,6 +201,30 @@ void GBitmap::drawBitmap(int destX, int destY, const GBitmap& src, const Rect& s
     }
 }
 
+void GBitmap::drawBitmapScaled2x(int destX, int destY, const GBitmap& src, bool transparent) {
+    // Simple nearest-neighbour 2x upscale: source pixel (i,j) covers the 2x2
+    // block (destX+2j..destX+2j+1, destY+2i..destY+2i+1). Per-pixel bounds
+    // check (cheap; this is only used for whole-frame backdrop blits).
+    for (int j = 0; j < src.h_; ++j) {
+        for (int i = 0; i < src.w_; ++i) {
+            uint8_t v = src.px_[static_cast<std::size_t>(j) * src.w_ + i];
+            if (transparent && v == 0) continue;
+            int dx = destX + i * 2;
+            int dy = destY + j * 2;
+            // 2x2 block.
+            for (int dyo = 0; dyo < 2; ++dyo) {
+                int y = dy + dyo;
+                if (y < 0 || y >= h_) continue;
+                for (int dxo = 0; dxo < 2; ++dxo) {
+                    int x = dx + dxo;
+                    if (x < 0 || x >= w_) continue;
+                    px_[static_cast<std::size_t>(y) * w_ + x] = v;
+                }
+            }
+        }
+    }
+}
+
 namespace {
 uint8_t color18to8(int v) { return uint8_t((255 * (v & 0x3F)) / 63); }
 uint8_t color8to18(int v) { return uint8_t((v * 63) / 255); }

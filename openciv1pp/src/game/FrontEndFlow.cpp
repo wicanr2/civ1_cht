@@ -288,14 +288,17 @@ void FrontEndFlow::draw() {
             // Pre-select + highlight the currently navigated item.
             mb.defaultOptionIndex = mb.highlight;
             mb.forcedSelection = mb.highlight;
+            // 640x480 native: shift menus down + right so they sit comfortably
+            // in the upper-left quadrant rather than hugging the corner. The
+            // old (30, 20) on 320x200 maps to roughly (60, 40) on 640x480.
             if (state_ == State::MAIN_MENU) {
-                mb.F0_2d05_0031_ShowMenuBox(mainMenuItems(), 30, 20,
+                mb.F0_2d05_0031_ShowMenuBox(mainMenuItems(), 60, 40,
                                             /*windowFrame*/ true, /*helpOption*/ false);
             } else if (state_ == State::DIFFICULTY) {
-                mb.F0_2d05_0031_ShowMenuBox(difficultyItems(), 30, 20,
+                mb.F0_2d05_0031_ShowMenuBox(difficultyItems(), 60, 40,
                                             /*windowFrame*/ true, /*helpOption*/ false);
             } else {
-                mb.F0_2d05_0031_ShowMenuBox(tribeItems(), 30, 20,
+                mb.F0_2d05_0031_ShowMenuBox(tribeItems(), 60, 40,
                                             /*windowFrame*/ true, /*helpOption*/ false);
             }
             break;
@@ -314,19 +317,20 @@ void FrontEndFlow::draw() {
                 chosenTribe_ < int(MainCode::tribes().size())) {
                 dn = MainCode::tribes()[std::size_t(chosenTribe_)].leader;
             }
-            tb.F23_0000_0000_CityNameDialog("Pick your tribe...", dn, 60, 80, 14);
+            tb.F23_0000_0000_CityNameDialog("Pick your tribe...", dn, 200, 200, 14);
             break;
         }
         case State::STARTING: {
             fb.clear(1);
             // Placeholder "starting game…" box. Title reuses the "Quit" -> 離開
             // placeholder key as the task suggests; the body explains the slice.
+            // Centered for the 640x480 fb.
             TextBoxDialogs& tb = p.textBoxDialogs();
             tb.forcedSelection = 0;
             tb.F23_0000_0000_ShowTextBox(
                 /*title*/ "Quit",
                 /*message*/ "Start a New Game",
-                /*buttons*/ {}, 60, 80, 200);
+                /*buttons*/ {}, 180, 200, 280);
             break;
         }
         case State::PLAYING: {

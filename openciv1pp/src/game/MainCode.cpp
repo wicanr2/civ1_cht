@@ -55,18 +55,30 @@ int MainCode::F0_11a8_0486_LogoAndMainGameMenu(int forcedSelection, bool* logoLo
     // selection loop's per-case bodies (GenerateMap, Customize sub-menus, Hall
     // of Fame, Load dialog) are NOT ported — TODO(port): new-game/map internals.
 
-    // Title background: load the real LOGO.PIC onto screen 0. In the original the
-    // logo is brought up by MainIntro (DS:0x328a "logo.pic") before this menu;
-    // we render it here so the boot screen shows the authentic title even with
-    // MainIntro stubbed. Graceful fallback: if the asset is absent, leave the
-    // existing (colored/blank) background and just draw the menu.
+    // Title background: load the real LOGO.PIC onto screen 0 at its NATIVE
+    // 320x200 size, top-centered in the 640x480 framebuffer. The DOS .PIC was
+    // designed for 320x200 — upscaling makes the pixels chunky. Instead we
+    // keep the art crisp and use the extra space below for the bigger menu.
+    // In the original the logo is brought up by MainIntro (DS:0x328a "logo.pic")
+    // before this menu; we render it here so the boot screen shows the authentic
+    // title even with MainIntro stubbed. Graceful fallback: if the asset is
+    // absent, leave the existing (colored/blank) background and just draw the menu.
     std::error_code ec;
     const std::string path = logoPath();
     if (!p.resourcePath().empty() && std::filesystem::exists(path, ec)) {
         try {
-            // screen 0, full-frame, palettePtr==1 -> also apply the logo palette.
-            p.imageTools().F0_2fa1_01a2_LoadBitmapOrPalette(GDriver::MainScreen, 0, 0, path, 1);
-            loaded = true;
+            std::unique_ptr<GBitmap> img = loadPicFile(path, true);
+            if (img) {
+                GBitmap& scr = p.graphics.screen(GDriver::MainScreen);
+                scr.copyPaletteFrom(*img);
+                // Native size (no upscale): center horizontally, place near
+                // the top of the 640x480 fb. For a 320x200 logo this yields
+                // (160, 20)..(480, 220) — leaving the bottom 260px for the menu.
+                int dx = (scr.width()  - img->width())  / 2;
+                int dy = 20;
+                scr.drawBitmap(dx, dy, *img, false);
+                loaded = true;
+            }
         } catch (const std::exception&) {
             // Corrupt/undecodable asset: fall back to whatever background exists.
             loaded = false;
@@ -77,13 +89,15 @@ int MainCode::F0_11a8_0486_LogoAndMainGameMenu(int forcedSelection, bool* logoLo
     // Show the mouse cursor over the title (bookkeeping only).
     F0_11a8_0250_ShowMouse();
 
-    // The boxed main menu on top of the logo. MenuBoxDialog routes every item
-    // through DrawTools -> Translator, so the menu is Chinese for free. Position
-    // (100, 140) matches the C# ShowMenuBox call; windowFrame=true draws the
-    // double-shadow box; helpOption=false.
+    // The boxed main menu BELOW the native-size logo. MenuBoxDialog routes
+    // every item through DrawTools -> Translator, so the menu is Chinese for
+    // free. The C# placed the menu at (100, 140) on a 320x200 fb. On the
+    // 640x480 fb the native-size logo occupies y=20..220; we drop the menu
+    // into the open space below at (220, 250) — leaving comfortable room for
+    // all menu items plus margin at the bottom.
     MenuBoxDialog& mb = p.menuBoxDialog();
     mb.forcedSelection = forcedSelection;
-    int selected = mb.F0_2d05_0031_ShowMenuBox(mainMenuItems(), 100, 140,
+    int selected = mb.F0_2d05_0031_ShowMenuBox(mainMenuItems(), 220, 250,
                                                /*windowFrame*/ true, /*helpOption*/ false);
 
     // TODO(port): the C# PlayTune(1,0) menu chime and the per-case game-type
@@ -152,7 +166,16 @@ bool MainCode::F0_11a8_087c_NewGameMenu(int forcedDifficulty, int forcedTribeInd
     std::filesystem::path diffs = std::filesystem::path(p.resourcePath()) / "DIFFS.PIC";
     if (!p.resourcePath().empty() && std::filesystem::exists(diffs, ec)) {
         try {
-            p.imageTools().F0_2fa1_01a2_LoadBitmapOrPalette(GDriver::MainScreen, 0, 0, diffs.string(), 1);
+            // DIFFS.PIC is 320x200; draw at NATIVE size, top-centered on the
+            // 640x480 fb (the menu below uses the freed space, not the pixels).
+            std::unique_ptr<GBitmap> img = loadPicFile(diffs.string(), true);
+            if (img) {
+                GBitmap& scr = p.graphics.screen(GDriver::MainScreen);
+                scr.copyPaletteFrom(*img);
+                int dx = (scr.width()  - img->width())  / 2;
+                int dy = 20;
+                scr.drawBitmap(dx, dy, *img, false);
+            }
         } catch (const std::exception&) { /* graceful */ }
     }
     // TODO(port): StartGameMenu.F5_0000_1af6_LoadGovernmentImage and the
@@ -172,7 +195,9 @@ bool MainCode::F0_11a8_087c_NewGameMenu(int forcedDifficulty, int forcedTribeInd
         // returned selection. Add 1 because the title row is item 0.
         mb.defaultOptionIndex = forcedDifficulty + 1;
         mb.forcedSelection = forcedDifficulty + 1;
-        mb.F0_2d05_0031_ShowMenuBox(menu, 160, 35,
+        // C# used (160, 35) on a 320x200 fb; on 640x480 we centre at x=320 by
+        // anchoring at x=240 (keeps the same left-margin proportion).
+        mb.F0_2d05_0031_ShowMenuBox(menu, 240, 70,
                                     /*windowFrame*/ true, /*helpOption*/ false);
     }
     int chosenDiff = forcedDifficulty;
@@ -194,7 +219,7 @@ bool MainCode::F0_11a8_087c_NewGameMenu(int forcedDifficulty, int forcedTribeInd
         for (const auto& t : tribes()) menu.push_back(t.nationality);
         mb.defaultOptionIndex = forcedTribeIndex + 1;
         mb.forcedSelection = forcedTribeIndex + 1;
-        mb.F0_2d05_0031_ShowMenuBox(menu, 160, 35,
+        mb.F0_2d05_0031_ShowMenuBox(menu, 240, 70,
                                     /*windowFrame*/ true, /*helpOption*/ false);
     }
     int chosenTribe = forcedTribeIndex;
@@ -211,8 +236,9 @@ bool MainCode::F0_11a8_087c_NewGameMenu(int forcedDifficulty, int forcedTribeInd
     // Render the (single-line) name entry box faithfully via the city-name
     // dialog draw recipe (commented-out DOS path that PlayerNameDialog reused).
     p.textBoxDialogs().forcedSelection = 1; // 1 = ENTER/accept in the C# editbox
+    // C# placed the name dialog at (80, 80) on 320x200; centre on the 640x480 fb.
     p.textBoxDialogs().F23_0000_0000_CityNameDialog("Pick your tribe...",
-                                                    defName, 80, 80, 14);
+                                                    defName, 220, 200, 14);
 
     if (outDifficulty) *outDifficulty = chosenDiff;
     if (outTribeIndex) *outTribeIndex = chosenTribe;

@@ -68,6 +68,15 @@ public:
     void drawBitmap(int x, int y, const GBitmap& src, bool transparent);
     void drawBitmap(int x, int y, const GBitmap& src, const Rect& srcRect, bool transparent);
 
+    // 2x nearest-neighbour upscale blit. Each source pixel (i,j) is written into
+    // the 2x2 destination block (destX+2i..destX+2i+1, destY+2j..destY+2j+1).
+    // UNUSED after the 640x480 FOV refactor — all DOS .PICs (LOGO/DIFFS/CBACK
+    // /BIRTH/PLANET) now render at NATIVE 320x200 so the art stays crisp and
+    // the freed canvas space hosts the bigger info panels / menus / mini-grid
+    // (see CityView, MainCode, MainIntro). Kept for future use (e.g. an
+    // optional pixel-double "classic" mode); transparent=true skips index 0.
+    void drawBitmapScaled2x(int destX, int destY, const GBitmap& src, bool transparent);
+
     // Draws a UTF-8 string. ASCII (<0x80) uses the bitmap font; bytes 0x80-0xFF
     // are inline colour-change escapes (original convention); codepoints >=0x100
     // are CJK/Unicode rasterised on demand. Returns the final pen x.

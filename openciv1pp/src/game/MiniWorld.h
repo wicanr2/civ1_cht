@@ -204,7 +204,7 @@ private:
     // case: tileSize=16, camX/camY = top-left, viewW/H = full screen.
     mutable int lastTileSize_ = 16;
     mutable int lastCamX_ = 0, lastCamY_ = 0;
-    mutable int lastViewW_ = 320, lastViewH_ = 200 - 56;
+    mutable int lastViewW_ = 640, lastViewH_ = 480 - 64;
 
     Terrain& at(int x, int y) { return tiles_[std::size_t(y) * w_ + x]; }
     void placeUnitNearCenter();

@@ -64,25 +64,43 @@ bool MainIntro::nextFrame(GBitmap& fb) {
         // Caption-only / missing asset: clear to palette index 0 (DOS black).
         fb.clear(0);
     } else {
-        // Load the .PIC and blit it at (0,0). Copy palette so colors match.
+        // Load the .PIC and blit it at NATIVE size, centered horizontally near
+        // the top of the 640x480 fb. The DOS intro .PICs were designed for
+        // 320x200; preserving native pixels keeps the art crisp and frees the
+        // surrounding space for caption + slide-index indicator.
         std::unique_ptr<GBitmap> img = loadPicFile(picPath.string(), true);
         if (!img) { fb.clear(0); }
         else {
             fb.copyPaletteFrom(*img);
             fb.clear(0);
-            fb.drawBitmap(0, 0, *img, false);
+            // Centre native image horizontally: 320x200 -> (160, 80) on 640x480.
+            int dx = (fb.width()  - img->width())  / 2;
+            int dy = 80;
+            fb.drawBitmap(dx, dy, *img, false);
         }
     }
 
     // Draw the caption (uses the GDriver's font 1 if present; safe no-op
-    // otherwise). Position: bottom-of-screen, centered horizontally. Uses
-    // DrawTools (Translator + word-shadow) when the screen 0 is bound.
+    // otherwise). Position: below the native-size 320x200 image (~y=280),
+    // dropped to y=320 to give breathing room in the bottom strip. Uses
+    // DrawTools (Translator + word-shadow) when screen 0 is bound.
     if (!sl.caption.empty() && p.graphics.hasFont(1) && p.graphics.hasScreen(GDriver::MainScreen)
         && &p.graphics.screen(GDriver::MainScreen) == &fb) {
         try {
-            // Drop-shadow + foreground centered string near the bottom.
+            int capY = 320;
             p.drawTools().F0_1182_00b3_DrawCenteredStringWithShadowToScreen0(
-                sl.caption, fb.width() / 2, fb.height() - 16, /*color*/ 15);
+                sl.caption, fb.width() / 2, capY, /*color*/ 15);
+
+            // Slide index indicator "<n>/<total>" in the bottom-right corner —
+            // uses the freed space below the native-size .PIC. 1-based for the
+            // human-readable form.
+            char idx[24];
+            std::snprintf(idx, sizeof(idx), "%d/%d",
+                          cursor_ + 1, int(slides().size()));
+            int ix = fb.width() - 60;
+            int iy = fb.height() - 24;
+            p.drawTools().F0_1182_00b3_DrawCenteredStringWithShadowToScreen0(
+                idx, ix, iy, /*color*/ 15);
         } catch (...) { /* font unavailable: skip caption */ }
     }
 

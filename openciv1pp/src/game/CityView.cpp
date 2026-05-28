@@ -80,22 +80,32 @@ bool CityView::handleKey(int navKey) {
     return false;
 }
 
-// The visual panel rect — everything OUTSIDE this is "background" and a click
-// there returns to the map (mirrors Civ1 click-outside-panel).
+// City-view layout for the 640x480 native fb (FOV refactor):
+//   - CBACK*.PIC backdrop at native 320x200 in the TOP-LEFT (0,0)..(320,200).
+//   - 21-tile mini-grid (5x5 with 4 corners removed, 24px cells = 120x120)
+//     in the upper-right region, beside the backdrop.
+//   - Comprehensive info panel occupying the FULL bottom strip
+//     y=200..480 (640x280) — name/year, owner/population/production/buildings.
+// The panel-rect below is the INFO panel only; clicks anywhere outside it
+// AND outside the backdrop+grid upper strip close the view.
 namespace {
-constexpr int kPanelX = 10, kPanelY = 10;
-constexpr int kPanelW = 300, kPanelH = 180;
+constexpr int kBackX = 0,   kBackY = 0;
+constexpr int kBackW = 320, kBackH = 200;
+constexpr int kGridX = 340, kGridY = 16;     // upper-right of backdrop
+constexpr int kPanelX = 0,  kPanelY = 200;
+constexpr int kPanelW = 640, kPanelH = 280;
 } // namespace
 
 bool CityView::handleClick(int fbX, int fbY) {
     if (!open_) return false;
-    // Click OUTSIDE the city panel -> close (return to map).
-    if (fbX < kPanelX || fbY < kPanelY ||
-        fbX >= kPanelX + kPanelW || fbY >= kPanelY + kPanelH) {
+    // The city-view UI fills the WHOLE 640x480 canvas after the FOV refactor
+    // (backdrop top-left + mini-grid upper-right + info panel along the
+    // bottom). Negative / out-of-canvas clicks close the view; everything
+    // inside the canvas is a no-op (deeper UI is OUT OF SCOPE).
+    if (fbX < 0 || fbY < 0 || fbX >= 640 || fbY >= 480) {
         close();
         return true;
     }
-    // Click inside the panel: no-op for now (deeper UI is OUT OF SCOPE).
     return true;
 }
 
@@ -149,17 +159,29 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
     };
     installCityViewPalette();
 
+    // Clear the whole canvas to the "outside" backdrop fill BEFORE painting
+    // the upper region. This guarantees the bottom info panel starts from a
+    // known colour and the area to the right of CBACK reads as canvas, not
+    // as garbage from a prior frame.
+    screen.clear(160);
+
     // 1) Backdrop: CBACK*.PIC when loaded (mirrors the C# HILL.PIC backdrop
-    //    used by ShowCityLayout); else a flat colored fill. The palette is
-    //    re-installed AFTER copyPaletteFrom so the panel/text colours survive
+    //    used by ShowCityLayout); else a flat colored fill in the backdrop
+    //    rect. CBACK is 320x200 DOS art — drawn at NATIVE size in the
+    //    top-left so the pixels stay crisp; the right side / bottom panel
+    //    use the freed space for the mini-grid + info panel. The palette is
+    //    re-installed AFTER copyPaletteFrom so panel/text colours survive
     //    the backdrop's palette table.
-    if (backdrop_ &&
-        backdrop_->width() <= screen.width() && backdrop_->height() <= screen.height()) {
+    if (backdrop_) {
         screen.copyPaletteFrom(*backdrop_);
-        screen.drawBitmap(0, 0, *backdrop_, false);
+        if (backdrop_->width() <= screen.width() &&
+            backdrop_->height() <= screen.height()) {
+            screen.drawBitmap(kBackX, kBackY, *backdrop_, false);
+        }
         installCityViewPalette();
     } else {
-        screen.clear(160);
+        // No backdrop asset: fill ONLY the backdrop rect (panel still gets 161).
+        screen.fillRect(Rect{kBackX, kBackY, kBackW, kBackH}, 160);
     }
     // When TER257 tileset is loaded for the mini-grid, its palette (indices
     // 0..~127) must be installed so the blit pixels resolve correctly. Our
@@ -169,18 +191,17 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         installCityViewPalette();
     }
 
-    // 2) Main panel rectangle (F19 layout: a big inset panel below the title
-    //    bar). The C# uses Var_19d4_Screen1_Rectangle for the layout area; we
-    //    mirror its 320x200 shape and inset by 10px on each side for a panel.
+    // 2) Bottom info panel — fills the freed space y=200..480 (640x280) below
+    //    the native-size CBACK. Generous room for all the labels.
     screen.fillRect(Rect{kPanelX, kPanelY, kPanelW, kPanelH}, 161);
     screen.drawRect(Rect{kPanelX, kPanelY, kPanelW, kPanelH}, 162);
     screen.drawRect(Rect{kPanelX + 1, kPanelY + 1, kPanelW - 2, kPanelH - 2}, 162);
 
-    // 3) Top title bar — city name + (year) (mirrors the C# line in
-    //    F19_0000_0000_ShowCityLayout that calls DrawCenteredStringWithShadow
-    //    with "{cityName} ({year})" at (160, 2)).
+    // 3) Title bar at the TOP of the info panel — city name + (year)
+    //    (mirrors the C# DrawCenteredStringWithShadow "{cityName} ({year})"
+    //    line in F19_0000_0000_ShowCityLayout).
     const GFont& font = p.graphics.font(fontId);
-    int titleY = kPanelY + 4;
+    int titleY = kPanelY + 6;
     {
         char yearbuf[32];
         int yr = p.unitManagement().year();
@@ -199,8 +220,10 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         screen.drawString(font, tx, titleY, title, 166);
     }
 
-    // 4) Info column (left side) — Population:/Founded:/Owner:/Production:.
-    int infoX = kPanelX + 8;
+    // 4) Info column (LEFT half of bottom panel) — Population:/Founded:/
+    //    Owner:/Production:/Researching:/Buildings:. Lots of breathing room
+    //    after the FOV refactor.
+    int infoX = kPanelX + 16;
     int infoY = titleY + font.pixelHeight + font.lineSpacing + 6;
     int lineH = font.pixelHeight + font.lineSpacing + 2;
 
@@ -317,23 +340,30 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
 
     // 6) 21-tile mini-grid — the city centre + the 20 worker tiles in the
     //    city radius. The Civ1 city radius is a 5x5 area with the four
-    //    corner tiles removed (the "fat cross" pattern of 21 tiles). We
-    //    sample real terrain when MapManagement was generated; otherwise we
-    //    leave the cells blank (panel fill).
+    //    corner tiles removed (the "fat cross" pattern of 21 tiles). After
+    //    the FOV refactor the grid lives in the UPPER-RIGHT of the canvas
+    //    (beside the native-size CBACK), with BIGGER 24x24 cells so it
+    //    reads clearly. We sample real terrain when MapManagement was
+    //    generated; otherwise we leave the cells blank (panel fill).
     {
-        std::string lbl = Translator::instance().translate("Tiles:");
-        int tY = infoY + lineH * 7 + 4;
-        screen.drawString(font, infoX + 1, tY + 1, lbl, 163);
-        screen.drawString(font, infoX, tY, lbl, 164);
+        // When TER257 is available, the mini-grid blits the 16x16 base tile
+        // per cell upscaled into a 24x24 cell (3:2 nearest-neighbour by way
+        // of the temp 16x16 -> scaled2x path that fills 32x32, clipped to
+        // 24). Otherwise we draw 24px colored rects keyed to a DISTINCT
+        // bright palette index per terrain enum.
+        const int cellSz = 24;
+        // Upper-right region — beside the native-size CBACK at (kGridX, kGridY).
+        int gridX0 = kGridX;
+        int gridY0 = kGridY;
 
-        // When TER257 is available, the mini-grid blits the 16x16 base tile per
-        // cell (cellSz==16). Otherwise we draw 18px colored rects keyed to a
-        // DISTINCT bright palette index per terrain enum (so all 12 terrains
-        // are visually distinguishable in the fallback view).
+        // Section label above the grid.
+        std::string lbl = Translator::instance().translate("Tiles:");
+        int tY = gridY0 - font.pixelHeight - font.lineSpacing - 2;
+        if (tY < 0) tY = 0;
+        screen.drawString(font, gridX0 + 1, tY + 1, lbl, 163);
+        screen.drawString(font, gridX0, tY, lbl, 164);
+
         const bool useTiles = (tileset_ != nullptr);
-        const int cellSz = useTiles ? 16 : 18;
-        int gridX0 = kPanelX + 170;
-        int gridY0 = infoY + 4;
 
         const MapManagement* mm = nullptr;
         try { mm = &p.mapManagement(); } catch (...) { mm = nullptr; }
@@ -381,8 +411,15 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
                     }
                 }
                 if (useTiles) {
+                    // 16x16 TER257 tile blitted at NATIVE size centered in the
+                    // 24x24 cell. We don't upscale: native pixels keep the
+                    // tile art crisp (matching the FOV refactor's "no chunky
+                    // pixels" rule). srcRect-aware drawBitmap pulls the right
+                    // slot out of the tileset atlas in one call.
                     TileXY tile = terrainToTileXY(t);
-                    screen.drawBitmap(gx, gy, *tileset_,
+                    int ox = gx + (cellSz - 16) / 2;
+                    int oy = gy + (cellSz - 16) / 2;
+                    screen.drawBitmap(ox, oy, *tileset_,
                                       Rect{tile.col * 16, tile.row * 16, 16, 16},
                                       false);
                     screen.drawRect(Rect{gx, gy, cellSz, cellSz}, 162);

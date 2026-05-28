@@ -600,7 +600,7 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
     fb.palette.set(209, 230,  40,  40); // unit marker
     fb.palette.set(210,   0,   0,   0); // grid lines (dark)
 
-    const int hudH = 56; // room for 3 HUD text lines (turn/help/cities)
+    const int hudH = 64; // room for 3 HUD text lines (turn/help/cities) on 640x480
     const int viewW = fb.width();
     const int viewH = fb.height() - hudH;
     const int cols = viewW / tileSize;

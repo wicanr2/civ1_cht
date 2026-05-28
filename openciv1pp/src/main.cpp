@@ -45,9 +45,9 @@
 
 using namespace oc1;
 
-// SDL window size for all interactive modes. Default 640x480 (the renderer's
-// SDL_RenderSetLogicalSize keeps the in-game framebuffer pixel-correct + the
-// aspect ratio letterboxed). Override with `--window WxH` (e.g. `--window 320x200`).
+// SDL window size for all interactive modes. Default 640x480 — the port's new
+// native framebuffer size (logical == window, no letterbox). Override with
+// `--window WxH`.
 static int g_winW = SdlPresenter::DefaultWindowW;
 static int g_winH = SdlPresenter::DefaultWindowH;
 
@@ -457,7 +457,7 @@ static int drawtest() {
     auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
 
     OpenCiv1Game g;
-    setupGame(g, 320, 200);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     DrawTools& dt = g.drawTools();
 
@@ -510,7 +510,7 @@ static int imgtest() {
 
     // Load it onto a GDriver screen at an offset via ImageTools.
     OpenCiv1Game g;
-    g.graphics.addScreen(GDriver::MainScreen, 320, 200);
+    g.graphics.addScreen(GDriver::MainScreen, 640, 480);
     GBitmap& scr = g.graphics.screen(GDriver::MainScreen);
     scr.clear(0);
     const int ox = 40, oy = 24;
@@ -576,7 +576,7 @@ static int langtest() {
 
     // TrimStringToWidth: needs a font (DrawTools). Trim to a narrow pixel width
     // shortens the string and appends a '.' ellipsis; result must fit maxWidth.
-    setupGame(g, 320, 200);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = false; // measure the literal ASCII text
     // No spaces -> every trim hits the "replace last 2 chars with '.'" branch,
     // so the result deterministically ends with the ellipsis dot.
@@ -676,7 +676,7 @@ static int menutest() {
     // Render the menu into a fresh game's screen 0 and return the pixel buffer.
     auto render = [&](bool translate) -> std::vector<uint8_t> {
         OpenCiv1Game g;
-        setupGame(g, 320, 200);        // screen 0 320x200, font 1 from FreeType(16), zh_TW.json
+        setupGame(g, 640, 480);        // screen 0 640x480, font 1 from FreeType(16), zh_TW.json
         Translator::instance().enabled = translate;
         g.graphics.screen(0).clear(1); // background = palette index 1 (non-zero)
         MenuBoxDialog& mb = g.menuBoxDialog();
@@ -702,7 +702,7 @@ static int menutest() {
 
     // Reconstruct a framebuffer view over the Chinese render for the region/ink
     // asserts and the PPM dump.
-    GBitmap fb(320, 200);
+    GBitmap fb(640, 480);
     fb.pixelsMut() = zh;
 
     // Count ink (non-background pixels, background == 1) inside the menu region.
@@ -754,7 +754,7 @@ static int navtest() {
     auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
 
     OpenCiv1Game g;
-    setupGame(g, 320, 200);
+    setupGame(g, 640, 480);
     MenuBoxDialog& mb = g.menuBoxDialog();
     const int n = int(mainMenuItems().size());
 
@@ -896,7 +896,7 @@ static int textboxtest() {
     // Render the box into a fresh game's screen 0 and return the pixel buffer.
     auto render = [&](bool translate) -> std::vector<uint8_t> {
         OpenCiv1Game g;
-        setupGame(g, 320, 200);        // screen 0 320x200, font 1 from FreeType(16), zh_TW.json
+        setupGame(g, 640, 480);        // screen 0 640x480, font 1 from FreeType(16), zh_TW.json
         Translator::instance().enabled = translate;
         g.graphics.screen(0).clear(1); // background = palette index 1 (non-zero)
         TextBoxDialogs& tb = g.textBoxDialogs();
@@ -921,7 +921,7 @@ static int textboxtest() {
         "translated vs untranslated pixels DIFFER (box text is localized)");
 
     // Reconstruct a framebuffer view over the Chinese render for the region asserts.
-    GBitmap fb(320, 200);
+    GBitmap fb(640, 480);
     fb.pixelsMut() = zh;
 
     // Count ink (non-background, background == 1) inside a generous box region.
@@ -963,7 +963,7 @@ static int mousetest() {
     // ---- MenuBoxDialog: itemAt + handleMouse ----
     {
         OpenCiv1Game g;
-        setupGame(g, 320, 200);
+        setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         g.graphics.screen(0).clear(1);
         MenuBoxDialog& mb = g.menuBoxDialog();
@@ -1024,7 +1024,7 @@ static int mousetest() {
     {
         const int W = 40, H = 30;
         OpenCiv1Game g;
-        setupGame(g, 480, 300);
+        setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         MiniWorld world(W, H, 12345u);
         world.draw(g.graphics, 1, 12); // populates the cached viewport math.
@@ -1043,20 +1043,19 @@ static int mousetest() {
         int dummy = 0;
         chk(!world.screenToTile(-1, 0, dummy, dummy),
             "screenToTile rejects negative x (off-map)");
-        chk(!world.screenToTile(0, 299, dummy, dummy),
+        chk(!world.screenToTile(0, 479, dummy, dummy),
             "screenToTile rejects HUD-bar y (below the viewport)");
 
         // Click east of the unit -> moves (+1, 0).
         int ux = world.unitX(), uy = world.unitY();
         // Build a pixel coord clearly east of the unit, inside the viewport.
-        // Camera centres on the unit so unit-pixel ~= (cols/2 * tileSize, rows/2 * tileSize).
-        // viewH = fb.height() - hudH; hudH was widened to 56 so the third HUD
-        // line ("Cities: N") fits. Keep the unit-centre estimate in sync.
-        int unitPxX = (ux - 0) * 0 + ((/*viewW*/ 480) / 12 / 2) * 12 + 6;
-        int unitPxY = (uy - 0) * 0 + ((/*viewH*/ (300 - 56)) / 12 / 2) * 12 + 6;
-        // Actual unit pixel is camCentre*tileSize + tileSize/2; cheat by going
-        // via screenToTile from the unit's known map coords. Use the unit-pixel
-        // estimate above + a deliberate offset of (+24, 0) -> two tiles east.
+        // Camera math (see MiniWorld::draw): when the world (40x30) is smaller
+        // than the viewport (640/12=53 cols, 416/12=34 rows at native 640x480
+        // / hudH=64), camX/camY clamp to 0, so unit-pixel = unitX*tileSize +
+        // tileSize/2 directly.
+        const int tileSz = 12;
+        int unitPxX = ux * tileSz + tileSz / 2;
+        int unitPxY = uy * tileSz + tileSz / 2;
         // Reset the world (clean clone with fresh moves).
         MiniWorld w2(W, H, 12345u);
         w2.draw(g.graphics, 1, 12);
@@ -1088,7 +1087,7 @@ static int mousetest() {
         MiniWorld w5(W, H, 12345u);
         w5.draw(g.graphics, 1, 12);
         int bx5 = w5.unitX(), by5 = w5.unitY();
-        chk(!w5.handleMouseClick(100, 290),
+        chk(!w5.handleMouseClick(100, 470),
             "handleMouseClick on the HUD (y>=viewH) returns false");
         chk(w5.unitX() == bx5 && w5.unitY() == by5,
             "HUD click does not move the unit");
@@ -1104,7 +1103,7 @@ static int mousetest() {
 // loops draw -> present -> pollKey -> navStep until ENTER (>=0) or ESC (-1).
 static int menuInteractive() {
     OpenCiv1Game g;
-    setupGame(g, 320, 200);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     const std::vector<std::string>& items = mainMenuItems();
     const int mx = 30, my = 20;
@@ -1169,7 +1168,7 @@ static int flowtest() {
     auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
 
     OpenCiv1Game g;
-    setupGame(g, 320, 200);
+    setupGame(g, 640, 480);
 
     // 1) MAIN_MENU + ENTER (on item 0, "Start a New Game") -> DIFFICULTY.
     {
@@ -1223,7 +1222,7 @@ static int flowtest() {
     //    with the Translator on (Chinese) vs off (English).
     auto renderDifficulty = [&](bool translate) -> std::vector<uint8_t> {
         OpenCiv1Game gg;
-        setupGame(gg, 320, 200);
+        setupGame(gg, 640, 480);
         Translator::instance().enabled = translate;
         FrontEndFlow flow(gg);
         flow.handleKey(MenuBoxDialog::KeyEnter); // MAIN_MENU -> DIFFICULTY
@@ -1239,7 +1238,7 @@ static int flowtest() {
     chk(diffPixels > 0, "difficulty menu Chinese vs English pixels DIFFER");
 
     {
-        GBitmap fb(320, 200);
+        GBitmap fb(640, 480);
         fb.pixelsMut() = zh;
         dumpPPM(fb, "/tmp/menuflow_difficulty.ppm");
     }
@@ -1266,7 +1265,7 @@ static int newgametest() {
     auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
 
     OpenCiv1Game g;
-    setupGame(g, 320, 200);
+    setupGame(g, 640, 480);
 
     // 1) Full transition: MAIN_MENU -> DIFFICULTY (Prince) -> TRIBE (Romans) ->
     //    NAME (default = "Caesar") -> STARTING -> DONE.
@@ -1317,7 +1316,7 @@ static int newgametest() {
     //    vs off); pixel buffers must differ (Chinese labels visibly change).
     auto renderDifficulty = [&](bool translate) -> std::vector<uint8_t> {
         OpenCiv1Game gg;
-        setupGame(gg, 320, 200);
+        setupGame(gg, 640, 480);
         Translator::instance().enabled = translate;
         FrontEndFlow flow(gg);
         flow.handleKey(MenuBoxDialog::KeyEnter);     // MAIN_MENU -> DIFFICULTY
@@ -1336,7 +1335,7 @@ static int newgametest() {
     //    returns the captured difficulty/tribe/name (default = leader). This
     //    exercises the ported menu-building code path end-to-end.
     {
-        OpenCiv1Game gg; setupGame(gg, 320, 200);
+        OpenCiv1Game gg; setupGame(gg, 640, 480);
         Translator::instance().enabled = true;
         int d = -1, t = -1; std::string n;
         bool ok = gg.mainCode().F0_11a8_087c_NewGameMenu(
@@ -1348,7 +1347,7 @@ static int newgametest() {
 
     // 5) Dump the localized TRIBE menu for eyeballing.
     {
-        OpenCiv1Game gg; setupGame(gg, 320, 200);
+        OpenCiv1Game gg; setupGame(gg, 640, 480);
         Translator::instance().enabled = true;
         FrontEndFlow flow(gg);
         flow.handleKey(MenuBoxDialog::KeyEnter);  // -> DIFFICULTY
@@ -1372,7 +1371,7 @@ static int newgametest() {
 // printing each state transition + the final chosen difficulty / tribe / name.
 static int newgameInteractive(const std::string& assetDir) {
     OpenCiv1Game g;
-    setupGame(g, 320, 200);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     if (!assetDir.empty()) g.setResourcePath(assetDir);
 
@@ -1462,7 +1461,7 @@ static int gamemenutest() {
     // Render the World menu into a fresh game's screen 0; pick "World Map".
     auto render = [&](bool translate) -> std::vector<uint8_t> {
         OpenCiv1Game g;
-        setupGame(g, 320, 200);             // screen 0 320x200, font 1, zh_TW.json
+        setupGame(g, 640, 480);             // screen 0 640x480, font 1, zh_TW.json
         Translator::instance().enabled = translate;
         g.graphics.screen(0).clear(1);      // background = palette index 1 (non-zero)
         g.gameMenus().spaceshipFlags = 0xfe00; // enable the 'SpaceShips' option
@@ -1484,12 +1483,12 @@ static int gamemenutest() {
     chk(diffPixels > 0, "translated vs untranslated pixels DIFFER (menu items are localized)");
 
     // Ink in the World menu region.
-    GBitmap fb(320, 200);
+    GBitmap fb(640, 480);
     fb.pixelsMut() = zh;
     std::size_t ink = 0;
     bool hasFill = false;
-    for (int yy = wmY - 2; yy < 200; ++yy)
-        for (int xx = wmX - 2; xx < 320; ++xx) {
+    for (int yy = wmY - 2; yy < fb.height(); ++yy)
+        for (int xx = wmX - 2; xx < fb.width(); ++xx) {
             uint8_t px = fb.getPixel(xx, yy);
             if (px != 1) ++ink;
             if (px == 7) hasFill = true; // MenuBoxDialog box fill (index 7)
@@ -1500,7 +1499,7 @@ static int gamemenutest() {
 
     // ---- Game menu: each selection maps to the right shortcut key. ----
     {
-        OpenCiv1Game g; setupGame(g, 320, 200);
+        OpenCiv1Game g; setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         g.graphics.screen(0).clear(1);
         g.menuBoxDialog().forcedSelection = 0; // Tax Rate
@@ -1508,7 +1507,7 @@ static int gamemenutest() {
         chk(g.gameMenus().Var_d4ca_MenuShortcutKey == '=', "Game menu 'Tax Rate' -> '='");
     }
     {
-        OpenCiv1Game g; setupGame(g, 320, 200);
+        OpenCiv1Game g; setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         g.graphics.screen(0).clear(1);
         g.menuBoxDialog().forcedSelection = 8; // QUIT to DOS
@@ -1518,7 +1517,7 @@ static int gamemenutest() {
 
     // ---- Advisors menu: selection dispatches the right report. ----
     {
-        OpenCiv1Game g; setupGame(g, 320, 200);
+        OpenCiv1Game g; setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         g.graphics.screen(0).clear(1);
         g.menuBoxDialog().forcedSelection = 4; // Trade Advisor
@@ -1529,7 +1528,7 @@ static int gamemenutest() {
 
     // ---- Encyclopedia menu: selection records the topic. ----
     {
-        OpenCiv1Game g; setupGame(g, 320, 200);
+        OpenCiv1Game g; setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         g.graphics.screen(0).clear(1);
         g.menuBoxDialog().forcedSelection = 2; // City Improvements
@@ -1541,7 +1540,7 @@ static int gamemenutest() {
 
     // ---- Orders menu: builds for a Settlers unit, returns the hotkey char. ----
     {
-        OpenCiv1Game g; setupGame(g, 320, 200);
+        OpenCiv1Game g; setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         g.graphics.screen(0).clear(1);
         GameMenus& gm = g.gameMenus();
@@ -1568,7 +1567,7 @@ static int gamemenutest() {
 // handleKey, until DONE or QUIT.
 static int menuflowInteractive() {
     OpenCiv1Game g;
-    setupGame(g, 320, 200);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
 
     GBitmap& fb = g.graphics.screen(0);
@@ -1668,7 +1667,7 @@ static int titletest() {
     // the pixel buffer. Background is flat index 1 so logo/menu ink is detectable.
     auto renderNoAssets = [&](bool translate) -> std::vector<uint8_t> {
         OpenCiv1Game g;
-        setupGame(g, 320, 200);
+        setupGame(g, 640, 480);
         Translator::instance().enabled = translate;
         g.graphics.screen(0).clear(1);
         bool logo = true;
@@ -1691,12 +1690,12 @@ static int titletest() {
 
     // The menu must have drawn ink over the (index-1) background.
     {
-        GBitmap fb(320, 200);
+        GBitmap fb(640, 480);
         fb.pixelsMut() = zh;
         std::size_t ink = 0;
         bool hasFill = false;
-        for (int yy = 0; yy < 200; ++yy)
-            for (int xx = 0; xx < 320; ++xx) {
+        for (int yy = 0; yy < fb.height(); ++yy)
+            for (int xx = 0; xx < fb.width(); ++xx) {
                 uint8_t px = fb.getPixel(xx, yy);
                 if (px != 1) ++ink;
                 if (px == 7) hasFill = true; // MenuBoxDialog box fill (index 7)
@@ -1713,7 +1712,7 @@ static int titletest() {
         if (!dir.empty() &&
             std::filesystem::exists(std::filesystem::path(dir) / "LOGO.PIC", ec)) {
             OpenCiv1Game g;
-            setupGame(g, 320, 200);
+            setupGame(g, 640, 480);
             Translator::instance().enabled = true;
             g.setResourcePath(dir);
             g.graphics.screen(0).clear(1);
@@ -1723,11 +1722,13 @@ static int titletest() {
 
             // Prove the logo contributed: pixels OUTSIDE the menu region must be
             // something other than the flat index-1 background (the logo art).
-            GBitmap fb(320, 200);
+            GBitmap fb(640, 480);
             fb.pixelsMut() = g.graphics.screen(0).pixels();
             std::size_t logoInk = 0;
-            for (int yy = 0; yy < 130; ++yy)            // above the menu (my=140)
-                for (int xx = 0; xx < 320; ++xx)
+            // Menu is positioned around y=280 (140*2 after 2x upscale of the
+            // 320x200 layout into 640x480). Scan above that for logo art.
+            for (int yy = 0; yy < 260; ++yy)
+                for (int xx = 0; xx < fb.width(); ++xx)
                     if (fb.getPixel(xx, yy) != 1) ++logoInk;
             chk(logoInk > 0, "logo contributed pixels outside the menu region");
 
@@ -1753,7 +1754,7 @@ static int titletest() {
 // pollKey -> navStep until ENTER (>=0) or ESC (-1). Prints the selected item.
 static int titleInteractive(const std::string& assetDir) {
     OpenCiv1Game g;
-    setupGame(g, 320, 200);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     if (!assetDir.empty()) {
         g.setResourcePath(assetDir);
@@ -1826,7 +1827,7 @@ static int introtest() {
     // (a) No-assets path: play() is a no-op, nextFrame is a no-op.
     {
         OpenCiv1Game g;
-        setupGame(g, 320, 200);
+        setupGame(g, 640, 480);
         // Leave g.resourcePath() at its default "." (no LOGO.PIC there).
         MainIntro& mi = g.mainIntro();
         chk(!mi.hasAssets(), "no DOS assets at default resourcePath()");
@@ -1848,7 +1849,7 @@ static int introtest() {
         if (!dir.empty() &&
             std::filesystem::exists(std::filesystem::path(dir) / "LOGO.PIC", ec)) {
             OpenCiv1Game g;
-            setupGame(g, 320, 200);
+            setupGame(g, 640, 480);
             g.setResourcePath(dir);
             Translator::instance().enabled = true;
             MainIntro& mi = g.mainIntro();
@@ -1868,8 +1869,8 @@ static int introtest() {
             chk(frames > 0, "nextFrame cycled through > 0 slides with assets");
             chk(frames == mi.slideCount(),
                 "nextFrame visited every planned slide");
-            chk(intermediateW == 320 && intermediateH == 200,
-                "intermediate intro screen is 320x200 (DOS native fb size)");
+            chk(intermediateW == 640 && intermediateH == 480,
+                "intermediate intro screen is 640x480 (native fb size; DOS 320x200 .PIC upscaled 2x)");
             std::printf("  (intro slideshow %d frames -> /tmp/intro.ppm)\n", frames);
         } else {
             std::printf("  (no DOS assets at OPENCIV1_DOS_ASSETS; real-intro sub-check skipped)\n");
@@ -1883,14 +1884,14 @@ static int introtest() {
     return fail ? 1 : 0;
 }
 
-// Interactive Chinese MainIntro slideshow (SDL). Uses the default 640x480 window
-// (overridable via --window WxH); the renderer's logical size stays at the
-// intro's native 320x200 framebuffer (letterboxed to keep the aspect ratio).
-// Advances on key/click/timer; ESC quits. Without DOS assets prints a fallback
-// message and returns (no-op).
+// Interactive Chinese MainIntro slideshow (SDL). Native 640x480 framebuffer +
+// window (the port's new logical size); each 320x200 .PIC is upscaled 2x by
+// MainIntro::nextFrame() to fill 640x400 in the 640x480 fb, with the caption
+// underneath. Advances on key/click/timer; ESC quits. Without DOS assets prints
+// a fallback message and returns (no-op).
 static int introInteractive(const std::string& assetDir) {
     OpenCiv1Game g;
-    setupGame(g, 320, 200);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     if (!assetDir.empty()) g.setResourcePath(assetDir);
 
@@ -1964,7 +1965,7 @@ static int citytest() {
     // center we override; easier: build a tiny world and find a non-water
     // non-arctic tile to use, then a water tile.
     OpenCiv1Game g;
-    setupGame(g, 480, 300);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     MiniWorld w(40, 30, 12345u);
     w.attachGame(g);
@@ -2021,7 +2022,7 @@ static int citytest() {
     // Render pixel-diff: with cities vs without.
     auto renderWithCities = [&](bool withCities) -> std::vector<uint8_t> {
         OpenCiv1Game gg;
-        setupGame(gg, 480, 300);
+        setupGame(gg, 640, 480);
         Translator::instance().enabled = true;
         MiniWorld ww(40, 30, 12345u);
         ww.attachGame(gg);
@@ -2044,7 +2045,7 @@ static int citytest() {
     // Translation pixel-diff: HUD "Cities: 0" (no cities, default state) — zh vs en.
     auto renderHud = [&](bool translate) -> std::vector<uint8_t> {
         OpenCiv1Game gg;
-        setupGame(gg, 480, 300);
+        setupGame(gg, 640, 480);
         Translator::instance().enabled = translate;
         MiniWorld ww(40, 30, 12345u);
         ww.attachGame(gg);
@@ -2079,7 +2080,7 @@ static int turntest() {
     auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
 
     OpenCiv1Game g;
-    setupGame(g, 480, 300);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     MiniWorld w(40, 30, 12345u);
     w.attachGame(g);
@@ -2146,7 +2147,7 @@ static int turntest() {
     // (f) HUD render: year + production line visible; Chinese vs English differs.
     auto renderHud = [&](bool translate) -> std::vector<uint8_t> {
         OpenCiv1Game gg;
-        setupGame(gg, 480, 300);
+        setupGame(gg, 640, 480);
         Translator::instance().enabled = translate;
         MiniWorld ww(40, 30, 12345u);
         ww.attachGame(gg);
@@ -2238,7 +2239,7 @@ static int playtest() {
     // Localization proof: render the world Chinese vs English; pixels must differ.
     auto render = [&](bool translate) -> std::vector<uint8_t> {
         OpenCiv1Game g;
-        setupGame(g, 480, 300);
+        setupGame(g, 640, 480);
         Translator::instance().enabled = translate;
         MiniWorld m(W, H, seed);
         m.draw(g.graphics, 1, 12);
@@ -2254,7 +2255,7 @@ static int playtest() {
 
     // The map region must have ink (terrain colours were drawn).
     {
-        GBitmap fb(480, 300);
+        GBitmap fb(640, 480);
         fb.pixelsMut() = zh;
         bool hasTerrain = false;
         for (auto px : fb.pixels()) if (px >= 200 && px <= 206) { hasTerrain = true; break; }
@@ -2284,7 +2285,7 @@ static int playtest() {
                 "TER257 tileset is 320x200");
             // Render one frame with the real tiles and dump it for eyeballing.
             OpenCiv1Game g;
-            setupGame(g, 480, 300);
+            setupGame(g, 640, 480);
             Translator::instance().enabled = true;
             m.draw(g.graphics, 1, 16);
             dumpPPM(g.graphics.screen(0), "/tmp/playmap.ppm");
@@ -2322,7 +2323,7 @@ static int minimaptest() {
     // return the rendered framebuffer pixels. Drives the same FrontEndFlow
     // path the integrated --game uses (so the minimap sees real cities/units).
     auto buildPlaying = [&](OpenCiv1Game& g, FrontEndFlow& flow) {
-        setupGame(g, 480, 300);
+        setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         flow.enterTitle();
         flow.handleKey(MenuBoxDialog::KeyEnter); // -> MAIN_MENU
@@ -2502,7 +2503,7 @@ static int maptest() {
         if (!dir.empty() &&
             std::filesystem::exists(std::filesystem::path(dir) / "TER257.PIC", ec)) {
             OpenCiv1Game g;
-            setupGame(g, 480, 300);
+            setupGame(g, 640, 480);
             Translator::instance().enabled = true;
             MiniWorld m(40, 30, 12345u);
             chk(m.loadTileset(dir), "real TER257.PIC loads from OPENCIV1_DOS_ASSETS");
@@ -2521,7 +2522,7 @@ static int maptest() {
             // Fallback path must still pass: colored-rect render produces
             // ink in the 200..210 palette range and the unit marker (209).
             OpenCiv1Game g;
-            setupGame(g, 480, 300);
+            setupGame(g, 640, 480);
             MiniWorld m(40, 30, 12345u);
             m.draw(g.graphics, 1, 12);
             const GBitmap& fb = g.graphics.screen(0);
@@ -2631,7 +2632,7 @@ static int realgentest() {
         if (!dir.empty() &&
             std::filesystem::exists(std::filesystem::path(dir) / "TER257.PIC", ec)) {
             OpenCiv1Game g;
-            setupGame(g, 480, 300);
+            setupGame(g, 640, 480);
             Translator::instance().enabled = true;
             MiniWorld w(80, 50, 0u);
             chk(w.useRealGenerator(g.mapManagement(), 12345u),
@@ -2651,7 +2652,7 @@ static int realgentest() {
             // Fallback: still exercise useRealGenerator + colored-rect draw so
             // the integration path is verified headlessly.
             OpenCiv1Game g;
-            setupGame(g, 480, 300);
+            setupGame(g, 640, 480);
             MiniWorld w(80, 50, 0u);
             chk(w.useRealGenerator(g.mapManagement(), 12345u),
                 "MiniWorld::useRealGenerator (fallback path) returns true");
@@ -2676,7 +2677,7 @@ static int realgentest() {
 // quit). Under the dummy SDL driver pollKey blocks for input — that's expected.
 static int playInteractive(const std::string& assetDir, bool realgen = false) {
     OpenCiv1Game g;
-    setupGame(g, 480, 300);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
 
     MiniWorld world(realgen ? 80 : 40, realgen ? 50 : 30, 12345u);
@@ -2760,7 +2761,7 @@ static int playInteractive(const std::string& assetDir, bool realgen = false) {
 // renders the colored-rect fallback. Used by `--play --assets <dir> --dump <ppm>`.
 static int playDump(const std::string& assetDir, const char* ppmPath, bool realgen = false) {
     OpenCiv1Game g;
-    setupGame(g, 480, 300);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     MiniWorld world(realgen ? 80 : 40, realgen ? 50 : 30, 12345u);
     if (realgen) world.useRealGenerator(g.mapManagement(), 12345u);
@@ -2788,7 +2789,7 @@ static int gameflowtest() {
     auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
 
     OpenCiv1Game g;
-    setupGame(g, 480, 300);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
 
     FrontEndFlow flow(g);
@@ -2864,7 +2865,7 @@ static int gameflowtest() {
     // (the Chinese HUD: turn/年份/tribe-named city/Production).
     auto renderPlaying = [&](bool translate) -> std::vector<uint8_t> {
         OpenCiv1Game gg;
-        setupGame(gg, 480, 300);
+        setupGame(gg, 640, 480);
         Translator::instance().enabled = translate;
         FrontEndFlow flow2(gg);
         flow2.enterTitle();
@@ -2892,7 +2893,7 @@ static int gameflowtest() {
         "PLAYING Chinese vs English pixels DIFFER (HUD is localized)");
 
     {
-        GBitmap fb(480, 300);
+        GBitmap fb(640, 480);
         fb.pixelsMut() = zh;
         dumpPPM(fb, "/tmp/gameflow_playing.ppm");
     }
@@ -2915,7 +2916,7 @@ static int gameflowtest() {
 // in one command.
 static int gameInteractive(const std::string& assetDir) {
     OpenCiv1Game g;
-    setupGame(g, 480, 300);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     if (!assetDir.empty()) g.setResourcePath(assetDir);
 
@@ -3108,7 +3109,7 @@ static int aitest() {
     // (1) setupCivs: human + 6 AI, all tribes distinct.
     {
         OpenCiv1Game g;
-        setupGame(g, 480, 300);
+        setupGame(g, 640, 480);
         UnitManagement& um = g.unitManagement();
         um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 6);
         chk(um.civs().size() == 7, "setupCivs(0, 6) -> civs().size() == 7");
@@ -3134,7 +3135,7 @@ static int aitest() {
     // (2) placeStartingPositions: deterministic, on-land, well-separated.
     {
         OpenCiv1Game g;
-        setupGame(g, 480, 300);
+        setupGame(g, 640, 480);
         // Generate a real Civ1 80x50 world we can sample terrain from.
         MapManagement& mm = g.mapManagement();
         mm.generate(int32_t(0xC1110042u));
@@ -3171,7 +3172,7 @@ static int aitest() {
     // (3) FrontEndFlow integration: after PLAYING, units().size() >= 7.
     {
         OpenCiv1Game g;
-        setupGame(g, 480, 300);
+        setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         FrontEndFlow flow(g);
         flow.enterTitle();
@@ -3192,7 +3193,7 @@ static int aitest() {
     // cleared. The two pixel buffers MUST differ — AI markers contribute ink.
     auto renderPlaying = [&](bool clearAi) -> std::vector<uint8_t> {
         OpenCiv1Game g;
-        setupGame(g, 480, 300);
+        setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         FrontEndFlow flow(g);
         flow.enterTitle();
@@ -3229,7 +3230,7 @@ static int aitest() {
         // A fresh GBitmap would only carry the default VGA ramp and so render
         // the high indices as washed-out grey.
         OpenCiv1Game gd;
-        setupGame(gd, 480, 300);
+        setupGame(gd, 640, 480);
         Translator::instance().enabled = true;
         FrontEndFlow fd(gd);
         fd.enterTitle();
@@ -3264,7 +3265,7 @@ static int aibehaviortest() {
     auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
 
     OpenCiv1Game g;
-    setupGame(g, 480, 300);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     FrontEndFlow flow(g);
     flow.enterTitle();
@@ -3428,7 +3429,7 @@ static int combattest() {
     // until shields >= cost; ONE new Militia must appear at the city's tile.
     {
         OpenCiv1Game g;
-        setupGame(g, 320, 200);
+        setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         MiniWorld w(20, 20, 7777u);
         w.attachGame(g);
@@ -3467,7 +3468,7 @@ static int combattest() {
     // (e) HUD: a combat triggers a banner; Chinese vs English pixels differ.
     auto renderHud = [&](bool translate) -> std::vector<uint8_t> {
         OpenCiv1Game gg;
-        setupGame(gg, 480, 300);
+        setupGame(gg, 640, 480);
         Translator::instance().enabled = translate;
         MiniWorld ww(30, 20, 7777u);
         ww.attachGame(gg);
@@ -3521,7 +3522,7 @@ static int cityviewtest() {
 
     // (1) Set up integrated PLAYING + one end-of-turn pass (AI founds capitals).
     OpenCiv1Game g;
-    setupGame(g, 480, 300);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     // Honor OPENCIV1_DOS_ASSETS for the optional CBACK*.PIC backdrop.
     if (const char* env = std::getenv("OPENCIV1_DOS_ASSETS"); env && *env) {
@@ -3557,7 +3558,7 @@ static int cityviewtest() {
                         const char* overrideName = nullptr) -> std::vector<uint8_t> {
         // Build a fresh game each call so we get an independent render state.
         OpenCiv1Game gg;
-        setupGame(gg, 480, 300);
+        setupGame(gg, 640, 480);
         Translator::instance().enabled = translate;
         FrontEndFlow f2(gg);
         f2.enterTitle();
@@ -3602,13 +3603,16 @@ static int cityviewtest() {
     chk(!cv.isOpen(), "close() -> isOpen() == false");
     chk(cv.cityId() == -1, "close() resets cityId()");
 
-    // (5) Click-outside the panel closes; click-inside leaves it open.
+    // (5) Click-outside-canvas closes; click-inside-canvas leaves it open.
+    // After the FOV refactor the cityView fills the whole 640x480 canvas
+    // (CBACK top-left + mini-grid upper-right + info panel along the bottom),
+    // so only an out-of-canvas click is treated as "outside".
     cv.open(aiCityId);
-    chk(cv.handleClick(0, 0), "click outside panel handled");
-    chk(!cv.isOpen(), "click outside panel closed the view");
+    chk(cv.handleClick(-1, -1), "click outside canvas handled");
+    chk(!cv.isOpen(), "click outside canvas closed the view");
     cv.open(aiCityId);
-    chk(cv.handleClick(160, 100), "click inside panel handled");
-    chk(cv.isOpen(), "click inside panel does NOT close the view");
+    chk(cv.handleClick(160, 100), "click inside canvas handled");
+    chk(cv.isOpen(), "click inside canvas does NOT close the view");
     // Esc key closes.
     chk(cv.handleKey(SdlPresenter::KeyEsc), "Esc key handled");
     chk(!cv.isOpen(), "Esc key closed the view");
@@ -3635,7 +3639,7 @@ static int cityviewtest() {
     // that a fresh GBitmap starts with).
     if (const char* env = std::getenv("OPENCIV1_DOS_ASSETS"); env && *env) {
         OpenCiv1Game gd;
-        setupGame(gd, 480, 300);
+        setupGame(gd, 640, 480);
         Translator::instance().enabled = true;
         gd.setResourcePath(resolveAssetDir(env));
         FrontEndFlow fd(gd);
@@ -3683,7 +3687,7 @@ static int aimovetest() {
 
     // (1) Set up integrated PLAYING (7 civs) + one end-of-turn -> 6 AI cities.
     OpenCiv1Game g;
-    setupGame(g, 480, 300);
+    setupGame(g, 640, 480);
     Translator::instance().enabled = true;
     FrontEndFlow flow(g);
     flow.enterTitle();
@@ -3822,7 +3826,7 @@ static int savetest() {
 
     // ---- (1)+(2) build a known PLAYING state ----------------------------
     OpenCiv1Game g1;
-    setupGame(g1, 480, 300);
+    setupGame(g1, 640, 480);
     Translator::instance().enabled = true;
     FrontEndFlow flow1(g1);
     flow1.enterTitle();
@@ -3878,7 +3882,7 @@ static int savetest() {
 
     // ---- (4)+(5) fresh game, then load --------------------------------
     OpenCiv1Game g2;
-    setupGame(g2, 480, 300);
+    setupGame(g2, 640, 480);
     Translator::instance().enabled = true;
     FrontEndFlow flow2(g2);
     bool loadOk = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
@@ -3947,7 +3951,7 @@ static int improvementtest() {
     // (1)+(2) Build Road then Build Irrigation; verify state transitions.
     {
         OpenCiv1Game g;
-        setupGame(g, 480, 300);
+        setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         FrontEndFlow flow(g);
         flow.enterTitle();
@@ -4040,7 +4044,7 @@ static int improvementtest() {
     {
         const char* savePath = "/tmp/openciv1pp_improvementtest.sav";
         OpenCiv1Game g1;
-        setupGame(g1, 480, 300);
+        setupGame(g1, 640, 480);
         Translator::instance().enabled = true;
         FrontEndFlow flow1(g1);
         flow1.enterTitle();
@@ -4091,7 +4095,7 @@ static int improvementtest() {
         chk(sok, "save-roundtrip: saveToFile succeeded");
 
         OpenCiv1Game g2;
-        setupGame(g2, 480, 300);
+        setupGame(g2, 640, 480);
         Translator::instance().enabled = true;
         FrontEndFlow flow2(g2);
         bool lok = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
@@ -4112,7 +4116,7 @@ static int improvementtest() {
     // (4) Render translate-on vs translate-off -> pixels differ (Chinese HUD).
     {
         OpenCiv1Game g;
-        setupGame(g, 480, 300);
+        setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         FrontEndFlow flow(g);
         flow.enterTitle();
@@ -4196,7 +4200,7 @@ static int buildingtest() {
     // ---- (1)+(2)+(3): build a Barracks, verify ownership + dup-refusal ----
     {
         OpenCiv1Game g;
-        setupGame(g, 320, 200);
+        setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         MiniWorld w(20, 20, 4242u);
         w.attachGame(g);
@@ -4332,7 +4336,7 @@ static int buildingtest() {
     {
         const char* savePath = "/tmp/openciv1pp_buildingtest.sav";
         OpenCiv1Game g1;
-        setupGame(g1, 320, 200);
+        setupGame(g1, 640, 480);
         Translator::instance().enabled = true;
         MiniWorld w(20, 20, 9999u);
         w.attachGame(g1);
@@ -4358,7 +4362,7 @@ static int buildingtest() {
         chk(sok, "(5) saveToFile succeeded (v4 header)");
 
         OpenCiv1Game g2;
-        setupGame(g2, 320, 200);
+        setupGame(g2, 640, 480);
         bool lok = g2.gameLoadAndSave().loadFromFile(savePath, nullptr);
         chk(lok, "(5) loadFromFile succeeded");
         const auto& cv = g2.unitManagement().cities();
@@ -4385,7 +4389,7 @@ static int buildingtest() {
     {
         auto render = [&](bool translate) -> std::vector<uint8_t> {
             OpenCiv1Game g;
-            setupGame(g, 480, 300);
+            setupGame(g, 640, 480);
             Translator::instance().enabled = translate;
             MiniWorld ww(40, 30, 1111u);
             ww.attachGame(g);
@@ -4443,7 +4447,7 @@ static int techtest() {
     // (1) initCivs sets a clean slate.
     {
         OpenCiv1Game g;
-        setupGame(g, 480, 300);
+        setupGame(g, 640, 480);
         auto& tr = g.techResearch();
         tr.initCivs(7);
         chk(tr.civCount() == 7, "initCivs(7) -> civCount() == 7");
@@ -4458,7 +4462,7 @@ static int techtest() {
 
     // (2) addPoints unlocks at threshold + auto-picks next.
     {
-        OpenCiv1Game g; setupGame(g, 480, 300);
+        OpenCiv1Game g; setupGame(g, 640, 480);
         auto& tr = g.techResearch();
         tr.initCivs(7);
         const int alphaCost = tr.civResearchCost(0); // = 10
@@ -4473,7 +4477,7 @@ static int techtest() {
 
     // (3) Tech-gate on city production.
     {
-        OpenCiv1Game g; setupGame(g, 480, 300);
+        OpenCiv1Game g; setupGame(g, 640, 480);
         Translator::instance().enabled = true;
         auto& tr = g.techResearch();
         auto& um = g.unitManagement();
@@ -4503,7 +4507,7 @@ static int techtest() {
     // (4) Save/load round-trip preserves per-civ tech state.
     {
         const char* savePath = "/tmp/openciv1pp_techtest.sav";
-        OpenCiv1Game g1; setupGame(g1, 480, 300);
+        OpenCiv1Game g1; setupGame(g1, 640, 480);
         Translator::instance().enabled = true;
         FrontEndFlow flow1(g1);
         flow1.enterTitle();
@@ -4523,7 +4527,7 @@ static int techtest() {
         bool saveOk = g1.gameLoadAndSave().saveToFile(savePath, &flow1);
         chk(saveOk, "tech round-trip: saveToFile succeeded");
 
-        OpenCiv1Game g2; setupGame(g2, 480, 300);
+        OpenCiv1Game g2; setupGame(g2, 640, 480);
         Translator::instance().enabled = true;
         FrontEndFlow flow2(g2);
         bool loadOk = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
@@ -4545,7 +4549,7 @@ static int techtest() {
     // (5) HUD render: translate-on Chinese vs -off English differ.
     std::size_t diffPixels = 0;
     auto renderHud = [&](bool translateOn) -> std::vector<uint8_t> {
-        OpenCiv1Game g; setupGame(g, 480, 300);
+        OpenCiv1Game g; setupGame(g, 640, 480);
         Translator::instance().enabled = translateOn;
         FrontEndFlow flow(g);
         flow.enterTitle();
@@ -4592,9 +4596,9 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--game")) { gameMode = true; }
         else if (!std::strcmp(argv[i], "--window") && i + 1 < argc) {
             // --window WxH: override the default 640x480 SDL window size. The
-            // renderer's logical size stays at the framebuffer (e.g. 320x200
-            // for the intro / title; 480x300 for MiniWorld) so SDL letterboxes
-            // the fb into the window with the correct aspect ratio.
+            // renderer's logical size always equals the framebuffer (now 640x480
+            // native); when window == fb the rendering is 1:1, otherwise SDL
+            // scales the fb into the window with the correct aspect ratio.
             const char* spec = argv[++i];
             int w = 0, h = 0;
             if (std::sscanf(spec, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
@@ -4655,7 +4659,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--menu")) { return menuInteractive(); }
         else if (!std::strcmp(argv[i], "--menuflow")) { return menuflowInteractive(); }
         else if (!std::strcmp(argv[i], "--drawscene") && i + 1 < argc) {
-            OpenCiv1Game g; setupGame(g, 320, 200); drawScene(g);
+            OpenCiv1Game g; setupGame(g, 640, 480); drawScene(g);
             dumpPPM(g.graphics.screen(0), argv[++i]);
             std::printf("[drawscene] wrote %s\n", argv[i]); return 0;
         }

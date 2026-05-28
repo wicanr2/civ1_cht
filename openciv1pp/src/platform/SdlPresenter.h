@@ -5,6 +5,12 @@
 // the engine and localization never reference it, so the backend can be swapped
 // without touching game logic. Offscreen rendering (the PPM dumper) does not use
 // this at all.
+//
+// Native framebuffer: 640x480 (the port's new logical size — see the
+// 320x200->640x480 upscale push in main.cpp). When fb == 640x480 the renderer's
+// logical size equals the window size and there's no letterbox; if a caller
+// still passes a smaller fb (e.g. 320x200 for the intro slideshow), SDL
+// letterboxes/scales the fb into the window.
 #pragma once
 #include "../graphics/GBitmap.h"
 #include <functional>
@@ -13,16 +19,14 @@ namespace oc1 {
 
 class SdlPresenter {
 public:
-    // Default window size: 640x480. The renderer's logical size is set to the
-    // framebuffer's fb (fbWidth x fbHeight) so SDL letterboxes/scales the
-    // palette framebuffer into the window with the correct aspect ratio.
+    // Default window size: 640x480 (matches the native framebuffer).
     static constexpr int DefaultWindowW = 640;
     static constexpr int DefaultWindowH = 480;
 
     // fbWidth/fbHeight = framebuffer (logical) size. winW/winH = SDL window
     // size on screen (defaults to 640x480; pass 0 to fall back to defaults).
-    // scale is retained for backward compatibility — if winW<=0 and scale>0,
-    // window becomes fbWidth*scale x fbHeight*scale.
+    // When fb == window the rendering is 1:1; otherwise SDL_RenderSetLogicalSize
+    // scales/letterboxes the fb into the window.
     bool init(const char* title, int fbWidth, int fbHeight,
               int winW = DefaultWindowW, int winH = DefaultWindowH);
     void shutdown();
