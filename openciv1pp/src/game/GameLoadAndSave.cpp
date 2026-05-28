@@ -95,11 +95,13 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     std::ofstream os(path, std::ios::binary);
     if (!os) return false;
 
-    // Header. v4 adds per-city {productionKind, productionBuildingType,
+    // Header. v5 adds per-city {population, food, foodPerTurn} for the
+    // food + population growth slice (closes the Granary loop).
+    // v4 added per-city {productionKind, productionBuildingType,
     // ownedBuildings list} + per-unit veteran flag for the buildings slice.
     // v3 added the improvements grid + per-unit work state.
     // v2 added per-civ tech-tree state; v1 was the pre-tech baseline.
-    os << "OpenCiv1pp savegame v4\n";
+    os << "OpenCiv1pp savegame v5\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -180,6 +182,13 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
         if (first) os << "-"; // sentinel for "no owned buildings"
         os << "\n";
     }
+    // v5: per-city food/population state, one line per city. v1..v4 readers
+    // skip the cityfood key (the istream lookup just falls through); v5
+    // readers restore population/food/foodPerTurn from these lines.
+    for (const auto& c : cities) {
+        os << "cityfood " << c.id << " " << c.population << " "
+           << c.food << " " << c.foodPerTurn << "\n";
+    }
 
     // Terrain bytes (80*50 = 4000 bytes -> 8000 hex chars on one line).
     os << "terrain ";
@@ -245,7 +254,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     if (header != "OpenCiv1pp savegame v1" &&
         header != "OpenCiv1pp savegame v2" &&
         header != "OpenCiv1pp savegame v3" &&
-        header != "OpenCiv1pp savegame v4") return false;
+        header != "OpenCiv1pp savegame v4" &&
+        header != "OpenCiv1pp savegame v5") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -266,6 +276,11 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     struct CityBldRow { int cityId; int prodKind; int prodBuildingType;
                         std::vector<int> owned; };
     std::vector<CityBldRow> cityBldRows;
+    // v5: per-city food/population state, applied after the cities vector
+    // is built. v1..v4 saves don't emit these lines -> defaults remain
+    // (population=1, food=0, foodPerTurn=0 from City's struct defaults).
+    struct CityFoodRow { int cityId; int population; int food; int foodPerTurn; };
+    std::vector<CityFoodRow> cityFoodRows;
 
     std::string line;
     while (std::getline(is, line)) {
@@ -333,6 +348,11 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             if (!rest.empty() && rest.front() == ' ') rest.erase(0, 1);
             c.name = rest;
             cities.push_back(std::move(c));
+        }
+        else if (key == "cityfood") {
+            CityFoodRow r{};
+            iss >> r.cityId >> r.population >> r.food >> r.foodPerTurn;
+            cityFoodRows.push_back(r);
         }
         else if (key == "citybld") {
             CityBldRow r;
@@ -426,6 +446,15 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             c.productionBuildingType = BuildingType(r.prodBuildingType);
             c.ownedBuildings.clear();
             for (int b : r.owned) c.ownedBuildings.insert(BuildingType(b));
+        }
+        // v5: apply per-city food/population state on top of the restored
+        // cities. Absent in v1/v2/v3/v4 saves -> defaults (1/0/0) hold.
+        for (const auto& r : cityFoodRows) {
+            if (r.cityId < 0 || std::size_t(r.cityId) >= cv.size()) continue;
+            City& c = cv[std::size_t(r.cityId)];
+            c.population  = (r.population >= 1) ? r.population : 1;
+            c.food        = r.food;
+            c.foodPerTurn = r.foodPerTurn;
         }
     }
 

@@ -190,6 +190,23 @@ struct City {
     bool hasBuilding(BuildingType b) const {
         return ownedBuildings.find(b) != ownedBuildings.end();
     }
+
+    // ---- Food + population growth (Civ1 food box / ActualSize) ----------
+    // Faithful subset of CityWorker.cs FoodCount + ActualSize + the per-tile
+    // GetCityResourceCount food fan-out. Civ1 growth math:
+    //   - Each turn the city accumulates (foodPerTurn) into `food`,
+    //     where foodPerTurn = sum(yield over worked tiles) - population*2.
+    //   - When food >= growthThreshold = (population+1)*10 the city grows
+    //     (population++). Granary halves the threshold (*5) and retains
+    //     HALF the threshold's worth on growth (rest of the box keeps food).
+    //   - When food < 0 and population > 1, population shrinks by 1 and
+    //     food resets to 0 (faithful Civ1 starvation behaviour).
+    // foodPerTurn is recomputed each turn (not authoritative across saves)
+    // but kept on the struct so CityView can show the current per-turn
+    // delta without re-running the full tile-yield pass for the renderer.
+    int population = 1;
+    int food = 0;
+    int foodPerTurn = 0;
 };
 
 class UnitManagement {

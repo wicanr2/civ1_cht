@@ -70,6 +70,24 @@ public:
     // comment above for the stubbing rationale.
     static int shieldYield(int adjacentGoodTiles);
 
+    // ---- Food yield helpers (Civ1 standard tile food values) -------------
+    // Per-tile baseline food yield (Civ1 standard, sourced from the manual
+    // + community wikis):
+    //   Grassland=2 Plains=1 Forest=1 Hills=1 Mountains=0 Desert=0
+    //   Tundra=1   Arctic=0 Swamp=1   Jungle=1 Water=1  River=2
+    // The C# CityWorker.GetCityResourceCount has more fan-out (special
+    // resources, government modifiers, ...) — out of scope here.
+    static int tileFoodYield(int terrainEnum);
+    // Irrigation +1 food bonus on Grassland/Plains/Desert/River tiles.
+    // Mirrors the C# TerrainModifications[t].IrrigationEffect == -2 guard
+    // that gates the BUILD-IRRIGATION menu entry to those terrains.
+    static bool irrigationApplies(int terrainEnum);
+    // Per-city per-turn food production summed over the city tile + the 4
+    // cardinal neighbors (a simplified stand-in for the full 21-tile
+    // "fat-cross" worker assignment — see the // TODO(port) below).
+    // Returns sum-of-food (BEFORE subtracting population*2).
+    int cityFoodGross(int cx, int cy) const;
+
 private:
     OpenCiv1Game& p;
 };

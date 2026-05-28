@@ -5,6 +5,7 @@
 #include "CityView.h"
 #include "OpenCiv1Game.h"
 #include "UnitManagement.h"
+#include "CheckPlayerTurn.h"
 #include "TechResearch.h"
 #include "MainCode.h"
 #include "MiniWorld.h"
@@ -240,10 +241,17 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         }
     }
 
-    // Population = ActualSize == city.units + 1 (a freshly-founded city has
-    // population 1). MIRRORS the C# F19_0000_111f_DrawCityPopulation, which
-    // iterates city.ActualSize and draws one POP sprite per point.
-    int population = std::max(1, city.units + 1);
+    // Population = ActualSize, now driven by city.population (set by
+    // CheckPlayerTurn's per-turn food/growth pass). Mirrors the C#
+    // F19_0000_111f_DrawCityPopulation, which iterates city.ActualSize and
+    // draws one POP sprite per point. Floor at 1 (a city always has >= 1
+    // pop; single-pop starvation just clamps food at 0).
+    int population = std::max(1, city.population);
+    // Growth threshold for the current pop (Granary halves it). Shown as
+    // "<food>/<threshold>" in the 食物 line so the player can read the
+    // distance to growth at a glance.
+    bool hasGranary = city.hasBuilding(BuildingType::Granary);
+    int growthThreshold = (city.population + 1) * (hasGranary ? 5 : 10);
 
     // Founded label.
     int yFound = city.foundedTurn; (void)yr;
@@ -267,15 +275,34 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         drawLabelValue(infoY, "Population:", buf);
     }
     {
+        // 食物: <food>/<threshold> — current food box + growth threshold,
+        // both in food units. Granary cities show the halved threshold.
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%d/%d", city.food, growthThreshold);
+        drawLabelValue(infoY + lineH, "Food:", buf);
+    }
+    {
+        // 食物產量: ±N — current per-turn delta (gross food - pop*2).
+        // Recompute from the live terrain provider so it matches whatever
+        // the next end-of-turn pass will apply (foodPerTurn is updated
+        // there too, but a fresh value here keeps the display in sync
+        // even when the field hasn't been refreshed since save/load).
+        int gross = p.checkPlayerTurn().cityFoodGross(city.x, city.y);
+        int delta = gross - city.population * 2;
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%+d", delta);
+        drawLabelValue(infoY + lineH * 2, "Food per turn:", buf);
+    }
+    {
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%d", yFound);
-        drawLabelValue(infoY + lineH, "Founded:", buf);
+        drawLabelValue(infoY + lineH * 3, "Founded:", buf);
     }
     {
         // Owner tribe name — translate (e.g. "Romans" -> the Chinese form
         // when the language pack has it).
         std::string tr = Translator::instance().translate(ownerName);
-        drawLabelValue(infoY + lineH * 2, "Owner:", tr);
+        drawLabelValue(infoY + lineH * 4, "Owner:", tr);
     }
     {
         // Production line: SHIELDS/COST + the English key of what's being
@@ -291,7 +318,7 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         std::string whatTr = Translator::instance().translate(what);
         std::snprintf(buf, sizeof(buf), "%s %d/%d", whatTr.c_str(),
                       city.shields, city.production);
-        drawLabelValue(infoY + lineH * 3, "Production:", buf);
+        drawLabelValue(infoY + lineH * 5, "Production:", buf);
     }
     // "Researching: <tech>  (pts/cost)" — the owner civ's current research
     // target (Translator turns the tech English key into Chinese). Skipped
@@ -305,7 +332,7 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
                           p.techResearch().civPoints(city.owner),
                           p.techResearch().civResearchCost(city.owner));
             std::string val = Translator::instance().translate(nameKey) + buf;
-            drawLabelValue(infoY + lineH * 4, "Researching:", val);
+            drawLabelValue(infoY + lineH * 6, "Researching:", val);
         }
     }
     {
@@ -321,7 +348,7 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
             first = false;
         }
         if (val.empty()) val = "-";
-        drawLabelValue(infoY + lineH * 5, "Buildings:", val);
+        drawLabelValue(infoY + lineH * 7, "Buildings:", val);
     }
 
     // 5) Population dots — one warm yellow dot per population point, drawn in
@@ -329,7 +356,7 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
     //    drawn at (24, 140) in F19_0000_111f_DrawCityPopulation; we use small
     //    coloured dots instead of POP.PIC sprites — see header for the stub).
     {
-        int popY = infoY + lineH * 6 + 2;
+        int popY = infoY + lineH * 8 + 2;
         int popX = infoX;
         for (int i = 0; i < population && i < 24; ++i) {
             screen.fillRect(Rect{popX, popY, 6, 8}, 166);

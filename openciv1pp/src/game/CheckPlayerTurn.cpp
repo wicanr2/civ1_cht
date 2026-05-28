@@ -52,6 +52,62 @@ int CheckPlayerTurn::shieldYield(int adjacentGoodTiles) {
     return s;
 }
 
+// Civ1-standard per-tile food yield (manual + community wikis).
+int CheckPlayerTurn::tileFoodYield(int terrainEnum) {
+    switch (Terrain(terrainEnum)) {
+        case Terrain::Grassland: return 2;
+        case Terrain::Plains:    return 1;
+        case Terrain::Forest:    return 1;
+        case Terrain::Hills:     return 1;
+        case Terrain::Mountains: return 0;
+        case Terrain::Desert:    return 0;
+        case Terrain::Tundra:    return 1;
+        case Terrain::Arctic:    return 0;
+        case Terrain::Swamp:     return 1;
+        case Terrain::Jungle:    return 1;
+        case Terrain::Water:     return 1;
+        case Terrain::River:     return 2;
+        default:                 return 0;
+    }
+}
+
+bool CheckPlayerTurn::irrigationApplies(int terrainEnum) {
+    Terrain t = Terrain(terrainEnum);
+    return t == Terrain::Grassland || t == Terrain::Plains ||
+           t == Terrain::Desert    || t == Terrain::River;
+}
+
+// Sum of food yield over the city tile + 4 cardinal neighbors (simplified
+// stand-in for the full 21-tile "fat-cross" worker assignment, see
+// // TODO(port) below). Adds +1 food per irrigated, irrigation-compatible
+// tile (mirrors C# TerrainModifications.IrrigationEffect).
+int CheckPlayerTurn::cityFoodGross(int cx, int cy) const {
+    int gross = 0;
+    const auto& tprov = p.unitManagement().terrainProvider();
+    if (!tprov) {
+        // No terrain provider wired (rare headless path) — assume the city
+        // is on a Grassland tile (yield 2) with 4 Grassland neighbors. Same
+        // 10-food/turn baseline used by the foodtest scaffolding.
+        return 10;
+    }
+    const auto& mm = p.mapManagement();
+    static const int kDx[5] = { 0,  0, 0, -1, 1 };
+    static const int kDy[5] = { 0, -1, 1,  0, 0 };
+    for (int i = 0; i < 5; ++i) {
+        int tx = cx + kDx[i], ty = cy + kDy[i];
+        Terrain t = tprov(tx, ty);
+        int y = tileFoodYield(int(t));
+        // Irrigation bonus: +1 food on compatible terrain (faithful Civ1).
+        uint8_t imp = mm.getImprovements(tx, ty);
+        if ((imp & MapManagement::kImprovementIrrigation) &&
+            irrigationApplies(int(t))) {
+            y += 1;
+        }
+        gross += y;
+    }
+    return gross;
+}
+
 int CheckPlayerTurn::processEndOfTurn() {
     auto& um = p.unitManagement();
     auto& cities = um.citiesMut();
@@ -189,6 +245,39 @@ int CheckPlayerTurn::processEndOfTurn() {
                     }
             }
             c.shields += shieldYield(adjGood);
+
+            // ---- FOOD + POPULATION GROWTH (Civ1 food box) ----------------
+            // Faithful Civ1 growth math (simplified worker fan-out to the
+            // city tile + 4 cardinal neighbors — full 21-tile "fat cross"
+            // is // TODO(port)):
+            //   foodPerTurn = cityFoodGross(c.x,c.y) - population*2
+            //   food += foodPerTurn
+            //   growthThreshold = (population+1)*10  (Granary halves -> *5)
+            //   if food >= threshold: population++; if Granary food=thr/2
+            //                                       else  food = 0
+            //   if food < 0 and population > 1: population--, food = 0
+            // (single-pop starvation just clamps food at 0; deeper city-loss
+            // mechanics are out of scope.)
+            int gross = cityFoodGross(c.x, c.y);
+            c.foodPerTurn = gross - c.population * 2;
+            c.food += c.foodPerTurn;
+            bool hasGranary = c.hasBuilding(BuildingType::Granary);
+            int threshold = (c.population + 1) * (hasGranary ? 5 : 10);
+            if (c.food >= threshold) {
+                c.population += 1;
+                if (hasGranary) {
+                    // New threshold for the NEW population (post-growth).
+                    int newThr = (c.population + 1) * 5;
+                    c.food = newThr / 2; // Granary keeps half-full storage
+                } else {
+                    c.food = 0;
+                }
+            } else if (c.food < 0) {
+                if (c.population > 1) {
+                    c.population -= 1;
+                }
+                c.food = 0;
+            }
 
             // Threshold-triggered production. Civ1: a city builds EITHER a
             // unit OR a building per cycle. We branch on c.productionKind:

@@ -4427,6 +4427,208 @@ static int buildingtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Food + population growth (--foodtest) ------------------
+// Verifies the food/population/growth slice end-to-end:
+//   (1) Initial city: population=1, food=0, foodPerTurn=0.
+//   (2) Grow loop: with the city centered on a Grassland tile and 4
+//       Grassland neighbors (gross=10 food, eats 2 -> +8/turn), the city
+//       reaches population 2 in a bounded number of EOTs and food drops
+//       BELOW the new threshold (2+1)*10=30 (Granary-off path).
+//   (3) Granary city grows in FEWER turns than the no-Granary baseline
+//       (threshold halved from 20 to 10).
+//   (4) Irrigation on the city tile increases foodPerTurn by +1 (Grassland
+//       baseline + irrigation bonus +1).
+//   (5) Save/load v5 round-trip: population/food/foodPerTurn preserved.
+//   (6) CityView render: translate-on vs translate-off pixels differ
+//       (Chinese 食物 / 人口 / 食物產量 vs the English originals).
+static int foodtest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // Helper: build a controlled grassland environment around (cx,cy) and
+    // found a city for player 0. Returns the cityId (always 0).
+    auto setupGrasslandCity = [&](OpenCiv1Game& g, MiniWorld& w,
+                                  int cx, int cy) -> int {
+        // Paint a 3x3 grassland patch around the city so the cardinal
+        // neighbors all yield 2 food (foodPerTurn = 5*2 - 1*2 = 8).
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx)
+                w.setTerrainAt(cx + dx, cy + dy, Terrain::Grassland);
+        std::string nm;
+        g.unitManagement().buildCity(cx, cy, 0, nm);
+        return 0;
+    };
+
+    // ---- (1) initial state ------------------------------------------------
+    {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        Translator::instance().enabled = true;
+        MiniWorld w(20, 20, 4242u);
+        w.attachGame(g);
+        int cid = setupGrasslandCity(g, w, 10, 10);
+        const City& c = g.unitManagement().cities()[cid];
+        chk(c.population == 1, "(1) new city: population == 1");
+        chk(c.food == 0,       "(1) new city: food == 0");
+        chk(c.foodPerTurn == 0,"(1) new city: foodPerTurn == 0 (not yet ticked)");
+    }
+
+    // Helper: count turns to first growth (pop becomes 2). Returns -1 if
+    // the budget runs out. `withGranary` inserts a Granary BEFORE the loop
+    // starts so the halved threshold applies from the very first tick.
+    auto turnsToGrow = [&](bool withGranary) -> int {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        Translator::instance().enabled = true;
+        MiniWorld w(20, 20, 4242u);
+        w.attachGame(g);
+        int cid = setupGrasslandCity(g, w, 10, 10);
+        if (withGranary) {
+            g.unitManagement().citiesMut()[cid].ownedBuildings.insert(
+                BuildingType::Granary);
+        }
+        for (int t = 1; t <= 100; ++t) {
+            g.checkPlayerTurn().processEndOfTurn();
+            if (g.unitManagement().cities()[cid].population >= 2) return t;
+        }
+        return -1;
+    };
+
+    // ---- (2) grow loop (no Granary) -------------------------------------
+    int turnsNoGran = turnsToGrow(false);
+    chk(turnsNoGran > 0, "(2) city grew to population 2 within 100 turns");
+    // Sanity bound: gross=10, eats 2, +8/turn; threshold for pop=1 is
+    // (1+1)*10=20 -> grows on turn 3 (food goes 8,16,24 -> growth). Allow
+    // [2,5] as a loose band to absorb any future tweaks.
+    chk(turnsNoGran >= 2 && turnsNoGran <= 5,
+        "(2) growth happens in 2..5 turns (Grass+4xGrass, no Granary)");
+
+    {
+        // Confirm the post-growth state: pop=2, food < new threshold (30).
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        MiniWorld w(20, 20, 4242u);
+        w.attachGame(g);
+        int cid = setupGrasslandCity(g, w, 10, 10);
+        for (int t = 0; t < turnsNoGran; ++t)
+            g.checkPlayerTurn().processEndOfTurn();
+        const City& c = g.unitManagement().cities()[cid];
+        chk(c.population == 2, "(2) post-growth pop == 2");
+        int newThr = (c.population + 1) * 10;
+        chk(c.food < newThr, "(2) post-growth food < new threshold");
+    }
+
+    // ---- (3) Granary halves turns-to-grow -------------------------------
+    int turnsWithGran = turnsToGrow(true);
+    chk(turnsWithGran > 0, "(3) Granary city also grows within 100 turns");
+    chk(turnsWithGran <= turnsNoGran,
+        "(3) Granary city grows in <= turns of no-Granary baseline");
+    chk(turnsWithGran < turnsNoGran || turnsNoGran <= 2,
+        "(3) Granary STRICTLY faster when no-Granary baseline > 2 turns");
+
+    // ---- (4) Irrigation +1 foodPerTurn -----------------------------------
+    {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        MiniWorld w(20, 20, 4242u);
+        w.attachGame(g);
+        int cid = setupGrasslandCity(g, w, 10, 10);
+        // Baseline foodPerTurn after one EOT (no irrigation).
+        g.checkPlayerTurn().processEndOfTurn();
+        int fptBase = g.unitManagement().cities()[cid].foodPerTurn;
+
+        // Build irrigation on the city tile via MapManagement.
+        OpenCiv1Game g2;
+        setupGame(g2, 640, 480);
+        MiniWorld w2(20, 20, 4242u);
+        w2.attachGame(g2);
+        int cid2 = setupGrasslandCity(g2, w2, 10, 10);
+        g2.mapManagement().setImprovementFlag(10, 10,
+            MapManagement::kImprovementIrrigation);
+        // Also paint the underlying MapManagement terrain to Grassland on
+        // the city tile so the irrigationApplies() check passes (the
+        // terrain provider goes through MiniWorld, which we already set,
+        // so this is belt-and-braces).
+        g2.mapManagement().SetTerrainType(10, 10, Terrain::Grassland);
+        g2.checkPlayerTurn().processEndOfTurn();
+        int fptIrr = g2.unitManagement().cities()[cid2].foodPerTurn;
+
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "(4) irrigation raises foodPerTurn (no-irr=%d, irr=%d)",
+                      fptBase, fptIrr);
+        chk(fptIrr > fptBase, buf);
+    }
+
+    // ---- (5) Save/load v5 round-trip ------------------------------------
+    {
+        const char* savePath = "/tmp/openciv1pp_foodtest.sav";
+        OpenCiv1Game g1;
+        setupGame(g1, 640, 480);
+        Translator::instance().enabled = true;
+        MiniWorld w(20, 20, 9999u);
+        w.attachGame(g1);
+        int cid = setupGrasslandCity(g1, w, 10, 10);
+        // Force a known state mid-growth.
+        g1.unitManagement().citiesMut()[cid].population  = 3;
+        g1.unitManagement().citiesMut()[cid].food        = 17;
+        g1.unitManagement().citiesMut()[cid].foodPerTurn = 6;
+
+        bool sok = g1.gameLoadAndSave().saveToFile(savePath, nullptr);
+        chk(sok, "(5) saveToFile (v5) succeeded");
+
+        OpenCiv1Game g2;
+        setupGame(g2, 640, 480);
+        bool lok = g2.gameLoadAndSave().loadFromFile(savePath, nullptr);
+        chk(lok, "(5) loadFromFile (v5) succeeded");
+        const auto& cv = g2.unitManagement().cities();
+        chk(cv.size() == 1, "(5) city count preserved");
+        if (!cv.empty()) {
+            const City& cc = cv[0];
+            chk(cc.population  == 3,  "(5) population preserved across save");
+            chk(cc.food        == 17, "(5) food preserved across save");
+            chk(cc.foodPerTurn == 6,  "(5) foodPerTurn preserved across save");
+        }
+    }
+
+    // ---- (6) CityView render: translate-on vs translate-off diffs --------
+    std::size_t i18nDiff = 0;
+    {
+        auto render = [&](bool translate) -> std::vector<uint8_t> {
+            OpenCiv1Game g;
+            setupGame(g, 640, 480);
+            Translator::instance().enabled = translate;
+            MiniWorld w(20, 20, 1234u);
+            w.attachGame(g);
+            int cid = setupGrasslandCity(g, w, 10, 10);
+            // Tick a few turns so food/foodPerTurn populate visibly.
+            for (int t = 0; t < 2; ++t) g.checkPlayerTurn().processEndOfTurn();
+            g.cityView().open(cid);
+            g.cityView().draw(g.graphics.screen(0), 1);
+            return g.graphics.screen(0).pixels();
+        };
+        std::vector<uint8_t> zh = render(true);
+        std::vector<uint8_t> en = render(false);
+        chk(zh.size() == en.size() && !zh.empty(),
+            "(6) both CityView renders produced a buffer");
+        for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+            if (zh[i] != en[i]) ++i18nDiff;
+        chk(i18nDiff > 0,
+            "(6) Chinese vs English CityView pixels DIFFER (food/pop labels)");
+    }
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail) std::printf("FOODTEST: %d failure(s)\n", fail);
+    else      std::printf("FOODTEST: all pass (grow in %d turns no-granary, "
+                          "%d w/granary; irrigation bumps foodPerTurn; v5 "
+                          "save/load round-trip; %zu i18n pixels differ)\n",
+                          turnsNoGran, turnsWithGran, i18nDiff);
+    return fail ? 1 : 0;
+}
+
 // ---------------- Tech research / tech-gated build (--techtest) ----------
 // Verifies the TechResearch CodeObject end-to-end:
 //   (1) initCivs(7): every civ starts with no known techs + researching
@@ -4647,6 +4849,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--minimaptest")) { return minimaptest(); }
         else if (!std::strcmp(argv[i], "--improvementtest")) { return improvementtest(); }
         else if (!std::strcmp(argv[i], "--buildingtest")) { return buildingtest(); }
+        else if (!std::strcmp(argv[i], "--foodtest")) { return foodtest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -4712,7 +4915,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
