@@ -6,6 +6,7 @@
 #include "CommonTools.h"
 #include "TextBoxDialogs.h"
 #include "GameMenus.h"
+#include "MainCode.h"
 
 namespace oc1 {
 
@@ -18,6 +19,7 @@ OpenCiv1Game::OpenCiv1Game() {
     commonTools_ = std::make_unique<CommonTools>(*this);
     textBoxDialogs_ = std::make_unique<TextBoxDialogs>(*this);
     gameMenus_ = std::make_unique<GameMenus>(*this);
+    mainCode_ = std::make_unique<MainCode>(*this);
 }
 OpenCiv1Game::~OpenCiv1Game() = default;
 

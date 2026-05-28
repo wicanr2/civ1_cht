@@ -22,6 +22,7 @@ class MenuBoxDialog; // ported CodeObject (fwd-declared to break the include cyc
 class CommonTools;   // ported CodeObject (fwd-declared to break the include cycle)
 class TextBoxDialogs;// ported CodeObject (fwd-declared to break the include cycle)
 class GameMenus;     // ported CodeObject (fwd-declared to break the include cycle)
+class MainCode;      // ported CodeObject (fwd-declared to break the include cycle)
 
 class OpenCiv1Game {
 public:
@@ -57,6 +58,7 @@ public:
     CommonTools& commonTools() { return *commonTools_; }
     TextBoxDialogs& textBoxDialogs() { return *textBoxDialogs_; }
     GameMenus& gameMenus() { return *gameMenus_; }
+    MainCode& mainCode() { return *mainCode_; }
 
 private:
     std::string resourcePath_ = ".";
@@ -68,6 +70,7 @@ private:
     std::unique_ptr<CommonTools> commonTools_;
     std::unique_ptr<TextBoxDialogs> textBoxDialogs_;
     std::unique_ptr<GameMenus> gameMenus_;
+    std::unique_ptr<MainCode> mainCode_;
 };
 
 } // namespace oc1

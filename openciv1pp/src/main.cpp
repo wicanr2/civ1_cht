@@ -19,6 +19,7 @@
 #include "game/TextBoxDialogs.h"
 #include "game/FrontEndFlow.h"
 #include "game/GameMenus.h"
+#include "game/MainCode.h"
 #include "game/MiniWorld.h"
 #include "localization/Translator.h"
 #include "platform/SdlPresenter.h"
@@ -1240,6 +1241,166 @@ static int menuflowInteractive() {
     return 0;
 }
 
+// Forward decl: resolves the DOS-assets dir (explicit arg / OPENCIV1_DOS_ASSETS
+// env). Defined with the MiniWorld section further down.
+static std::string resolveAssetDir(const char* explicitDir);
+
+// ---------------- MainCode boot-screen (LOGO.PIC + Chinese main menu) ----------------
+// Ports the boot-screen path of MainCode: render the authentic Civ1 title —
+// the real LOGO.PIC on screen 0 — then draw the (Chinese) main game-type menu
+// via MenuBoxDialog on top. With no DOS assets the logo is skipped (colored
+// background) and the menu still draws — graceful fallback.
+
+// Headless verification of MainCode::F0_11a8_0486_LogoAndMainGameMenu.
+//   (a) WITHOUT assets: render the logo+menu path, assert the menu drew ink and
+//       that translate-on vs -off pixels DIFFER (the menu is localized Chinese).
+//   (b) IF OPENCIV1_DOS_ASSETS/LOGO.PIC exists: point resourcePath at it, render
+//       again, assert the logo CONTRIBUTED pixels (the screen is not just the
+//       menu over a flat background) and dump /tmp/title.ppm.
+static int titletest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // (MainCode places the menu at 100,140 internally; the test scans the whole
+    // 320x200 screen for ink so no menu-coord constants are needed here.)
+
+    // Render the boot screen into a fresh game's screen 0 (no assets) and return
+    // the pixel buffer. Background is flat index 1 so logo/menu ink is detectable.
+    auto renderNoAssets = [&](bool translate) -> std::vector<uint8_t> {
+        OpenCiv1Game g;
+        setupGame(g, 320, 200);
+        Translator::instance().enabled = translate;
+        g.graphics.screen(0).clear(1);
+        bool logo = true;
+        int sel = g.mainCode().F0_11a8_0486_LogoAndMainGameMenu(/*forcedSelection*/ 0, &logo);
+        chk(sel == 0, "logo+menu returns the forced selection");
+        chk(!logo, "no-assets render did NOT load a logo (graceful fallback)");
+        return g.graphics.screen(0).pixels();
+    };
+
+    // 1) Chinese render (Translator on): the shipping output.
+    std::vector<uint8_t> zh = renderNoAssets(true);
+    // 2) English render (Translator off): same layout, untranslated text.
+    std::vector<uint8_t> en = renderNoAssets(false);
+
+    chk(zh.size() == en.size() && !zh.empty(), "both renders produced a buffer");
+    std::size_t diffPixels = 0;
+    for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+        if (zh[i] != en[i]) ++diffPixels;
+    chk(diffPixels > 0, "translated vs untranslated pixels DIFFER (menu is Chinese)");
+
+    // The menu must have drawn ink over the (index-1) background.
+    {
+        GBitmap fb(320, 200);
+        fb.pixelsMut() = zh;
+        std::size_t ink = 0;
+        bool hasFill = false;
+        for (int yy = 0; yy < 200; ++yy)
+            for (int xx = 0; xx < 320; ++xx) {
+                uint8_t px = fb.getPixel(xx, yy);
+                if (px != 1) ++ink;
+                if (px == 7) hasFill = true; // MenuBoxDialog box fill (index 7)
+            }
+        chk(ink > 0, "menu drew ink (border/text) over the background");
+        chk(hasFill, "box background fill present (index 7)");
+    }
+
+    // (b) Real-asset sub-check: only when OPENCIV1_DOS_ASSETS is set AND LOGO.PIC
+    // exists there. Otherwise SKIP (headless tests stay green with NO assets).
+    {
+        std::string dir = resolveAssetDir(nullptr); // env only, in this context
+        std::error_code ec;
+        if (!dir.empty() &&
+            std::filesystem::exists(std::filesystem::path(dir) / "LOGO.PIC", ec)) {
+            OpenCiv1Game g;
+            setupGame(g, 320, 200);
+            Translator::instance().enabled = true;
+            g.setResourcePath(dir);
+            g.graphics.screen(0).clear(1);
+            bool logo = false;
+            g.mainCode().F0_11a8_0486_LogoAndMainGameMenu(/*forcedSelection*/ 0, &logo);
+            chk(logo, "LOGO.PIC loaded from OPENCIV1_DOS_ASSETS");
+
+            // Prove the logo contributed: pixels OUTSIDE the menu region must be
+            // something other than the flat index-1 background (the logo art).
+            GBitmap fb(320, 200);
+            fb.pixelsMut() = g.graphics.screen(0).pixels();
+            std::size_t logoInk = 0;
+            for (int yy = 0; yy < 130; ++yy)            // above the menu (my=140)
+                for (int xx = 0; xx < 320; ++xx)
+                    if (fb.getPixel(xx, yy) != 1) ++logoInk;
+            chk(logoInk > 0, "logo contributed pixels outside the menu region");
+
+            dumpPPM(fb, "/tmp/title.ppm");
+            std::printf("  (real LOGO + Chinese menu -> /tmp/title.ppm)\n");
+        } else {
+            std::printf("  (no DOS assets; real-LOGO sub-check skipped)\n");
+        }
+    }
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail)
+        std::printf("TITLETEST: %d failure(s)\n", fail);
+    else
+        std::printf("TITLETEST: all pass (MainCode boot-screen; "
+                    "%zu localized pixels differ)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
+// Interactive Chinese title screen (SDL): setupGame + resourcePath(assets) +
+// translation ON, render the LOGO.PIC + main menu, then loop draw -> present ->
+// pollKey -> navStep until ENTER (>=0) or ESC (-1). Prints the selected item.
+static int titleInteractive(const std::string& assetDir) {
+    OpenCiv1Game g;
+    setupGame(g, 320, 200);
+    Translator::instance().enabled = true;
+    if (!assetDir.empty()) {
+        g.setResourcePath(assetDir);
+        std::error_code ec;
+        if (std::filesystem::exists(std::filesystem::path(assetDir) / "LOGO.PIC", ec))
+            std::printf("[title] real Civ1 LOGO.PIC from %s\n", assetDir.c_str());
+        else
+            std::printf("[title] no LOGO.PIC in %s; colored background\n", assetDir.c_str());
+    }
+
+    const std::vector<std::string>& items = MainCode::mainMenuItems();
+    const int n = int(items.size());
+
+    GBitmap& fb = g.graphics.screen(0);
+    SdlPresenter pres;
+    if (!pres.init("OpenCiv1++ Title (zh-TW)", fb.width(), fb.height(), 3)) return 1;
+
+    MenuBoxDialog& mb = g.menuBoxDialog();
+    mb.setupNav(n, /*disabled*/ 0, /*startIndex*/ 0);
+
+    auto redraw = [&]() {
+        fb.clear(1);
+        mb.defaultOptionIndex = mb.highlight;
+        // The logo+menu path applies the logo background and draws the menu with
+        // the current highlight as the forced selection.
+        g.mainCode().F0_11a8_0486_LogoAndMainGameMenu(mb.highlight, nullptr);
+    };
+    redraw();
+
+    int result = MenuBoxDialog::NavNone;
+    while (result == MenuBoxDialog::NavNone) {
+        if (!pres.present(fb)) { result = MenuBoxDialog::NavCancel; break; }
+        int key = pres.pollKey();
+        if (key == 0) continue;
+        int prev = mb.highlight;
+        result = mb.navStep(key);
+        if (result == MenuBoxDialog::NavNone && mb.highlight != prev) redraw();
+    }
+    pres.shutdown();
+
+    if (result >= 0)
+        std::printf("selected: %d (%s)\n", result, items[std::size_t(result)].c_str());
+    else
+        std::printf("cancelled\n");
+    return 0;
+}
+
 // ---------------- MiniWorld playable slice ----------------
 // NOTE: MiniWorld is an original minimal playable slice (NOT a faithful Civ1
 // CodeObject port): a procedurally-generated tile map + a movable unit + turn
@@ -1459,7 +1620,7 @@ static void drawScene(OpenCiv1Game& g) {
 
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
-    bool play = false;
+    bool play = false, title = false;
     const char* dumpPath = nullptr;
     const char* picPath = nullptr;
     const char* gfxDumpPath = nullptr;
@@ -1468,6 +1629,7 @@ int main(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) { dump = true; dumpPath = argv[++i]; }
         else if (!std::strcmp(argv[i], "--assets") && i + 1 < argc) { assetsDir = argv[++i]; }
         else if (!std::strcmp(argv[i], "--play")) { play = true; }
+        else if (!std::strcmp(argv[i], "--title")) { title = true; }
         else if (!std::strcmp(argv[i], "--pic") && i + 1 < argc) picPath = argv[++i];
         else if (!std::strcmp(argv[i], "--gfxdraw") && i + 1 < argc) gfxDumpPath = argv[++i];
         else if (!std::strcmp(argv[i], "--english")) english = true;
@@ -1488,6 +1650,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--flowtest")) { return flowtest(); }
         else if (!std::strcmp(argv[i], "--gamemenutest")) { return gamemenutest(); }
         else if (!std::strcmp(argv[i], "--playtest")) { return playtest(); }
+        else if (!std::strcmp(argv[i], "--titletest")) { return titletest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             const char* dir = argv[++i]; const char* out = argv[++i];
@@ -1515,11 +1678,18 @@ int main(int argc, char** argv) {
         return playInteractive(dir);
     }
 
+    // --title: the authentic Civ1 boot screen — LOGO.PIC (when a DOS asset dir is
+    // given via --assets <dir> or OPENCIV1_DOS_ASSETS) + the Chinese main menu,
+    // navigable in an SDL window.
+    if (title) {
+        return titleInteractive(resolveAssetDir(assetsDir));
+    }
+
     // run the whole headless suite; nonzero if any fails (CI entry point)
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += titletest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
