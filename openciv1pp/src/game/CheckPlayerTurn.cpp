@@ -134,6 +134,21 @@ int CheckPlayerTurn::processEndOfTurn() {
     auto& um = p.unitManagement();
     auto& cities = um.citiesMut();
 
+    // ---- ROAD-MOVEMENT slice: reset per-unit movement budget -----------
+    // Civ1: every unit's movement budget regenerates at the top of each
+    // turn. We do a single global reset here so BOTH the AI movement pass
+    // (which runs below, inside this same processEndOfTurn call) AND the
+    // human's NEXT turn (driven by the next handleKey loop) see a fresh
+    // budget. mvp is stored in INTEGER THIRDS-of-move so road steps can
+    // cost 1 (1/3 of move) and non-road steps cost 3 (full move).
+    {
+        auto& units = um.unitsMut();
+        for (auto& u : units) {
+            if (!u.alive) continue;
+            u.movePointsLeft = UnitManagement::unitMovePointsMax(u.type);
+        }
+    }
+
     // ---- SETTLERS IMPROVEMENT TICK ---------------------------------------
     // Mirrors the per-turn dispatcher entry where a Settlers with an
     // outstanding work counter has it decremented and the matching

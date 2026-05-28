@@ -51,6 +51,13 @@ const TechDef kTechs[] = {
     {Tech::Feudalism,     "Feudalism",      60, Tech::Monarchy},
     {Tech::Gunpowder,     "Gunpowder",      70, Tech::IronWorking},
     {Tech::Metallurgy,    "Metallurgy",     80, Tech::Gunpowder},
+    // NAVAL slice — Map Making. Civ1 prereq = Alphabet (one of two; we keep
+    // the early-era reachable one). cost 30 (era-2 like Writing/Currency).
+    // Currently Trireme's UnitDef gates on Tech::Pottery (documented in
+    // UnitManagement.h); when the deeper port wires Trireme to MapMaking
+    // directly, no save-format migration is needed (the prereq edge is
+    // already in place).
+    {Tech::MapMaking,     "Map Making",     30, Tech::Alphabet},
 };
 constexpr int kTechN = int(sizeof(kTechs) / sizeof(kTechs[0]));
 } // namespace

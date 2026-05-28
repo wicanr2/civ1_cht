@@ -95,6 +95,14 @@ enum class Tech : int8_t {
     // subset, so we substitute Gunpowder as the single prereq (documented
     // simplification — Cannon ships behind this gate).
     Metallurgy    = 48,
+    // NAVAL slice — Map Making (Civ1 TechnologyAdvanceEnum.MapMaking=14).
+    // Faithful Civ1 prereq for Trireme. In this early-era subset Trireme's
+    // UnitDef entry substitutes Tech::Pottery as the gate (documented in
+    // UnitManagement.h's UnitDef table) because Map Making's full prereq
+    // chain (Alphabet) and tech-cost ladder aren't fully ported yet. The
+    // enum value is reserved here so future widening can flip Trireme's
+    // techPrereq to Tech::MapMaking without a save migration.
+    MapMaking     = 14,
 };
 
 // One row of the (early-era subset of the) C# technologyAdvanceTypes table.

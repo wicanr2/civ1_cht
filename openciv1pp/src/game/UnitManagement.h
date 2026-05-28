@@ -66,9 +66,15 @@ enum class UnitType : uint8_t {
     Catapult   = 6,  // a=6 d=1 m=1 cost=40 (Civ1 manual) — tech Mathematics
     Musketeers = 7,  // a=3 d=3 m=1 cost=30 (Civ1 manual) — tech Gunpowder
     Cannon     = 8,  // a=8 d=1 m=1 cost=40 (Civ1 manual) — tech Metallurgy
+    // NAVAL slice: first ship. Civ1 Trireme stats = 1/1/3 cost 40 (manual).
+    // Tech prereq is MAP MAKING in Civ1; the early-era subset doesn't include
+    // MapMaking yet, so we substitute Pottery (documented; see UnitDef table
+    // and TechResearch.h note). isNaval=true gates terrain validation in
+    // moveUnit: Triremes may ONLY enter Water; land units refuse Water.
+    Trireme    = 9,
 };
 // Number of UnitType values shipped. Keep in sync with the kDefs table below.
-static constexpr int kUnitTypeCount = 9;
+static constexpr int kUnitTypeCount = 10;
 
 // ---- DIPLOMACY (faithful Civ1 NoContact/Peace/War subset) ---------------
 // Faithful SUBSET of the C# OpenCiv1 Diplomacy state machine
@@ -116,6 +122,12 @@ struct UnitDef {
     Tech techPrereq;      // required tech (Tech::None means buildable from
                           // game start). Mirrors UnitDefinition.PrerequisiteTech
                           // (GameData.cs line 209-236, last enum arg).
+    // NAVAL flag: true for ships (Trireme so far). Naval units can ONLY
+    // enter Water tiles; land units (isNaval=false) are refused entry into
+    // Water. Faithful Civ1 land/sea separation. Mirrors C# UnitDefinition's
+    // domain bit (Land/Sea/Air); we keep a single bool for the slice and
+    // widen to an enum when Air units land.
+    bool isNaval = false;
 };
 
 // Faithful UnitDef table for the early-era handful. Index by UnitType.
@@ -132,10 +144,10 @@ inline const UnitDef& unitDefOf(UnitType t) {
         // PrerequisiteTech HorsebackRiding). We leave the prereq as None for
         // now so existing tech-gated paths continue to behave; Cavalry is
         // primarily exercised by --buildingtest's combat statistics.
-        {"Settlers", 0, 1, 1, 40, Tech::None},
-        {"Militia",  1, 1, 1, 10, Tech::None},
-        {"Phalanx",  1, 2, 1, 20, Tech::BronzeWorking},
-        {"Cavalry",  2, 1, 2, 20, Tech::None},
+        {"Settlers", 0, 1, 1, 40, Tech::None, false},
+        {"Militia",  1, 1, 1, 10, Tech::None, false},
+        {"Phalanx",  1, 2, 1, 20, Tech::BronzeWorking, false},
+        {"Cavalry",  2, 1, 2, 20, Tech::None, false},
         // MORE-UNITS slice — faithful Civ1 MANUAL stats (which differ from
         // the C# port's table in a few cases; e.g. C# Legion is 3/1/1 cost
         // 2, the manual lists 4/2/1 cost 4 — we ship the manual numbers as
@@ -143,11 +155,16 @@ inline const UnitDef& unitDefOf(UnitType t) {
         // statistical signal in tests). Tech prereqs match the C# table.
         // cost field stores SHIELD cost = manual cost * 10 (same scheme as
         // Settlers/Militia/Phalanx/Cavalry).
-        {"Legion",     4, 2, 1, 40, Tech::IronWorking},
-        {"Knight",     4, 2, 2, 40, Tech::Feudalism},
-        {"Catapult",   6, 1, 1, 40, Tech::Mathematics},
-        {"Musketeers", 3, 3, 1, 30, Tech::Gunpowder},
-        {"Cannon",     8, 1, 1, 40, Tech::Metallurgy},
+        {"Legion",     4, 2, 1, 40, Tech::IronWorking, false},
+        {"Knight",     4, 2, 2, 40, Tech::Feudalism,   false},
+        {"Catapult",   6, 1, 1, 40, Tech::Mathematics, false},
+        {"Musketeers", 3, 3, 1, 30, Tech::Gunpowder,   false},
+        {"Cannon",     8, 1, 1, 40, Tech::Metallurgy,  false},
+        // NAVAL slice — Trireme: Civ1 manual stats a=1 d=1 m=3 cost 40.
+        // Tech prereq is MAP MAKING in Civ1; substituted to Pottery for the
+        // early-era subset (documented in TechResearch.h Tech::MapMaking
+        // note). isNaval=true gates terrain validation in moveUnit.
+        {"Trireme",    1, 1, 3, 40, Tech::Pottery,     true},
     };
     int i = int(t);
     if (i < 0 || i >= kUnitTypeCount) i = 0;
@@ -281,6 +298,18 @@ struct Unit {
     // Mirrors C# Unit.IsVeteran. Resolved at production time in
     // CheckPlayerTurn::processEndOfTurn.
     bool veteran = false;
+    // ---- ROAD-MOVEMENT slice (per-unit movement budget, thirds-of-move) --
+    // Civ1 standard: roads let a unit move at 1/3 normal cost. We model
+    // this in INTEGER THIRDS — a unit's movement budget per turn is
+    // unitDefOf(type).move * 3 (so a move=1 unit has 3 mvp/turn, move=2 has
+    // 6 mvp/turn, move=3 Trireme has 9 mvp/turn). A standard step COSTS 3
+    // mvp; a step where BOTH source AND destination tiles have the ROAD
+    // improvement bit COSTS 1 mvp (faithful Civ1 road math). Reset at the
+    // top of each civ's pass in CheckPlayerTurn::processEndOfTurn. Default
+    // 3 in struct init covers the move=1 case for legacy code that
+    // bypasses addUnit (e.g. citytest); addUnit explicitly sets the right
+    // value from the def.
+    int movePointsLeft = 3;
 };
 
 // Per-civilization state (a SUBSET of GameData.Players[i] + Nations[i]).
@@ -535,7 +564,23 @@ public:
 
     // ---- units (multi-civ) ----
     // Append a Unit owned by `owner` (civ index) at (x,y). Returns its index.
+    // The new unit's movePointsLeft is initialized to def.move * 3 (Civ1
+    // "thirds of move" so road steps can deduct 1 instead of 3).
     int addUnit(int owner, UnitType type, int x, int y);
+
+    // ---- ROAD-MOVEMENT slice helpers ------------------------------------
+    // Per-turn max movement points for unit type t. Civ1 standard: each
+    // MoveCount = 3 movement points (so road steps cost 1 = 1/3 normal).
+    static int unitMovePointsMax(UnitType t) {
+        return unitDefOf(t).move * 3;
+    }
+    // Move cost from (sx,sy) to (dx,dy). Cost = 1 when BOTH endpoints have
+    // the ROAD improvement bit (Civ1 standard); cost = 3 otherwise. The
+    // map argument provides the improvements bitmask lookup. When `mm` is
+    // null the conservative answer is 3 (no road bonus inferred).
+    static constexpr int kMoveCostDefault = 3;
+    static constexpr int kMoveCostRoad    = 1;
+
     const std::vector<Unit>& units() const { return units_; }
     std::vector<Unit>& unitsMut() { return units_; }
 

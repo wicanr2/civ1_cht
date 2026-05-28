@@ -112,7 +112,10 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     // ownedBuildings list} + per-unit veteran flag for the buildings slice.
     // v3 added the improvements grid + per-unit work state.
     // v2 added per-civ tech-tree state; v1 was the pre-tech baseline.
-    os << "OpenCiv1pp savegame v10\n";
+    // v11 adds per-unit movePointsLeft (ROAD-MOVEMENT slice). v1..v10
+    // readers ignore the trailing column; v11 readers parse it and
+    // default to unitMovePointsMax(type) when absent.
+    os << "OpenCiv1pp savegame v11\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -188,7 +191,9 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
         os << "unit " << u.owner << " " << u.x << " " << u.y << " "
            << int(u.type) << " " << (u.alive ? 1 : 0)
            << " " << u.workTurnsLeft << " " << int(u.workTarget)
-           << " " << (u.veteran ? 1 : 0) << "\n";
+           << " " << (u.veteran ? 1 : 0)
+           << " " << u.movePointsLeft  // v11: ROAD-MOVEMENT per-unit mvp
+           << "\n";
     }
 
     // Cities. v4: per-city building state is written as a SEPARATE 'citybld'
@@ -340,7 +345,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         header != "OpenCiv1pp savegame v7" &&
         header != "OpenCiv1pp savegame v8" &&
         header != "OpenCiv1pp savegame v9" &&
-        header != "OpenCiv1pp savegame v10") return false;
+        header != "OpenCiv1pp savegame v10" &&
+        header != "OpenCiv1pp savegame v11") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -437,15 +443,26 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             u.type = UnitType(t);
             u.alive = (alive != 0);
             // v3: trailing workTurnsLeft + workTarget. v4: trailing veteran
-            // flag after workTarget. Absent in older files (the istream
-            // extraction silently fails and the defaults persist).
-            int wtLeft = 0, wtTarget = 0, vet = 0;
+            // flag after workTarget. v11: trailing movePointsLeft (ROAD-
+            // MOVEMENT slice). Absent in older files: the istream
+            // extraction silently fails and defaults persist (the post-
+            // load fixup below seeds movePointsLeft to max for legacy
+            // saves so the unit can act on the first restored turn).
+            int wtLeft = 0, wtTarget = 0, vet = 0, mvp = -1;
             if (iss >> wtLeft) {
                 u.workTurnsLeft = wtLeft;
                 if (iss >> wtTarget) {
                     u.workTarget = uint8_t(wtTarget);
-                    if (iss >> vet) u.veteran = (vet != 0);
+                    if (iss >> vet) {
+                        u.veteran = (vet != 0);
+                        if (iss >> mvp) u.movePointsLeft = mvp;
+                    }
                 }
+            }
+            // v1..v10: no movePointsLeft column. Default to the full
+            // budget so the restored unit behaves on the first turn.
+            if (mvp < 0) {
+                u.movePointsLeft = UnitManagement::unitMovePointsMax(u.type);
             }
             units.push_back(u);
         }

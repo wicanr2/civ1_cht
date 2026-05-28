@@ -6247,6 +6247,313 @@ static int happinesstest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Road movement + Trireme naval (--roadmovetest) ---------
+// Verifies the ROAD-MOVEMENT + NAVAL slice end-to-end:
+//   (1) movement budget: Militia (move=1) gets movePointsLeft=3 on addUnit;
+//       Cavalry (move=2) gets 6; Trireme (move=3) gets 9.
+//   (2) non-road step costs 3 mvp: a Militia on Grassland (no road) can
+//       take exactly 1 step before refusing.
+//   (3) road bonus: when BOTH source and destination tiles carry the
+//       Road improvement bit, step cost drops to 1 mvp -> 3 road steps
+//       per turn for a Militia (3 mvp / 1 per step).
+//   (4) Trireme on Water moves freely; refused onto land.
+//   (5) Land unit (Militia) refused onto Water.
+//   (6) End-of-turn pass resets movePointsLeft to def.move * 3 for all
+//       alive units.
+//   (7) Save/load v11 round-trip preserves per-unit movePointsLeft;
+//       v10 files still load with movePointsLeft defaulted to max.
+//   (8) Chinese pixels differ when the new "Move points:" HUD line is
+//       rendered translate-on vs translate-off.
+//   (9) UnitDef table: Trireme has the canonical Civ1 stats (a=1, d=1,
+//       m=3, cost=40, isNaval=true).
+static int roadmovetest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // ---- (1)+(9): UnitDef sanity (Trireme stats + per-type mvp max) ----
+    {
+        const UnitDef& trd = unitDefOf(UnitType::Trireme);
+        chk(std::strcmp(trd.name, "Trireme") == 0, "(9) Trireme.name == \"Trireme\"");
+        chk(trd.attack == 1,   "(9) Trireme.attack == 1");
+        chk(trd.defense == 1,  "(9) Trireme.defense == 1");
+        chk(trd.move == 3,     "(9) Trireme.move == 3");
+        chk(trd.cost == 40,    "(9) Trireme.cost == 40");
+        chk(trd.isNaval,       "(9) Trireme.isNaval == true");
+        chk(trd.techPrereq == Tech::Pottery,
+            "(9) Trireme.techPrereq == Pottery (Map Making substitute)");
+        // Land unit sanity: Militia should NOT be naval.
+        chk(!unitDefOf(UnitType::Militia).isNaval,
+            "(9) Militia.isNaval == false");
+        // mvp max == move * 3 for the three reference units.
+        chk(UnitManagement::unitMovePointsMax(UnitType::Militia) == 3,
+            "(1) unitMovePointsMax(Militia) == 3 (move=1 * 3)");
+        chk(UnitManagement::unitMovePointsMax(UnitType::Cavalry) == 6,
+            "(1) unitMovePointsMax(Cavalry) == 6 (move=2 * 3)");
+        chk(UnitManagement::unitMovePointsMax(UnitType::Trireme) == 9,
+            "(1) unitMovePointsMax(Trireme) == 9 (move=3 * 3)");
+    }
+
+    // ---- (2): non-road step costs 3 mvp; 1 step on move=1 unit ----------
+    // ---- (5): land unit refused onto Water ------------------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(MapManagement::kWidth, MapManagement::kHeight);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 0);
+        // Install a terrain provider: a flat 10x10 patch of Grassland at
+        // (0..9, 0..9); Water elsewhere. Then the unit can step east on
+        // Grassland (cost 3) and refuse stepping into Water past x=9.
+        um.setTerrainProvider([](int x, int y) -> Terrain {
+            if (x < 0 || y < 0) return Terrain::Water;
+            if (x < 10 && y < 10) return Terrain::Grassland;
+            return Terrain::Water;
+        });
+        int mid = um.addUnit(0, UnitType::Militia, 5, 5);
+        chk(mid >= 0, "(2) addUnit(Militia) succeeded");
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 3,
+            "(2) Militia movePointsLeft == 3 on addUnit");
+        // Move east: cost 3 -> 0 left, position +1.
+        bool m1 = um.moveUnit(mid, 1, 0);
+        chk(m1, "(2) first east step succeeded");
+        chk(um.units()[std::size_t(mid)].x == 6,
+            "(2) Militia at x==6 after east step");
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 0,
+            "(2) movePointsLeft == 0 after one non-road step");
+        // Second east step: refused (not enough mvp).
+        bool m2 = um.moveUnit(mid, 1, 0);
+        chk(!m2, "(2) second east step REFUSED (not enough mvp)");
+        chk(um.units()[std::size_t(mid)].x == 6,
+            "(2) Militia still at x==6 (no second step)");
+
+        // (5) Land unit refused onto Water. Reset mvp and try to step from
+        // (9,5) to (10,5) which is Water.
+        um.unitsMut()[std::size_t(mid)].x = 9;
+        um.unitsMut()[std::size_t(mid)].y = 5;
+        um.unitsMut()[std::size_t(mid)].movePointsLeft = 3;
+        bool waterStep = um.moveUnit(mid, 1, 0);
+        chk(!waterStep, "(5) land Militia REFUSED onto Water tile");
+        chk(um.units()[std::size_t(mid)].x == 9,
+            "(5) Militia did NOT enter Water (stayed at x==9)");
+        // mvp NOT consumed on terrain refusal.
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 3,
+            "(5) movePointsLeft NOT consumed on terrain-refused step");
+    }
+
+    // ---- (3): road bonus — both src+dst with Road -> cost 1 -------------
+    // Place a Militia at (3,3); set Road improvement on (3,3),(4,3),(5,3),
+    // (6,3). The Militia should take EXACTLY 3 road-steps in one turn
+    // (mvp 3 / cost 1 each = 3 steps), then refuse the 4th.
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(MapManagement::kWidth, MapManagement::kHeight);
+        um.setupCivs(0, 0);
+        um.setTerrainProvider([](int, int) -> Terrain { return Terrain::Grassland; });
+        auto& mm = g.mapManagement();
+        for (int x = 3; x <= 6; ++x) {
+            mm.setImprovementFlag(x, 3, MapManagement::kImprovementRoad);
+        }
+        int mid = um.addUnit(0, UnitType::Militia, 3, 3);
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 3,
+            "(3) Militia mvp == 3 at addUnit");
+        // Step 1: road->road, cost 1
+        bool s1 = um.moveUnit(mid, 1, 0);
+        chk(s1 && um.units()[std::size_t(mid)].x == 4,
+            "(3) road step 1: moved east to x==4");
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 2,
+            "(3) road step 1: mvp == 2 (cost 1)");
+        // Step 2: road->road, cost 1
+        bool s2 = um.moveUnit(mid, 1, 0);
+        chk(s2 && um.units()[std::size_t(mid)].x == 5,
+            "(3) road step 2: moved east to x==5");
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 1,
+            "(3) road step 2: mvp == 1");
+        // Step 3: road->road, cost 1
+        bool s3 = um.moveUnit(mid, 1, 0);
+        chk(s3 && um.units()[std::size_t(mid)].x == 6,
+            "(3) road step 3: moved east to x==6");
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 0,
+            "(3) road step 3: mvp == 0 (3 road steps in one turn!)");
+        // Step 4: not enough mvp (0 < 1)
+        bool s4 = um.moveUnit(mid, 1, 0);
+        chk(!s4, "(3) road step 4 REFUSED (mvp 0 < cost 1)");
+        chk(um.units()[std::size_t(mid)].x == 6,
+            "(3) Militia stuck at x==6 after 3 road steps");
+
+        // Asymmetric check: src has road but dst does NOT -> cost 3.
+        // Reset mvp and step east from (6,3) [road] to (7,3) [no road].
+        um.unitsMut()[std::size_t(mid)].movePointsLeft = 3;
+        bool sNon = um.moveUnit(mid, 1, 0);
+        chk(sNon && um.units()[std::size_t(mid)].x == 7,
+            "(3) src-only-road step: still moves, cost = 3");
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 0,
+            "(3) src-only-road step: mvp -= 3 (no road bonus)");
+    }
+
+    // ---- (4): Trireme on Water moves freely; refused on land ------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(MapManagement::kWidth, MapManagement::kHeight);
+        um.setupCivs(0, 0);
+        // 10x10 patch of Grassland at top-left, rest is Water.
+        um.setTerrainProvider([](int x, int y) -> Terrain {
+            if (x < 0 || y < 0) return Terrain::Water;
+            if (x < 10 && y < 10) return Terrain::Grassland;
+            return Terrain::Water;
+        });
+        // Place Trireme on Water at (20, 20).
+        int tid = um.addUnit(0, UnitType::Trireme, 20, 20);
+        chk(um.units()[std::size_t(tid)].movePointsLeft == 9,
+            "(4) Trireme movePointsLeft == 9");
+        // Step east on Water: cost 3 -> 6 left, x=21.
+        bool ts1 = um.moveUnit(tid, 1, 0);
+        chk(ts1 && um.units()[std::size_t(tid)].x == 21,
+            "(4) Trireme step east on Water succeeded");
+        chk(um.units()[std::size_t(tid)].movePointsLeft == 6,
+            "(4) Trireme mvp == 6 after one Water step");
+        // 3 Water steps total in one turn (move=3 * 3 mvp).
+        um.moveUnit(tid, 1, 0);
+        um.moveUnit(tid, 1, 0);
+        chk(um.units()[std::size_t(tid)].x == 23,
+            "(4) Trireme reached x==23 after 3 Water steps");
+        chk(um.units()[std::size_t(tid)].movePointsLeft == 0,
+            "(4) Trireme exhausted mvp after 3 Water steps");
+        // Move Trireme adjacent to land and try to step onto Grassland:
+        // refused (naval can't enter land).
+        um.unitsMut()[std::size_t(tid)].x = 10;
+        um.unitsMut()[std::size_t(tid)].y = 5; // (10,5) is Water (x>=10)
+        um.unitsMut()[std::size_t(tid)].movePointsLeft = 9;
+        bool toLand = um.moveUnit(tid, -1, 0); // (10,5)->(9,5) Grassland
+        chk(!toLand, "(4) Trireme REFUSED onto Grassland tile");
+        chk(um.units()[std::size_t(tid)].x == 10,
+            "(4) Trireme did NOT enter land (stayed at x==10)");
+        chk(um.units()[std::size_t(tid)].movePointsLeft == 9,
+            "(4) Trireme mvp NOT consumed on terrain-refused step");
+    }
+
+    // ---- (6): End-of-turn pass resets movePointsLeft --------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(MapManagement::kWidth, MapManagement::kHeight);
+        um.setupCivs(0, 0);
+        um.setTerrainProvider([](int, int) -> Terrain { return Terrain::Grassland; });
+        int mid = um.addUnit(0, UnitType::Militia, 5, 5);
+        int cid = um.addUnit(0, UnitType::Cavalry, 6, 6);
+        // Consume the Militia's mvp.
+        um.moveUnit(mid, 1, 0);
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 0,
+            "(6) Militia mvp == 0 pre-EOT");
+        // Consume one of Cavalry's two non-road steps (mvp 6 -> 3).
+        um.moveUnit(cid, 1, 0);
+        chk(um.units()[std::size_t(cid)].movePointsLeft == 3,
+            "(6) Cavalry mvp == 3 pre-EOT");
+        // One processEndOfTurn pass: BOTH units reset to their max.
+        g.checkPlayerTurn().processEndOfTurn();
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 3,
+            "(6) Militia mvp reset to 3 after EOT");
+        chk(um.units()[std::size_t(cid)].movePointsLeft == 6,
+            "(6) Cavalry mvp reset to 6 after EOT");
+    }
+
+    // ---- (7): Save/load v11 round-trip preserves movePointsLeft ---------
+    //       v10 files still load (default mvp = max for restored units).
+    {
+        const char* savePath = "/tmp/openciv1pp_roadmovetest.sav";
+        OpenCiv1Game g1; setupGame(g1, 640, 480);
+        FrontEndFlow flow1(g1);
+        flow1.enterTitle();
+        for (int k = 0; k < 6; ++k) flow1.handleKey(MenuBoxDialog::KeyEnter);
+        FrontEndFlow::State s1 = flow1.handleKey(MenuBoxDialog::KeyEnter);
+        chk(s1 == FrontEndFlow::State::PLAYING, "(7) reached PLAYING");
+        auto& um1 = g1.unitManagement();
+        // Push the first unit's mvp to a distinctive value.
+        chk(!um1.units().empty(), "(7) pre-save: >=1 unit");
+        if (!um1.units().empty()) {
+            um1.unitsMut()[0].movePointsLeft = 2;
+        }
+        bool sok = g1.gameLoadAndSave().saveToFile(savePath, &flow1);
+        chk(sok, "(7) saveToFile (v11) succeeded");
+
+        OpenCiv1Game g2; setupGame(g2, 640, 480);
+        FrontEndFlow flow2(g2);
+        bool lok = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
+        chk(lok, "(7) loadFromFile (v11) succeeded");
+        auto& um2 = g2.unitManagement();
+        chk(!um2.units().empty(), "(7) post-load: >=1 unit");
+        if (!um2.units().empty()) {
+            chk(um2.units()[0].movePointsLeft == 2,
+                "(7) movePointsLeft preserved through v11 round-trip");
+        }
+    }
+
+    // ---- (7b): Older saves (v10) still load -> mvp default to max -------
+    {
+        const char* path = "/tmp/openciv1pp_roadmovetest_v10.sav";
+        FILE* f = std::fopen(path, "w");
+        chk(f != nullptr, "(7b) opened v10 scratch file");
+        if (f) {
+            std::fputs("OpenCiv1pp savegame v10\n"
+                       "turn 1\n"
+                       "year -4000\n"
+                       "difficulty -1\n"
+                       "tribe -1\n"
+                       "seed 0\n"
+                       "name \n"
+                       "state 2\n"
+                       "unitpos 0 0\n"
+                       "civs 1\n"
+                       "civ 0 209 1 Rome\n"
+                       "units 1\n"
+                       "unit 0 5 5 1 1 0 0 0\n", f); // Militia, no v11 mvp col
+            std::fclose(f);
+        }
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        FrontEndFlow flow(g);
+        bool lok = g.gameLoadAndSave().loadFromFile(path, &flow);
+        chk(lok, "(7b) v10 save still loads (back-compat)");
+        if (lok && !g.unitManagement().units().empty()) {
+            chk(g.unitManagement().units()[0].movePointsLeft == 3,
+                "(7b) v10-loaded Militia mvp defaults to 3 (max)");
+        }
+    }
+
+    // ---- (8): Translate-on vs -off pixels differ (Chinese 移動點 HUD) ---
+    std::size_t diffPixels = 0;
+    {
+        auto renderHud = [&](bool translateOn) -> std::vector<uint8_t> {
+            OpenCiv1Game g; setupGame(g, 640, 480);
+            Translator::instance().enabled = translateOn;
+            FrontEndFlow flow(g);
+            flow.enterTitle();
+            for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+            flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+            flow.draw();
+            return g.graphics.screen(0).pixels();
+        };
+        std::vector<uint8_t> onPx  = renderHud(true);
+        std::vector<uint8_t> offPx = renderHud(false);
+        chk(onPx.size() == offPx.size() && !onPx.empty(),
+            "(8) HUD: both renders produced a buffer");
+        for (std::size_t i = 0; i < onPx.size() && i < offPx.size(); ++i)
+            if (onPx[i] != offPx[i]) ++diffPixels;
+        chk(diffPixels > 0,
+            "(8) HUD: translate-on vs -off pixels DIFFER (Chinese 移動點)");
+        Translator::instance().enabled = true;
+    }
+
+    if (fail) std::printf("ROADMOVETEST: %d failure(s)\n", fail);
+    else      std::printf("ROADMOVETEST: all pass (Militia mvp=3 -> 1 non-road "
+                          "step OR 3 road steps; Trireme on Water mvp=9 -> 3 "
+                          "Water steps; land refused on Water; Trireme refused "
+                          "on land; EOT resets mvp; v11 save/load round-trip; "
+                          "HUD delta=%zu px)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -6324,6 +6631,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--moreunitstest")) { return moreunitstest(); }
         else if (!std::strcmp(argv[i], "--goldtest")) { return goldtest(); }
         else if (!std::strcmp(argv[i], "--happinesstest")) { return happinesstest(); }
+        else if (!std::strcmp(argv[i], "--roadmovetest")) { return roadmovetest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -6389,7 +6697,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

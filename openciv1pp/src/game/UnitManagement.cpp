@@ -7,6 +7,7 @@
 #include "UnitManagement.h"
 #include "OpenCiv1Game.h"
 #include "MainCode.h"
+#include "MapManagement.h"
 #include "TerrainTiles.h"
 #include "TechResearch.h"
 #include <cstdio>
@@ -283,6 +284,10 @@ int UnitManagement::addUnit(int owner, UnitType type, int x, int y) {
     u.x = x;
     u.y = y;
     u.alive = true;
+    // ROAD-MOVEMENT: initialise per-unit movement budget from def.move * 3
+    // so road steps (cost 1) cleanly buy 3 hops per def.move (faithful
+    // Civ1 1/3-of-move road bonus).
+    u.movePointsLeft = unitMovePointsMax(type);
     int idx = int(units_.size());
     units_.push_back(u);
     return idx;
@@ -495,6 +500,22 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
     int nx = u.x + dx, ny = u.y + dy;
     // Out-of-bounds destinations: no movement, unit still alive.
     if (nx < 0 || ny < 0 || nx >= mapW_ || ny >= mapH_) return true;
+    // ---- TERRAIN VALIDATION (NAVAL slice) -------------------------------
+    // Land units refuse Water; naval units refuse anything that ISN'T
+    // Water. Faithful Civ1 land/sea separation. Terrain provider is
+    // wired by MiniWorld::attachGame; when absent (rare headless paths
+    // without a world) the validation is skipped.
+    const UnitDef& myDef = unitDefOf(u.type);
+    if (terrainAt_) {
+        Terrain destT = terrainAt_(nx, ny);
+        if (myDef.isNaval) {
+            // Trireme on land: refuse. Only Water tiles are valid.
+            if (destT != Terrain::Water) return false;
+        } else {
+            // Land unit into Water: refuse.
+            if (destT == Terrain::Water) return false;
+        }
+    }
     // Look for an alive enemy at the destination.
     int enemyId = -1;
     for (std::size_t i = 0; i < units_.size(); ++i) {
@@ -502,6 +523,21 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
         if (!o.alive) continue;
         if (o.owner == u.owner) continue;
         if (o.x == nx && o.y == ny) { enemyId = int(i); break; }
+    }
+    // ---- ROAD-MOVEMENT COST (precomputed; consumed below) ----------------
+    // Cost = 1 mvp iff BOTH the source AND destination tiles carry the
+    // ROAD improvement bit (faithful Civ1 road math). Else cost = 3 mvp.
+    // We sample MapManagement::getImprovements through the host (the
+    // map lives on OpenCiv1Game; UnitManagement holds a parent ref).
+    int moveCost = kMoveCostDefault;
+    {
+        const auto& mm = p.mapManagement();
+        uint8_t srcImp = mm.getImprovements(u.x, u.y);
+        uint8_t dstImp = mm.getImprovements(nx, ny);
+        if ((srcImp & MapManagement::kImprovementRoad) &&
+            (dstImp & MapManagement::kImprovementRoad)) {
+            moveCost = kMoveCostRoad;
+        }
     }
     if (enemyId >= 0) {
         Unit& enemy = units_[std::size_t(enemyId)];
@@ -530,6 +566,10 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
             }
             // r == Relation::War: fall through to combat below.
         }
+        // ROAD-MOVEMENT: combat consumes a standard move's worth of mvp.
+        // Refuse if the attacker doesn't have enough left this turn.
+        if (u.movePointsLeft < moveCost) return false;
+        u.movePointsLeft -= moveCost;
         lastCombatKey_ = "Battle";
         // Walls: if the defender is standing on a city tile owned by the
         // defender's civ and that city owns Walls, defender gets the
@@ -559,7 +599,9 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
         lastCombatKey_ = "Defeat";
         return false;
     }
-    // No enemy: just move.
+    // No enemy: just move. Check ROAD-MOVEMENT budget first.
+    if (u.movePointsLeft < moveCost) return false;
+    u.movePointsLeft -= moveCost;
     u.x = nx; u.y = ny;
     return true;
 }

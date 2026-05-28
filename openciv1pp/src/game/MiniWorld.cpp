@@ -435,6 +435,16 @@ void MiniWorld::renderUnits(GBitmap& screen) const {
                 screen.drawLine(cxg - h, cyg - h, cxg + h, cyg + h, 210);
                 break;
             }
+            case UnitType::Trireme: {
+                // "~" — a wavy ship glyph: two short horizontals offset
+                // vertically (suggests a hull on a wave). Marks Triremes
+                // distinctly from any of the land-unit glyphs above.
+                int h = inset / 2;
+                screen.drawLine(cxg - h, cyg, cxg, cyg - h / 2, 210);
+                screen.drawLine(cxg, cyg - h / 2, cxg + h, cyg, 210);
+                screen.drawLine(cxg - h, cyg + h / 2, cxg + h, cyg + h / 2, 210);
+                break;
+            }
         }
     }
 }
@@ -886,6 +896,16 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
                 std::snprintf(wb, sizeof(wb), " %d", u.workTurnsLeft);
                 penX3 = fb.drawString(font, penX3, line3Y, wb, 207);
             }
+            // ROAD-MOVEMENT slice: show the unit's remaining movement
+            // points for the turn ("Move points: <N>" / "移動點: N").
+            // The Translator turns the key into Chinese so the HUD
+            // pixels change when translation flips ON/OFF.
+            penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3,
+                                  line3Y, "Move points:", 207);
+            char mb[16];
+            std::snprintf(mb, sizeof(mb), " %d", u.movePointsLeft);
+            penX3 = fb.drawString(font, penX3, line3Y, mb, 207);
         }
     }
     // Production line: when at least one city is founded, append the FIRST
