@@ -680,6 +680,143 @@ bool UnitManagement::aiStep(int unitId) {
     return true;
 }
 
+// ---- AI EXPANSION (faithful greedy approximation) ----------------------
+// Documented simplification — see the matching header comment for the
+// "expand vs. defend" rule the C# Segment_25fb picker would do with a
+// 359KB weighted scorer. The goal here is that AI civs ACTUALLY grow
+// past their capital after a few dozen turns (the gameplay goal).
+UnitType UnitManagement::pickAiCityProduction(int civId, const City& c) const {
+    // ---- Settlers branch: only when the civ is still expanding ---------
+    if (civId >= 0 && std::size_t(civId) < civs_.size() &&
+        c.population >= 2) {
+        int cityCount = 0;
+        int liveSettlers = 0;
+        for (const auto& cc : cities_) if (cc.owner == civId) ++cityCount;
+        for (const auto& uu : units_) {
+            if (!uu.alive) continue;
+            if (uu.owner != civId) continue;
+            if (uu.type == UnitType::Settlers) ++liveSettlers;
+        }
+        // Faithful expansion rule: keep one Settlers per (current cities + 1)
+        // up to kAiSettlerMaxCities total cities, so the AI keeps founding
+        // new cities until it has 4 and then settles into combat-only.
+        if (cityCount < kAiSettlerMaxCities &&
+            liveSettlers < cityCount + 1) {
+            return UnitType::Settlers;
+        }
+    }
+    // ---- Combat branch: highest-attack tech-known unit (Settlers excl) -
+    UnitType pick = UnitType::Militia;
+    int bestAtk = -1;
+    auto& tr = p.techResearch();
+    for (int i = 0; i < kUnitTypeCount; ++i) {
+        UnitType cand = UnitType(i);
+        if (cand == UnitType::Settlers) continue;   // not a combatant
+        const UnitDef& def = unitDefOf(cand);
+        if (def.techPrereq != Tech::None && tr.civCount() > 0 &&
+            !tr.civKnows(civId, def.techPrereq)) continue;
+        if (def.attack > bestAtk) { bestAtk = def.attack; pick = cand; }
+    }
+    return pick;
+}
+
+// findAiSettlerTarget: scan map for valid land tile at Chebyshev distance
+// >= kAiSettlerMinSpacing from ALL existing cities of any civ. Picks the
+// Chebyshev-nearest such tile to (sx, sy). Documented simplification —
+// the C# F0_*_FindCitySite has a deeper weighted scorer (rivers, resources,
+// terrain quality, ...). Returns false when no valid target exists.
+bool UnitManagement::findAiSettlerTarget(int sx, int sy, int& tx, int& ty) const {
+    int bestDist = 0x7fffffff;
+    int bestX = -1, bestY = -1;
+    // Two-pass scoring: pass 1 = preferred terrain (Grassland/Plains/Hills/
+    // Desert); pass 2 = any non-Water/Arctic land if no preferred tile is
+    // found. Pass 1 has strict priority so the AI prefers good land.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int y = 0; y < mapH_; ++y) {
+            for (int x = 0; x < mapW_; ++x) {
+                if (terrainAt_) {
+                    Terrain t = terrainAt_(x, y);
+                    if (pass == 0) {
+                        if (t != Terrain::Grassland && t != Terrain::Plains &&
+                            t != Terrain::Hills && t != Terrain::Desert)
+                            continue;
+                    } else {
+                        if (t == Terrain::Water || t == Terrain::Arctic)
+                            continue;
+                    }
+                }
+                // Reject tiles already occupied by ANY city.
+                bool tileTaken = false;
+                int minCityDist = 0x7fffffff;
+                for (const auto& cc : cities_) {
+                    int dxx = x > cc.x ? x - cc.x : cc.x - x;
+                    int dyy = y > cc.y ? y - cc.y : cc.y - y;
+                    int d = dxx > dyy ? dxx : dyy;
+                    if (d == 0) { tileTaken = true; break; }
+                    if (d < minCityDist) minCityDist = d;
+                }
+                if (tileTaken) continue;
+                if (minCityDist < kAiSettlerMinSpacing) continue;
+                int dxs = x > sx ? x - sx : sx - x;
+                int dys = y > sy ? y - sy : sy - y;
+                int dToSettler = dxs > dys ? dxs : dys;
+                if (dToSettler < bestDist) {
+                    bestDist = dToSettler;
+                    bestX = x; bestY = y;
+                }
+            }
+        }
+        if (bestX >= 0) break;  // pass 1 found something -> done
+    }
+    if (bestX < 0) return false;
+    tx = bestX; ty = bestY;
+    return true;
+}
+
+// aiSettlerStep: drive ONE step of the AI Settlers' expansion behaviour.
+// Tries to FOUND a city when already standing on a valid spot; otherwise
+// walks toward the nearest valid target via moveUnit. See header comment.
+bool UnitManagement::aiSettlerStep(int unitId) {
+    if (unitId < 0 || std::size_t(unitId) >= units_.size()) return false;
+    Unit& u = units_[std::size_t(unitId)];
+    if (!u.alive) return false;
+    if (u.type != UnitType::Settlers) return false;
+    if (u.workTurnsLeft > 0) return false;  // mid-improvement: locked
+    // Find a valid target (relative to the Settler's tile).
+    int tx = 0, ty = 0;
+    bool haveTarget = findAiSettlerTarget(u.x, u.y, tx, ty);
+    // If currently standing ON a valid founding tile (matches the target
+    // exactly OR no target exists but the Settler's current tile is valid),
+    // try to found.
+    auto tileValidForFounding = [&](int x, int y) -> bool {
+        if (x < 0 || y < 0 || x >= mapW_ || y >= mapH_) return false;
+        if (terrainAt_) {
+            Terrain t = terrainAt_(x, y);
+            if (t == Terrain::Water || t == Terrain::Arctic) return false;
+        }
+        for (const auto& cc : cities_) {
+            int dxx = x > cc.x ? x - cc.x : cc.x - x;
+            int dyy = y > cc.y ? y - cc.y : cc.y - y;
+            int d = dxx > dyy ? dxx : dyy;
+            if (d < kAiSettlerMinSpacing) return false;
+        }
+        return true;
+    };
+    if (tileValidForFounding(u.x, u.y)) {
+        std::string nm;
+        if (buildCity(u.x, u.y, u.owner, nm)) {
+            u.alive = false;  // Settlers consumed by the BUILD-CITY action
+            return true;
+        }
+    }
+    if (!haveTarget) return false; // nowhere to go; sit
+    int dx = (tx > u.x) ? 1 : (tx < u.x ? -1 : 0);
+    int dy = (ty > u.y) ? 1 : (ty < u.y ? -1 : 0);
+    if (dx == 0 && dy == 0) return false;
+    moveUnit(unitId, dx, dy);
+    return true;
+}
+
 bool UnitManagement::buildCity(int x, int y, int playerId, std::string& outName) {
     return buildCity(x, y, playerId, 0, outName);
 }

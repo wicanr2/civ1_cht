@@ -213,41 +213,29 @@ int CheckPlayerTurn::processEndOfTurn() {
         }
     }
 
-    // ---- AI SMART CITY PRODUCTION (faithful greedy approximation) -------
+    // ---- AI SMART CITY PRODUCTION (faithful greedy + expansion) -------
     // Mirrors the AI city-build decision in C# CityWorker.cs (where AI civs
     // pick the highest-priority unit/building their tech allows). The full
-    // weighted scorer (threat, terrain, role, ...) is OUT OF SCOPE; we use
-    // the well-documented "pick the highest-attack unit whose tech is known"
-    // heuristic as the milestone behaviour. Rules (per AI city, per turn):
+    // weighted scorer (threat, terrain, role, ...) is OUT OF SCOPE; we
+    // delegate to UnitManagement::pickAiCityProduction which encodes the
+    // "Settlers when expanding, highest-attack tech-known unit otherwise"
+    // rule. See its header comment for the exact gate.
+    // Per-AI city, per turn:
     //   * Only re-pick when the city is currently producing a Unit (so any
-    //     human-set Building/Wonder production stays untouched). For AI
-    //     cities the default is Unit (Militia), so this triggers every turn
-    //     until a unit unlocks higher than the current pick.
-    //   * Pick the highest-attack unit whose techPrereq is known by this civ
-    //     (Settlers excluded — attack 0). Ties broken in enum order.
-    //     Falls back to Militia (Tech::None) when nothing else qualifies.
-    //   * Settlers founding (new-city) is handled by the AI auto-found pass
-    //     above; per-city production never picks Settlers (matches C# AI
-    //     which doesn't queue Settlers from city build menu in the basic
-    //     "advance on threat" path — the dedicated expansion AI is a TODO).
+    //     human-set Building/Wonder production stays untouched).
+    //   * Settlers picks happen when the civ has fewer than 4 cities AND
+    //     no Settlers is already in motion AND city pop >= 2 (faithful Civ1
+    //     "Settlers cost 1 population" — won't starve a pop=1 city).
+    //   * Else highest-attack tech-known combat unit (Settlers excluded;
+    //     ties in enum order; Militia is the no-tech fallback).
     {
         auto& citiesMut = um.citiesMut();
         const auto& civs = um.civs();
-        auto& tr = p.techResearch();
         for (auto& c : citiesMut) {
             if (c.owner < 0 || std::size_t(c.owner) >= civs.size()) continue;
             if (civs[std::size_t(c.owner)].isHuman) continue; // human picks
             if (c.productionKind != City::ProductionKind::Unit) continue;
-            UnitType pick = UnitType::Militia;
-            int bestAtk = -1;
-            for (int i = 0; i < kUnitTypeCount; ++i) {
-                UnitType cand = UnitType(i);
-                if (cand == UnitType::Settlers) continue; // not a combatant
-                const UnitDef& def = unitDefOf(cand);
-                if (def.techPrereq != Tech::None && tr.civCount() > 0 &&
-                    !tr.civKnows(c.owner, def.techPrereq)) continue;
-                if (def.attack > bestAtk) { bestAtk = def.attack; pick = cand; }
-            }
+            UnitType pick = um.pickAiCityProduction(c.owner, c);
             // Apply (bypasses tech-gate by writing directly; the picker
             // already enforced the gate). Preserves accumulated shields
             // (faithful Civ1 carry-over on production switch).
@@ -292,6 +280,41 @@ int CheckPlayerTurn::processEndOfTurn() {
                 for (int s = 0; s < steps; ++s) {
                     if (!units[std::size_t(uid)].alive) break;
                     if (!um.aiStep(uid)) break; // no target / can't move
+                }
+            }
+        }
+    }
+
+    // ---- AI SETTLERS EXPANSION PASS (faithful greedy approximation) -----
+    // Mirrors the dedicated Settlers branch of the C# AI dispatcher: a
+    // Settlers unit (non-combatant) walks to a valid founding spot at
+    // Chebyshev distance >= kAiSettlerMinSpacing from ALL cities, then
+    // founds a new city there. The full C# AI uses river/resource/terrain
+    // scoring; here we use the simplified rule encoded in
+    // UnitManagement::aiSettlerStep (see its header comment).
+    // Determinism: civs/units processed in stable index order; the auto-
+    // found-capital pass earlier this same EOT already consumed every AI
+    // civ's STARTING Settlers, so this pass only sees PRODUCED Settlers.
+    {
+        auto& units = um.unitsMut();
+        const auto& civs = um.civs();
+        for (std::size_t cIdx = 0; cIdx < civs.size(); ++cIdx) {
+            if (civs[cIdx].isHuman) continue;
+            int civId = int(cIdx);
+            std::vector<int> mySettlers;
+            for (std::size_t i = 0; i < units.size(); ++i) {
+                const Unit& u = units[i];
+                if (!u.alive || u.owner != civId) continue;
+                if (u.type != UnitType::Settlers) continue;
+                mySettlers.push_back(int(i));
+            }
+            for (int uid : mySettlers) {
+                if (!units[std::size_t(uid)].alive) continue;
+                int steps = unitDefOf(units[std::size_t(uid)].type).move;
+                if (steps < 1) steps = 1;
+                for (int s = 0; s < steps; ++s) {
+                    if (!units[std::size_t(uid)].alive) break;
+                    if (!um.aiSettlerStep(uid)) break; // no target / built
                 }
             }
         }
@@ -554,14 +577,34 @@ int CheckPlayerTurn::processEndOfTurn() {
                 needed = unitDefOf(c.productionType).cost;
                 if (c.production != needed) c.production = needed;
                 if (needed > 0 && c.shields >= needed) {
-                    c.shields -= needed;
-                    c.units += 1;
-                    int newUnitIdx = um.addUnit(c.owner, c.productionType, c.x, c.y);
-                    // Barracks: produced units are veterans (+50% combat).
-                    if (c.hasBuilding(BuildingType::Barracks) &&
-                        newUnitIdx >= 0 &&
-                        std::size_t(newUnitIdx) < um.unitsMut().size()) {
-                        um.unitsMut()[std::size_t(newUnitIdx)].veteran = true;
+                    // ---- SETTLERS COST 1 POPULATION (faithful Civ1) -----
+                    // Civ1: producing a Settlers consumes 1 population from
+                    // the building city. Refused (shields RETAINED) when
+                    // pop < 2 — otherwise the city would die. On success
+                    // city.population -= 1 alongside the unit append.
+                    // Applied to both human and AI cities — the AI smart-
+                    // pick gates Settlers picks on pop>=2 too, so this is
+                    // a defensive guard for cities that started Settlers
+                    // when pop=2 and then shrank to 1 (disorder/starve).
+                    if (c.productionType == UnitType::Settlers &&
+                        c.population < 2) {
+                        // Hold shields at the cap so the unit fires the
+                        // turn pop returns to >=2.
+                        c.shields = needed;
+                    } else {
+                        c.shields -= needed;
+                        c.units += 1;
+                        int newUnitIdx = um.addUnit(c.owner, c.productionType, c.x, c.y);
+                        if (c.productionType == UnitType::Settlers) {
+                            c.population -= 1;
+                            if (c.population < 1) c.population = 1;
+                        }
+                        // Barracks: produced units are veterans (+50% combat).
+                        if (c.hasBuilding(BuildingType::Barracks) &&
+                            newUnitIdx >= 0 &&
+                            std::size_t(newUnitIdx) < um.unitsMut().size()) {
+                            um.unitsMut()[std::size_t(newUnitIdx)].veteran = true;
+                        }
                     }
                 }
             }

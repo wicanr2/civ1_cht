@@ -734,6 +734,42 @@ public:
     // false when no target exists or the unit is dead.
     bool aiStep(int unitId);
 
+    // ---- AI EXPANSION (faithful greedy approximation) -------------------
+    // pickAiCityProduction: chooses what an AI city should next build.
+    // Faithful "expand vs. defend" heuristic — the C# Segment_25fb city
+    // picker is 359KB of x86 and OUT OF SCOPE; this is the documented
+    // simplification that lets AI civs ACTUALLY EXPAND past their capital
+    // (the gameplay goal). Rules (per AI city, per call):
+    //   * Prefer Settlers when: the owner civ has fewer than kAiSettlerMaxCities
+    //     (4), the city pop >= 2 (don't starve at pop=1 — Settlers cost 1
+    //     pop), AND no Settlers unit owned by this civ is currently alive
+    //     (i.e. no idle/in-motion expansion already underway).
+    //   * Otherwise pick the highest-attack tech-known combat unit
+    //     (Settlers excluded; ties broken in enum order; falls back to
+    //     Militia when nothing else qualifies).
+    static constexpr int kAiSettlerMaxCities = 4;
+    UnitType pickAiCityProduction(int civId, const City& c) const;
+
+    // findAiSettlerTarget: scan the map for a valid land tile at Chebyshev
+    // distance >= kAiSettlerMinSpacing (6) from ALL existing cities of any
+    // civ. Returns the Chebyshev-nearest such tile to the Settler at
+    // (sx, sy) in (tx, ty); returns false when no valid target exists.
+    // Land tiles considered valid: Grassland/Plains/Hills/Desert (matches
+    // the simplified "founding spot" filter; Mountains/Forest/Jungle/Swamp
+    // get a softer penalty but are also accepted as fallback).
+    static constexpr int kAiSettlerMinSpacing = 6;
+    bool findAiSettlerTarget(int sx, int sy, int& tx, int& ty) const;
+
+    // aiSettlerStep: drive ONE step of the AI Settlers' expansion behaviour.
+    //   * Out-of-range / dead / not-Settlers / working: returns false.
+    //   * If the Settler IS already standing on a valid founding tile
+    //     (distance >= kAiSettlerMinSpacing from ALL cities AND valid
+    //     terrain): call buildCity, mark unit dead, return true.
+    //   * Else find the nearest valid target and aiStep(dx,dy) toward it
+    //     via moveUnit. When no target exists, the Settler sits (returns
+    //     false; the AI doesn't move randomly).
+    bool aiSettlerStep(int unitId);
+
     // The last combat outcome (English key for the HUD): "" / "Victory" /
     // "Defeat" / "Battle" (in-progress). MiniWorld reads this for the HUD line.
     const std::string& lastCombatKey() const { return lastCombatKey_; }

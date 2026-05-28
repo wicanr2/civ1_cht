@@ -6912,6 +6912,196 @@ static int roadmovetest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- AI civ expansion (--aiexpandtest) ----------------------
+// Verifies the AI EXPANSION slice end-to-end:
+//   (1) Integrated PLAYING (1 human + 6 AI) -> 6 AI capitals after 1 EOT
+//       (existing aibehaviortest pre-condition).
+//   (2) Spin ~50 turns: AI cities periodically build Settlers, those
+//       Settlers walk to a valid land tile at Chebyshev distance >= 6 from
+//       ALL existing cities, and found a NEW city there (NAMED with the
+//       tribe capital + " N" suffix). Final cities() count must exceed 7
+//       (the 1 human capital case isn't built; cities are AI-only, so
+//       baseline = 6; "expansion happened" means > 7).
+//   (3) At least ONE AI civ owns 2+ cities after the spin.
+//   (4) Settlers cost 1 population: a controlled scenario where a city at
+//       pop=2 produces Settlers loses 1 pop (-> pop=1) and the Settlers
+//       count grows by 1.
+//   (5) Defensive: a city at pop=1 producing Settlers DOES NOT consume
+//       population (shields stay capped at the Settlers cost; no unit
+//       appears until pop returns to >=2).
+//   (6) Translate-on vs -off pixels differ on the HUD (new city names
+//       still respect Translator).
+static int aiexpandtest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // ---- (1)+(2)+(3): integrated 50-turn expansion ----------------------
+    {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow(g);
+        flow.enterTitle();
+        for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+        State s = flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+        chk(s == State::PLAYING, "(1) flow reached PLAYING");
+        auto& um = g.unitManagement();
+        // Spin 50 EOTs (the first EOT auto-founds all 6 AI capitals).
+        for (int t = 0; t < 50; ++t) g.checkPlayerTurn().processEndOfTurn();
+
+        std::size_t totalCities = um.cityCount();
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "(2) after 50 turns: total cities (%zu) > 7 (some AI expanded)",
+                      totalCities);
+        chk(totalCities > 7, buf);
+        // Sanity upper bound: 6 AI civs each capped at kAiSettlerMaxCities (4)
+        // -> 24 AI cities max. The human (civ 0) didn't found a city in this
+        // setup (no input loop runs), so cities() <= 24.
+        chk(totalCities <= 24, "(2) total cities within sane upper bound (<= 24)");
+        // (3) At least one AI civ has 2+ cities.
+        int civWith2Plus = 0;
+        for (std::size_t i = 1; i < um.civs().size(); ++i) {
+            int cnt = 0;
+            for (const auto& c : um.cities()) if (c.owner == int(i)) ++cnt;
+            if (cnt >= 2) ++civWith2Plus;
+        }
+        std::snprintf(buf, sizeof(buf),
+                      "(3) at least one AI civ has 2+ cities (got %d)", civWith2Plus);
+        chk(civWith2Plus >= 1, buf);
+
+        // (3b) The 2nd city's name carries the tribe capital + numeric suffix
+        // (e.g. "Rome 2", "Berlin 2"). Pick the first AI civ with >=2 cities
+        // and verify the second city's name matches "<capital> 2".
+        static const char* kCap[14] = {
+            "Rome", "Babylon", "Berlin", "Thebes", "Washington", "Athens",
+            "Delhi", "Moscow", "Zimbabwe", "Paris", "Tenochtitlan",
+            "Peking", "London", "Samarkand"
+        };
+        bool suffixOK = false;
+        for (std::size_t i = 1; i < um.civs().size() && !suffixOK; ++i) {
+            int tribe = um.civs()[i].tribeIdx;
+            if (tribe < 0 || tribe >= 14) continue;
+            int nth = 0;
+            for (const auto& c : um.cities()) {
+                if (c.owner != int(i)) continue;
+                if (nth == 1) {
+                    char expected[64];
+                    std::snprintf(expected, sizeof(expected), "%s 2", kCap[tribe]);
+                    if (c.name == expected) suffixOK = true;
+                    break;
+                }
+                ++nth;
+            }
+        }
+        chk(suffixOK,
+            "(3b) AI civ's 2nd city named '<capital> 2' (numeric suffix)");
+    }
+
+    // ---- (4): Settlers cost 1 population (faithful Civ1) ---------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(40, 40);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 0);
+        std::string nm;
+        chk(um.buildCity(10, 10, 0, nm), "(4) buildCity OK");
+        // Park pop=2, accumulate shields, set production to Settlers (cost 40).
+        um.citiesMut()[0].population = 2;
+        chk(um.setCityProductionType(0, UnitType::Settlers),
+            "(4) setCityProductionType(Settlers) accepted");
+        um.citiesMut()[0].shields = 40; // exactly threshold; one EOT produces
+        std::size_t unitsBefore = um.units().size();
+        // Re-park pop=2 each turn so no unintended growth interferes.
+        um.citiesMut()[0].population = 2;
+        g.checkPlayerTurn().processEndOfTurn();
+        chk(um.units().size() == unitsBefore + 1,
+            "(4) one new unit produced after threshold");
+        if (um.units().size() > unitsBefore) {
+            chk(um.units().back().type == UnitType::Settlers,
+                "(4) new unit is a Settlers");
+        }
+        chk(um.cities()[0].population == 1,
+            "(4) city population dropped from 2 -> 1 (Settlers cost 1 pop)");
+    }
+
+    // ---- (5): Defensive: pop=1 refuses Settlers production -------------
+    // Keep pop pinned at 1 across EOTs by parking food at a large negative
+    // before each pass — the food += foodPerTurn pass stays negative, the
+    // starvation guard clamps food=0 (pop=1 already, no shrink) and the
+    // growth threshold (20) is never crossed.
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(40, 40);
+        um.setupCivs(0, 0);
+        std::string nm;
+        chk(um.buildCity(10, 10, 0, nm), "(5) buildCity OK");
+        um.citiesMut()[0].population = 1;
+        chk(um.setCityProductionType(0, UnitType::Settlers),
+            "(5) setCityProductionType(Settlers) accepted");
+        um.citiesMut()[0].shields = 40; // at the threshold
+        std::size_t unitsBefore = um.units().size();
+        for (int i = 0; i < 5; ++i) {
+            um.citiesMut()[0].population = 1;
+            um.citiesMut()[0].food = -1000; // suppress growth this turn
+            g.checkPlayerTurn().processEndOfTurn();
+        }
+        chk(um.units().size() == unitsBefore,
+            "(5) NO Settlers produced while pop==1 (defensive guard)");
+        chk(um.cities()[0].population == 1,
+            "(5) population still 1 (Settlers refused at pop<2)");
+        chk(um.cities()[0].shields == 40,
+            "(5) shields held at the cap (40) waiting for pop>=2");
+        // Now bump pop to 2; next EOT MUST produce the Settlers immediately
+        // (shields still at the cap). Park food at 0 so growth doesn't fire
+        // AND starvation (which needs food<0) can't shrink pop back to 1
+        // before the production check runs.
+        um.citiesMut()[0].population = 2;
+        um.citiesMut()[0].food = 0;
+        g.checkPlayerTurn().processEndOfTurn();
+        chk(um.units().size() == unitsBefore + 1,
+            "(5) once pop>=2: held Settlers production fires immediately");
+        chk(um.cities()[0].population == 1,
+            "(5) pop 2 -> 1 after Settlers fires (cost 1 pop)");
+    }
+
+    // ---- (6): Translate-on vs -off pixels differ on the HUD ------------
+    std::size_t diffPixels = 0;
+    {
+        auto renderHud = [&](bool translateOn) -> std::vector<uint8_t> {
+            OpenCiv1Game g; setupGame(g, 640, 480);
+            Translator::instance().enabled = translateOn;
+            FrontEndFlow flow(g);
+            flow.enterTitle();
+            for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+            flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+            for (int t = 0; t < 20; ++t) g.checkPlayerTurn().processEndOfTurn();
+            flow.draw();
+            return g.graphics.screen(0).pixels();
+        };
+        std::vector<uint8_t> onPx  = renderHud(true);
+        std::vector<uint8_t> offPx = renderHud(false);
+        chk(onPx.size() == offPx.size() && !onPx.empty(),
+            "(6) HUD: both renders produced a buffer");
+        for (std::size_t i = 0; i < onPx.size() && i < offPx.size(); ++i)
+            if (onPx[i] != offPx[i]) ++diffPixels;
+        chk(diffPixels > 0,
+            "(6) HUD: translate-on vs -off pixels DIFFER (Chinese vs English)");
+        Translator::instance().enabled = true;
+    }
+
+    if (fail) std::printf("AIEXPANDTEST: %d failure(s)\n", fail);
+    else      std::printf("AIEXPANDTEST: all pass (50-turn expansion > 7 "
+                          "cities; >=1 AI civ has 2+ cities; Settlers cost "
+                          "1 pop; pop<2 refuses; HUD delta=%zu px)\n",
+                          diffPixels);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -6991,6 +7181,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--goldtest")) { return goldtest(); }
         else if (!std::strcmp(argv[i], "--happinesstest")) { return happinesstest(); }
         else if (!std::strcmp(argv[i], "--roadmovetest")) { return roadmovetest(); }
+        else if (!std::strcmp(argv[i], "--aiexpandtest")) { return aiexpandtest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -7056,7 +7247,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
