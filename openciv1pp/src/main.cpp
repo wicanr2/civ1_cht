@@ -24,6 +24,7 @@
 #include "game/MiniWorld.h"
 #include "game/MapManagement.h"
 #include "game/UnitManagement.h"
+#include "game/CheckPlayerTurn.h"
 #include "localization/Translator.h"
 #include "platform/SdlPresenter.h"
 #include "resource/PicLoader.h"
@@ -2055,6 +2056,114 @@ static int citytest() {
     return fail ? 1 : 0;
 }
 
+// Headless verification of the ported turn loop. Builds a city, calls
+// endTurn() repeatedly and asserts: (a) turn() advances, (b) the city
+// accumulates shields per turn (production loop is live), (c) the production
+// threshold is crossed and a unit is produced, (d) the year math (4000 BC
+// start, +20/turn until 1000 AD) advances correctly, (e) the HUD renders the
+// year + production line and the Chinese vs English pixels differ (translated).
+static int turntest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    OpenCiv1Game g;
+    setupGame(g, 480, 300);
+    Translator::instance().enabled = true;
+    MiniWorld w(40, 30, 12345u);
+    w.attachGame(g);
+
+    // (a) Year starts at -4000 (4000 BC) per StartGameMenu.cs initialization.
+    chk(g.unitManagement().year() == -4000, "Year starts at -4000 (4000 BC)");
+
+    // Find a land tile and build a city on it.
+    int gx = -1, gy = -1;
+    for (int y = 0; y < 30 && gx < 0; ++y)
+        for (int x = 0; x < 40 && gx < 0; ++x) {
+            Terrain t = w.terrainAt(x, y);
+            if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+        }
+    chk(gx >= 0, "found a land tile");
+    std::string cname;
+    chk(g.unitManagement().buildCity(gx, gy, 0, cname), "built a city");
+
+    int t0 = w.turn();
+    int year0 = g.unitManagement().year();
+
+    // (b) 10 endTurn calls: turn must advance by 10, shields > 0 (production
+    // accumulated). The first city's shields receives +1..+5/turn depending on
+    // adjacent Grassland/Plains; even on bare desert it gets the +1 baseline.
+    for (int i = 0; i < 10; ++i) w.endTurn();
+    chk(w.turn() == t0 + 10, "turn advanced 10 steps (== 11)");
+    chk(g.unitManagement().cities()[0].shields > 0 ||
+        g.unitManagement().cities()[0].units > 0,
+        "city's shields accumulated (production loop is live)");
+
+    // (c) Year must advance — at this point we're 10 turns into 4000 BC at
+    // +20/turn (Segment_1238.cs line 270), so year should be < -4000 + 10*20.
+    int year10 = g.unitManagement().year();
+    chk(year10 > year0, "year advanced after 10 turns");
+    chk(year10 < 0, "still BC after only 10 turns");
+    chk(year10 == year0 + 10 * 20,
+        "year advanced exactly +20/turn (faithful Segment_1238 schedule)");
+
+    // (d) Trigger at least one unit production. With production=10, even at the
+    // baseline +1/turn it takes <=10 more turns. Spin a generous budget.
+    int unitsBefore = g.unitManagement().totalUnitsProduced();
+    for (int i = 0; i < 50 && g.unitManagement().totalUnitsProduced() <= unitsBefore; ++i)
+        w.endTurn();
+    int unitsAfter = g.unitManagement().totalUnitsProduced();
+    chk(unitsAfter > unitsBefore,
+        "at least one unit produced after the shield threshold (units++)");
+
+    // (e) Year-math correctness on the +10/+5/+2/+1 transitions (lines 278-292).
+    // Within the same band as the C# code: 999 < 1000 -> +20 = 1019.
+    chk(CheckPlayerTurn::advanceYear(999)  == 1019,  "year 999 -> 1019 (+20, last BC-cadence step)");
+    chk(CheckPlayerTurn::advanceYear(1000) == 1010,  "year 1000 -> 1010 (+10)");
+    chk(CheckPlayerTurn::advanceYear(1499) == 1509,  "year 1499 -> 1509 (+10)");
+    chk(CheckPlayerTurn::advanceYear(1500) == 1505,  "year 1500 -> 1505 (+5)");
+    chk(CheckPlayerTurn::advanceYear(1749) == 1754,  "year 1749 -> 1754 (+5)");
+    chk(CheckPlayerTurn::advanceYear(1750) == 1752,  "year 1750 -> 1752 (+2)");
+    chk(CheckPlayerTurn::advanceYear(1849) == 1851,  "year 1849 -> 1851 (+2)");
+    chk(CheckPlayerTurn::advanceYear(1850) == 1851,  "year 1850 -> 1851 (+1)");
+    // BC->AD fix-ups (line 273-276 + line 304-305).
+    chk(CheckPlayerTurn::advanceYear(-20)  == 1,
+        "year -20 -> 0 -> coerced to 1 AD (BC->AD crossing)");
+    chk(CheckPlayerTurn::advanceYear(1)    == 20,
+        "year 1 AD -> +20 -> 21 -> fixed to 20 AD (Segment_1238 fix-up)");
+
+    // (f) HUD render: year + production line visible; Chinese vs English differs.
+    auto renderHud = [&](bool translate) -> std::vector<uint8_t> {
+        OpenCiv1Game gg;
+        setupGame(gg, 480, 300);
+        Translator::instance().enabled = translate;
+        MiniWorld ww(40, 30, 12345u);
+        ww.attachGame(gg);
+        std::string nm;
+        gg.unitManagement().buildCity(gx, gy, 0, nm);
+        for (int i = 0; i < 3; ++i) ww.endTurn(); // give shields/year movement
+        ww.draw(gg.graphics, 1, 12);
+        return gg.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> zh = renderHud(true);
+    std::vector<uint8_t> en = renderHud(false);
+    chk(!zh.empty() && zh.size() == en.size(), "both HUD renders produced a buffer");
+    std::size_t hudDiff = 0;
+    for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+        if (zh[i] != en[i]) ++hudDiff;
+    chk(hudDiff > 0,
+        "HUD Chinese vs English pixels DIFFER (year + production translated)");
+
+    Translator::instance().enabled = true; // restore
+
+    if (fail)
+        std::printf("TURNTEST: %d failure(s)\n", fail);
+    else
+        std::printf("TURNTEST: all pass (turn advances, year %d->%d, %d units produced; "
+                    "%zu i18n pixels differ)\n",
+                    year0, g.unitManagement().year(), unitsAfter, hudDiff);
+    return fail ? 1 : 0;
+}
+
 // Headless verification of the playable world. Asserts the pure API
 // (deterministic map, clamped movement, turn advance, terrain name keys) and
 // PROVES the HUD is localized by rendering the world twice (Translator on vs
@@ -2579,6 +2688,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--introtest")) { return introtest(); }
         else if (!std::strcmp(argv[i], "--realgentest")) { return realgentest(); }
         else if (!std::strcmp(argv[i], "--citytest")) { return citytest(); }
+        else if (!std::strcmp(argv[i], "--turntest")) { return turntest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -2636,7 +2746,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

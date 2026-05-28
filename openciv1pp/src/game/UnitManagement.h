@@ -40,6 +40,16 @@ struct City {
     int x = 0, y = 0;         // Position (matches C# GPoint)
     std::string name;         // resolved + (later) translated city name
     int foundedTurn = 0;      // founding turn (derived from the world's turn)
+
+    // Per-turn production state (mirrors City.ShieldsCount + the
+    // Units[CurrentProductionID].Cost threshold in CityWorker.cs). `production`
+    // is the cost to complete the currently-built unit (default 10 — a
+    // Settlers/Militia-class cost). `units` is the running count of units
+    // produced by this city (the visible-side Player.Units[] table wire-up is
+    // a TODO; see CheckPlayerTurn.cpp).
+    int shields = 0;
+    int production = 10;
+    int units = 0;
 };
 
 class UnitManagement {
@@ -75,7 +85,25 @@ public:
     int chosenTribe() const { return chosenTribe_; }
 
     const std::vector<City>& cities() const { return cities_; }
+    std::vector<City>& citiesMut() { return cities_; } // CheckPlayerTurn uses this
     std::size_t cityCount() const { return cities_.size(); }
+
+    // Total units produced across all cities (sum of City.units). Used by HUD
+    // and tests to verify the threshold-trigger unit production loop.
+    int totalUnitsProduced() const {
+        int n = 0;
+        for (const auto& c : cities_) n += c.units;
+        return n;
+    }
+
+    // The terrain provider plugged in by MiniWorld::attachGame. Exposed so
+    // CheckPlayerTurn can sample adjacent tiles for shield yield.
+    const std::function<Terrain(int, int)>& terrainProvider() const { return terrainAt_; }
+
+    // GameData.Year — Civ1 starts at -4000 (4000 BC) per StartGameMenu.cs.
+    // The end-of-turn pass mutates this via CheckPlayerTurn::advanceYear.
+    int year() const { return year_; }
+    void setYear(int y) { year_ = y; }
 
     // The english key for the Nth city of this tribe (0 = capital). Falls back
     // to "Capital" for the first city of an unknown tribe; subsequent unknown-
@@ -88,6 +116,7 @@ private:
     int mapW_ = 80, mapH_ = 50;
     int chosenTribe_ = -1;
     std::function<Terrain(int, int)> terrainAt_;
+    int year_ = -4000; // StartGameMenu.cs line 124: GameData.Year = -4000
 };
 
 } // namespace oc1

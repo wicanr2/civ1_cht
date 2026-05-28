@@ -56,7 +56,13 @@ public:
     const std::string& unitName() const { return unitName_; }
 
     bool moveUnit(int dx, int dy);
-    void endTurn() { ++turn_; }
+
+    // End-of-turn: increments the turn counter AND, when a host game is
+    // attached, calls CheckPlayerTurn::processEndOfTurn() (per-civ city pass:
+    // shield accumulation + threshold-triggered unit production, then advances
+    // GameData.Year via the ported Segment_1238 year-step ladder). Headless
+    // (no host) endTurn() is still a simple turn_++ — the playtest covers that.
+    void endTurn();
 
     // ---- mouse input (hit-test + dispatch) ----
     // Inverse of the draw() viewport math: convert framebuffer pixel coords to

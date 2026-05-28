@@ -2,6 +2,7 @@
 #include "MapManagement.h"
 #include "OpenCiv1Game.h"
 #include "UnitManagement.h"
+#include "CheckPlayerTurn.h"
 #include "../resource/PicLoader.h"
 #include <algorithm>
 #include <cstdint>
@@ -234,6 +235,13 @@ void MiniWorld::renderCities(GBitmap& screen) const {
     }
 }
 
+void MiniWorld::endTurn() {
+    ++turn_;
+    // When a host game is attached, run the per-turn housekeeping pass
+    // (per-civ city loop -> shields/units; then GameData.Year advance).
+    if (game_) game_->checkPlayerTurn().processEndOfTurn();
+}
+
 bool MiniWorld::moveUnit(int dx, int dy) {
     int nx = std::clamp(unitX_ + dx, 0, w_ - 1);
     int ny = std::clamp(unitY_ + dy, 0, h_ - 1);
@@ -333,11 +341,23 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
     int lineH = font.pixelHeight + font.lineSpacing;
     int tx = 4, ty = hudY + 2;
 
-    // Line 1: "回合 N"  +  current tile terrain name  +  unit name.
+    // Line 1: "回合 N (年份: <year>)"  +  terrain name  +  unit name.
     int penX = gd.drawString(GDriver::MainScreen, font, tx, ty, "Turn", 207);
     char num[16];
-    std::snprintf(num, sizeof(num), " %d   ", turn_);
+    std::snprintf(num, sizeof(num), " %d  ", turn_);
     penX = fb.drawString(font, penX, ty, num, 207); // numbers: no translation needed
+    // Year string: GameData.Year < 0 -> "<n> BC", > 0 -> "<n> AD". Mirrors
+    // Segment_1238.cs F0_1238_*_FormatYear ("{Math.Abs(Year)} { (Year>=0)?AD:BC }").
+    if (game_) {
+        penX = gd.drawString(GDriver::MainScreen, font, penX, ty, "Year:", 207);
+        int yr = game_->unitManagement().year();
+        char yb[24];
+        std::snprintf(yb, sizeof(yb), "%d ", yr < 0 ? -yr : yr);
+        penX = fb.drawString(font, penX, ty, yb, 207);
+        penX = gd.drawString(GDriver::MainScreen, font, penX, ty,
+                             yr < 0 ? "BC" : "AD", 207);
+        penX = fb.drawString(font, penX, ty, "  ", 207);
+    }
     penX = gd.drawString(GDriver::MainScreen, font, penX, ty,
                          terrainNameKey(terrainAt(unitX_, unitY_)), 207);
     penX = fb.drawString(font, penX, ty, "  ", 207);
@@ -373,6 +393,19 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
             gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
                           lastCityName_, 207);
         }
+    }
+    // Production line: when at least one city is founded, append the FIRST
+    // city's shields/production threshold (the "current city" placeholder
+    // until per-city focus is wired). Mirrors the HUD line CityWorker draws
+    // for the active city ("Production: SHIELDS/COST").
+    if (nCities > 0) {
+        const auto& c0 = game_->unitManagement().cities()[0];
+        penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+        penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                              "Production:", 207);
+        char pbuf[32];
+        std::snprintf(pbuf, sizeof(pbuf), " %d/%d", c0.shields, c0.production);
+        fb.drawString(font, penX3, line3Y, pbuf, 207);
     }
 }
 
