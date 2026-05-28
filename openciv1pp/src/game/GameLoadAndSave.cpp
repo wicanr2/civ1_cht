@@ -95,9 +95,11 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     std::ofstream os(path, std::ios::binary);
     if (!os) return false;
 
-    // Header. v3 adds the improvements grid + per-unit work state.
+    // Header. v4 adds per-city {productionKind, productionBuildingType,
+    // ownedBuildings list} + per-unit veteran flag for the buildings slice.
+    // v3 added the improvements grid + per-unit work state.
     // v2 added per-civ tech-tree state; v1 was the pre-tech baseline.
-    os << "OpenCiv1pp savegame v3\n";
+    os << "OpenCiv1pp savegame v4\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -140,18 +142,23 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
            << (c.isHuman ? 1 : 0) << " " << c.name << "\n";
     }
 
-    // Units. v3: per-unit work state (workTurnsLeft, workTarget) appended at
-    // the end of each unit line. Older readers stop at the alive field; the
-    // v3 loader picks up the extra fields when present (default to 0).
+    // Units. v3: per-unit work state (workTurnsLeft, workTarget) appended.
+    // v4: per-unit veteran flag appended after workTarget (0/1). Older
+    // readers stop at the last field they recognize; the v4 loader picks up
+    // the trailing veteran column when present (default false).
     const auto& units = p.unitManagement().units();
     os << "units " << units.size() << "\n";
     for (const auto& u : units) {
         os << "unit " << u.owner << " " << u.x << " " << u.y << " "
            << int(u.type) << " " << (u.alive ? 1 : 0)
-           << " " << u.workTurnsLeft << " " << int(u.workTarget) << "\n";
+           << " " << u.workTurnsLeft << " " << int(u.workTarget)
+           << " " << (u.veteran ? 1 : 0) << "\n";
     }
 
-    // Cities.
+    // Cities. v4: per-city building state is written as a SEPARATE 'citybld'
+    // line per city (cityId + productionKind + productionBuildingType +
+    // comma-separated owned-buildings list). The main 'city' line layout
+    // stays unchanged so v3 readers continue to parse it correctly.
     const auto& cities = p.unitManagement().cities();
     os << "cities " << cities.size() << "\n";
     for (const auto& c : cities) {
@@ -159,6 +166,19 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
            << " " << c.foundedTurn << " " << c.shields << " " << c.production
            << " " << c.units << " " << int(c.productionType) << " "
            << c.name << "\n";
+    }
+    // v4: per-city building state, one line per city.
+    for (const auto& c : cities) {
+        os << "citybld " << c.id << " " << int(c.productionKind) << " "
+           << int(c.productionBuildingType) << " ";
+        bool first = true;
+        for (BuildingType b : c.ownedBuildings) {
+            if (!first) os << ",";
+            os << int(b);
+            first = false;
+        }
+        if (first) os << "-"; // sentinel for "no owned buildings"
+        os << "\n";
     }
 
     // Terrain bytes (80*50 = 4000 bytes -> 8000 hex chars on one line).
@@ -218,12 +238,14 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
 
     std::string header;
     if (!std::getline(is, header)) return false;
-    // Accept v1 (pre-tech-tree), v2 (pre-improvements), v3 (current).
-    // v1 files skip the tech-state restore; v2 files skip the improvements
-    // grid + per-unit work state (those fields default to 0).
+    // Accept v1 (pre-tech-tree), v2 (pre-improvements), v3 (pre-buildings),
+    // v4 (current). v1 files skip the tech-state restore; v2 files skip the
+    // improvements grid + per-unit work state; v3 files skip the per-city
+    // building state + per-unit veteran flag (those fields default to 0).
     if (header != "OpenCiv1pp savegame v1" &&
         header != "OpenCiv1pp savegame v2" &&
-        header != "OpenCiv1pp savegame v3") return false;
+        header != "OpenCiv1pp savegame v3" &&
+        header != "OpenCiv1pp savegame v4") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -240,6 +262,10 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     struct TechRow { int civId; int researching; int points; std::vector<int> known; };
     std::vector<TechRow> techRows;
     int techCivsCount = 0;
+    // v4: per-city building state, applied after the cities vector is built.
+    struct CityBldRow { int cityId; int prodKind; int prodBuildingType;
+                        std::vector<int> owned; };
+    std::vector<CityBldRow> cityBldRows;
 
     std::string line;
     while (std::getline(is, line)) {
@@ -282,12 +308,16 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             iss >> u.owner >> u.x >> u.y >> t >> alive;
             u.type = UnitType(t);
             u.alive = (alive != 0);
-            // v3: trailing workTurnsLeft + workTarget. Absent in v1/v2 (the
-            // istream extraction silently fails and the defaults persist).
-            int wtLeft = 0, wtTarget = 0;
+            // v3: trailing workTurnsLeft + workTarget. v4: trailing veteran
+            // flag after workTarget. Absent in older files (the istream
+            // extraction silently fails and the defaults persist).
+            int wtLeft = 0, wtTarget = 0, vet = 0;
             if (iss >> wtLeft) {
                 u.workTurnsLeft = wtLeft;
-                if (iss >> wtTarget) u.workTarget = uint8_t(wtTarget);
+                if (iss >> wtTarget) {
+                    u.workTarget = uint8_t(wtTarget);
+                    if (iss >> vet) u.veteran = (vet != 0);
+                }
             }
             units.push_back(u);
         }
@@ -303,6 +333,26 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             if (!rest.empty() && rest.front() == ' ') rest.erase(0, 1);
             c.name = rest;
             cities.push_back(std::move(c));
+        }
+        else if (key == "citybld") {
+            CityBldRow r;
+            std::string csv;
+            iss >> r.cityId >> r.prodKind >> r.prodBuildingType >> csv;
+            if (csv != "-" && !csv.empty()) {
+                std::size_t start = 0;
+                while (start <= csv.size()) {
+                    std::size_t comma = csv.find(',', start);
+                    std::string tok = csv.substr(start,
+                        (comma == std::string::npos ? csv.size() : comma) - start);
+                    if (!tok.empty()) {
+                        try { r.owned.push_back(std::stoi(tok)); }
+                        catch (...) { /* skip malformed token */ }
+                    }
+                    if (comma == std::string::npos) break;
+                    start = comma + 1;
+                }
+            }
+            cityBldRows.push_back(std::move(r));
         }
         else if (key == "terrain") {
             std::string hex;
@@ -362,6 +412,22 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     p.unitManagement().civsMut() = std::move(civs);
     p.unitManagement().unitsMut() = std::move(units);
     p.unitManagement().citiesMut() = std::move(cities);
+
+    // v4: apply per-city building state on top of the freshly-restored cities.
+    // Each citybld row targets a city by id and restores productionKind,
+    // productionBuildingType, and the ownedBuildings set. Absent in v1/v2/v3
+    // saves: the fields keep their City struct defaults (Unit, None, {}).
+    {
+        auto& cv = p.unitManagement().citiesMut();
+        for (const auto& r : cityBldRows) {
+            if (r.cityId < 0 || std::size_t(r.cityId) >= cv.size()) continue;
+            City& c = cv[std::size_t(r.cityId)];
+            c.productionKind = City::ProductionKind(r.prodKind);
+            c.productionBuildingType = BuildingType(r.prodBuildingType);
+            c.ownedBuildings.clear();
+            for (int b : r.owned) c.ownedBuildings.insert(BuildingType(b));
+        }
+    }
 
     // Restore the terrain grid bytes into VCPU memory (and into MiniWorld's
     // cache when one is attached). Run AFTER rebuildPlayingShell so MiniWorld

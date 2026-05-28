@@ -255,8 +255,19 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         drawLabelValue(infoY + lineH * 2, "Owner:", tr);
     }
     {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "%d/%d", city.shields, city.production);
+        // Production line: SHIELDS/COST + the English key of what's being
+        // built (unit type name OR building name, translated via Translator).
+        char buf[64];
+        const char* what = nullptr;
+        if (city.productionKind == City::ProductionKind::Building &&
+            city.productionBuildingType != BuildingType::None) {
+            what = buildingDefOf(city.productionBuildingType).name;
+        } else {
+            what = unitDefOf(city.productionType).name;
+        }
+        std::string whatTr = Translator::instance().translate(what);
+        std::snprintf(buf, sizeof(buf), "%s %d/%d", whatTr.c_str(),
+                      city.shields, city.production);
         drawLabelValue(infoY + lineH * 3, "Production:", buf);
     }
     // "Researching: <tech>  (pts/cost)" — the owner civ's current research
@@ -271,8 +282,23 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
                           p.techResearch().civPoints(city.owner),
                           p.techResearch().civResearchCost(city.owner));
             std::string val = Translator::instance().translate(nameKey) + buf;
-            drawLabelValue(infoY + lineH * 4 - 2, "Researching:", val);
+            drawLabelValue(infoY + lineH * 4, "Researching:", val);
         }
+    }
+    {
+        // Owned-buildings line ("建築: Granary, Walls" / "Buildings: ..."),
+        // localized via the Translator. Each building name goes through the
+        // Translator independently so the "Granary"->"穀倉" rule applies.
+        std::string val;
+        bool first = true;
+        for (BuildingType b : city.ownedBuildings) {
+            const BuildingDef& bd = buildingDefOf(b);
+            if (!first) val += ", ";
+            val += Translator::instance().translate(bd.name);
+            first = false;
+        }
+        if (val.empty()) val = "-";
+        drawLabelValue(infoY + lineH * 5, "Buildings:", val);
     }
 
     // 5) Population dots — one warm yellow dot per population point, drawn in
@@ -280,7 +306,7 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
     //    drawn at (24, 140) in F19_0000_111f_DrawCityPopulation; we use small
     //    coloured dots instead of POP.PIC sprites — see header for the stub).
     {
-        int popY = infoY + lineH * 4 + 4;
+        int popY = infoY + lineH * 6 + 2;
         int popX = infoX;
         for (int i = 0; i < population && i < 24; ++i) {
             screen.fillRect(Rect{popX, popY, 6, 8}, 166);
@@ -296,7 +322,7 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
     //    leave the cells blank (panel fill).
     {
         std::string lbl = Translator::instance().translate("Tiles:");
-        int tY = infoY + lineH * 5 + 16;
+        int tY = infoY + lineH * 7 + 4;
         screen.drawString(font, infoX + 1, tY + 1, lbl, 163);
         screen.drawString(font, infoX, tY, lbl, 164);
 

@@ -28,6 +28,7 @@
 #include "TechResearch.h"
 #include <cstdint>
 #include <functional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -41,7 +42,11 @@ class OpenCiv1Game;
 // slice needs (founder + cheap attacker + cheap defender). Numeric values
 // are kept 1:1 with the C# enum so save/load round-trip is straight-through
 // when the deeper port lands.
-enum class UnitType : uint8_t { Settlers = 0, Militia = 1, Phalanx = 2 };
+// Cavalry (3) is the first unit with attack > 1 — added so combat-with-Walls
+// statistics can be exercised against a non-degenerate baseline (atk=1 vs
+// def=2 always rolls 0/0..1 which gives a 100% defender win rate even
+// without Walls). Cavalry stats: a=2 d=1 m=2 cost=20 (faithful Civ1).
+enum class UnitType : uint8_t { Settlers = 0, Militia = 1, Phalanx = 2, Cavalry = 3 };
 
 // A unit's fixed stats — faithful subset of UnitDefinition.cs (only the
 // fields actually consumed by the combat / cost / movement paths in this
@@ -65,17 +70,55 @@ struct UnitDef {
 //   Militia:  attack=1, defense=1, move=1, cost=1*10 = 10
 //   Phalanx:  attack=1, defense=2, move=1, cost=2*10 = 20
 inline const UnitDef& unitDefOf(UnitType t) {
-    static const UnitDef kDefs[3] = {
+    static const UnitDef kDefs[4] = {
         // techPrereq matches the C# UnitDefinition.PrerequisiteTech args in
         // GameData.cs lines 209-211: Settlers/Militia = None; Phalanx =
         // BronzeWorking. Future units already noted: Legion -> IronWorking
         // (GameData.cs line 212) — added when the unit ships.
+        // Cavalry stats are the standard Civ1 horseback (a=2 d=1 m=2 cost=20,
+        // PrerequisiteTech HorsebackRiding). We leave the prereq as None for
+        // now so existing tech-gated paths continue to behave; Cavalry is
+        // primarily exercised by --buildingtest's combat statistics.
         {"Settlers", 0, 1, 1, 40, Tech::None},
         {"Militia",  1, 1, 1, 10, Tech::None},
         {"Phalanx",  1, 2, 1, 20, Tech::BronzeWorking},
+        {"Cavalry",  2, 1, 2, 20, Tech::None},
     };
     int i = int(t);
-    if (i < 0 || i > 2) i = 0;
+    if (i < 0 || i > 3) i = 0;
+    return kDefs[i];
+}
+
+// ---- City improvements (buildings) -------------------------------------
+// A faithful SUBSET of the C# CityImprovementEnum (28 buildings in Civ1).
+// We ship the iconic early-era 3: Granary, Barracks, Walls. Numeric ids match
+// the Civ1 order (Granary=1, Barracks=2, Walls=3) so future expansion can
+// re-use the same integer encoding on disk (see GameLoadAndSave v4).
+enum class BuildingType : uint8_t {
+    None     = 0,
+    Granary  = 1,
+    Barracks = 2,
+    Walls    = 3,
+};
+
+// A building's fixed stats — faithful subset of the C# CityImprovement
+// definition table. `cost` is the SHIELD threshold (Civ1 standard values).
+struct BuildingDef {
+    const char* name; // English key (Translator -> Chinese)
+    int cost;         // shield cost (Granary=60, Barracks=40, Walls=80)
+};
+
+// Faithful BuildingDef table (Civ1 standard costs).
+// Sources: Civ1 manual + community wikis (CivFanatics CityImprovements).
+inline const BuildingDef& buildingDefOf(BuildingType t) {
+    static const BuildingDef kDefs[4] = {
+        {"None",     0},
+        {"Granary",  60}, // food-bonus building (food not modeled — TODO)
+        {"Barracks", 40}, // produces VETERAN units (+50% combat bonus)
+        {"Walls",    80}, // defender on city tile: defense x3 (Civ1 +200%)
+    };
+    int i = int(t);
+    if (i < 0 || i > 3) i = 0;
     return kDefs[i];
 }
 
@@ -95,6 +138,11 @@ struct Unit {
     // (see MapManagement::setImprovementFlag) and workTarget clears.
     int workTurnsLeft = 0;
     uint8_t workTarget = 0;   // 0=None, 1=Road, 2=Irrigation
+    // Veteran flag — set when this unit was produced in a city that owns
+    // a Barracks (Civ1: Barracks-built units are Veterans -> +50% combat).
+    // Mirrors C# Unit.IsVeteran. Resolved at production time in
+    // CheckPlayerTurn::processEndOfTurn.
+    bool veteran = false;
 };
 
 // Per-civilization state (a SUBSET of GameData.Players[i] + Nations[i]).
@@ -125,6 +173,23 @@ struct City {
     int shields = 0;
     int production = 10;  // unitDefOf(productionType).cost, kept in sync
     int units = 0;
+
+    // ---- Building (city improvement) production -----------------------
+    // Civ1 cities can build EITHER a unit OR a building per production cycle.
+    // `productionKind` selects which; when Building, `productionBuildingType`
+    // names the target and `production` caches buildingDefOf().cost so the
+    // end-of-turn threshold pass stays a single comparison.
+    // `ownedBuildings` is the set of buildings this city has already built;
+    // it can't build the same improvement twice (faithful Civ1 rule).
+    enum class ProductionKind : uint8_t { Unit = 0, Building = 1 };
+    ProductionKind productionKind = ProductionKind::Unit;
+    BuildingType   productionBuildingType = BuildingType::None;
+    std::set<BuildingType> ownedBuildings;
+
+    // Convenience: does this city own `b`?
+    bool hasBuilding(BuildingType b) const {
+        return ownedBuildings.find(b) != ownedBuildings.end();
+    }
 };
 
 class UnitManagement {
@@ -244,6 +309,20 @@ public:
     // city ids also return false.
     bool setCityProductionType(int cityId, UnitType t);
 
+    // Switch a city's production to a BUILDING. Refuses (returns false) when:
+    //   - cityId is out of range,
+    //   - the city already OWNS this building (Civ1 rule: no duplicates),
+    //   - the building is BuildingType::None.
+    // On success: sets productionKind=Building, productionBuildingType=b,
+    // and syncs `production` to buildingDefOf(b).cost.
+    bool setCityProductionBuilding(int cityId, BuildingType b);
+
+    // Combat-modifier helper: returns true when the city at tile (x,y) owned
+    // by `owner` has BuildingType `b`. Used by resolveCombat to apply the
+    // Barracks (+50% attack) and Walls (defender x3) bonuses without leaking
+    // city/tile lookup details into the combat formula.
+    bool tileCityHasBuilding(int owner, int x, int y, BuildingType b) const;
+
     // ---- COMBAT (faithful Civ1 formula) -----------------------------------
     // The reference combat path in C# is buried in Segment_25fb (the AI unit
     // dispatcher) and the per-unit move handler — too obfuscated for a 1:1
@@ -265,7 +344,8 @@ public:
     // as 1 to avoid div-by-zero (Civ1 has no 0-defense units; Settlers' 0
     // attack is the only zero stat in this slice).
     static bool resolveCombat(Unit& attacker, Unit& defender,
-                              uint32_t& rngState);
+                              uint32_t& rngState,
+                              bool defenderHasWalls = false);
 
     // moveUnit: move a unit by (dx,dy) by ONE step. When the destination tile
     // has an enemy alive unit, runs combat instead of moving (see resolveCombat).

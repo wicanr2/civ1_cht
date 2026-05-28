@@ -179,7 +179,40 @@ bool UnitManagement::setCityProductionType(int cityId, UnitType t) {
     }
     cities_[std::size_t(cityId)].productionType = t;
     cities_[std::size_t(cityId)].production = def.cost;
+    // Switching to a UNIT clears any pending building target.
+    cities_[std::size_t(cityId)].productionKind = City::ProductionKind::Unit;
+    cities_[std::size_t(cityId)].productionBuildingType = BuildingType::None;
     return true;
+}
+
+// ---- City improvements (buildings) -------------------------------------
+// Switch the city to producing BuildingType `b`. Refuses on:
+//   - out-of-range cityId,
+//   - BuildingType::None (no-op target),
+//   - already-owned building (Civ1: no duplicates per city).
+// On success: productionKind=Building, productionBuildingType=b, production
+// = buildingDefOf(b).cost. Existing accumulated shields are preserved
+// (faithful Civ1: switching production keeps the current shield reservoir).
+bool UnitManagement::setCityProductionBuilding(int cityId, BuildingType b) {
+    if (cityId < 0 || std::size_t(cityId) >= cities_.size()) return false;
+    if (b == BuildingType::None) return false;
+    City& c = cities_[std::size_t(cityId)];
+    if (c.hasBuilding(b)) return false; // already owned
+    const BuildingDef& bd = buildingDefOf(b);
+    c.productionKind = City::ProductionKind::Building;
+    c.productionBuildingType = b;
+    c.production = bd.cost;
+    return true;
+}
+
+bool UnitManagement::tileCityHasBuilding(int owner, int x, int y,
+                                         BuildingType b) const {
+    for (const auto& c : cities_) {
+        if (c.x != x || c.y != y) continue;
+        if (c.owner != owner) continue;
+        return c.hasBuilding(b);
+    }
+    return false;
 }
 
 // Tiny xorshift32 (deterministic per-seed; we use it as the RNG step for the
@@ -196,11 +229,27 @@ static inline uint32_t xorshift32(uint32_t& s) {
 }
 
 bool UnitManagement::resolveCombat(Unit& attacker, Unit& defender,
-                                   uint32_t& rngState) {
+                                   uint32_t& rngState,
+                                   bool defenderHasWalls) {
     const UnitDef& aDef = unitDefOf(attacker.type);
     const UnitDef& dDef = unitDefOf(defender.type);
     int atk = aDef.attack;     if (atk < 0) atk = 0;
     int def = dDef.defense;    if (def <= 0) def = 1; // guard div-by-zero
+    // ---- BARRACKS veteran bonus -----------------------------------------
+    // Civ1: units produced in a city with a Barracks are VETERANS, granting
+    // +50% combat (we apply it to BOTH attack and defense as the C# does).
+    // Implemented as an integer multiply (atk *= 3/2) to keep the roll math
+    // in plain ints (no floats in the deterministic xorshift path).
+    if (attacker.veteran) atk = (atk * 3) / 2;
+    if (defender.veteran) def = (def * 3) / 2;
+    // ---- WALLS defender bonus -------------------------------------------
+    // Civ1: City Walls grant +200% defense (triple the defender's defense)
+    // when the defender stands on the wall-owning city tile. Multiplied
+    // AFTER the veteran bump so a Veteran Phalanx in a Walled city defends
+    // at floor(2 * 3/2) * 3 = 3 * 3 = 9 (matches the C# wall+veteran stack).
+    if (defenderHasWalls) def = def * 3;
+    if (def <= 0) def = 1;
+    if (atk < 0) atk = 0;
     int attackerRoll = (atk > 0) ? int(xorshift32(rngState) % uint32_t(atk)) : 0;
     int defenderRoll = int(xorshift32(rngState) % uint32_t(def));
     // Faithful Civ1: defender wins ties (attackerRoll <= defenderRoll -> lose).
@@ -234,7 +283,12 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
     if (enemyId >= 0) {
         Unit& enemy = units_[std::size_t(enemyId)];
         lastCombatKey_ = "Battle";
-        bool survived = resolveCombat(u, enemy, combatRng_);
+        // Walls: if the defender is standing on a city tile owned by the
+        // defender's civ and that city owns Walls, defender gets the
+        // triple-defense bonus (faithful Civ1 +200%).
+        bool defWalls = tileCityHasBuilding(enemy.owner, enemy.x, enemy.y,
+                                            BuildingType::Walls);
+        bool survived = resolveCombat(u, enemy, combatRng_, defWalls);
         if (survived) {
             // attacker wins -> move into the (now-empty) tile
             u.x = nx; u.y = ny;

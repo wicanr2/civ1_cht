@@ -190,20 +190,51 @@ int CheckPlayerTurn::processEndOfTurn() {
             }
             c.shields += shieldYield(adjGood);
 
-            // Threshold-triggered unit production. C# does the same with
-            // Units[ProductionID].Cost * local_4a; we read the cost from the
-            // UnitDef table for the city's currently-built type, then spawn an
-            // ACTUAL Unit of that type at the city's tile (so it appears in
-            // units() and is visible on the world map / combat-eligible).
-            // Mirrors CityWorker.cs lines 836-855 (the shield threshold pass)
-            // followed by F0_1866_0cf5_CreateUnit (UnitManagement.cs ~line 603,
-            // the per-civ Units[] table insert).
-            int needed = unitDefOf(c.productionType).cost;
-            if (c.production != needed) c.production = needed; // keep in sync
-            if (needed > 0 && c.shields >= needed) {
-                c.shields -= needed;
-                c.units += 1;
-                um.addUnit(c.owner, c.productionType, c.x, c.y);
+            // Threshold-triggered production. Civ1: a city builds EITHER a
+            // unit OR a building per cycle. We branch on c.productionKind:
+            //
+            //  - Unit: add a new Unit of c.productionType at the city's tile
+            //    (mirrors CityWorker.cs lines 836-855 + F0_1866_0cf5_CreateUnit).
+            //    If this city OWNS a Barracks, the new unit is a VETERAN
+            //    (+50% combat applied in UnitManagement::resolveCombat).
+            //
+            //  - Building: add the BuildingType to c.ownedBuildings, reset
+            //    shields, and (Civ1 default) switch productionKind back to
+            //    Unit (productionType=Militia) so the city keeps building
+            //    SOMETHING. Documented choice: defaulting to Militia is a
+            //    safe fallback identical to the C# CityWorker behaviour when
+            //    a queued building completes with no next item picked.
+            int needed = 0;
+            if (c.productionKind == City::ProductionKind::Building) {
+                needed = buildingDefOf(c.productionBuildingType).cost;
+                if (c.production != needed) c.production = needed;
+                if (needed > 0 && c.shields >= needed) {
+                    BuildingType built = c.productionBuildingType;
+                    c.shields -= needed;
+                    c.ownedBuildings.insert(built);
+                    // Fall back to producing Militia next cycle (documented
+                    // default; the player can override via setCityProduction*).
+                    c.productionKind = City::ProductionKind::Unit;
+                    c.productionBuildingType = BuildingType::None;
+                    c.productionType = UnitType::Militia;
+                    c.production = unitDefOf(UnitType::Militia).cost;
+                    // TODO: Granary food bonus (food not yet modeled) — for
+                    // now ownership is tracked but no growth math runs.
+                }
+            } else {
+                needed = unitDefOf(c.productionType).cost;
+                if (c.production != needed) c.production = needed;
+                if (needed > 0 && c.shields >= needed) {
+                    c.shields -= needed;
+                    c.units += 1;
+                    int newUnitIdx = um.addUnit(c.owner, c.productionType, c.x, c.y);
+                    // Barracks: produced units are veterans (+50% combat).
+                    if (c.hasBuilding(BuildingType::Barracks) &&
+                        newUnitIdx >= 0 &&
+                        std::size_t(newUnitIdx) < um.unitsMut().size()) {
+                        um.unitsMut()[std::size_t(newUnitIdx)].veteran = true;
+                    }
+                }
             }
         }
     }

@@ -4172,6 +4172,257 @@ static int improvementtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- City improvements / buildings (--buildingtest) ---------
+// Verifies the BuildingType slice end-to-end:
+//   (1) New city: ownedBuildings starts empty, default productionKind=Unit.
+//   (2) setCityProductionBuilding(cityId, Barracks): true. processEndOfTurn
+//       until shields >= cost: EXACTLY one Barracks appears in ownedBuildings,
+//       shields reset, NO extra unit produced during the building cycle.
+//   (3) Re-attempt setCityProductionBuilding(cityId, Barracks) -> false
+//       (already owned).
+//   (4) Walls + combat statistics: defender on a city tile with Walls wins
+//       way more often (> 80%) than the no-walls baseline (~50% for equal
+//       units). Same seeded RNG for both runs to make the comparison fair.
+//   (5) Save/load round-trip: ownedBuildings, productionKind, productionBT
+//       all preserved across v4 GameLoadAndSave.
+//   (6) Translate ON vs OFF: rendered HUD pixels differ (Chinese building
+//       names like "兵營"/"城牆"/"穀倉" vs the English originals).
+static int buildingtest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // ---- (1)+(2)+(3): build a Barracks, verify ownership + dup-refusal ----
+    {
+        OpenCiv1Game g;
+        setupGame(g, 320, 200);
+        Translator::instance().enabled = true;
+        MiniWorld w(20, 20, 4242u);
+        w.attachGame(g);
+        auto& um = g.unitManagement();
+
+        // Find a land tile and found a city on it.
+        int gx = -1, gy = -1;
+        for (int y = 0; y < 20 && gx < 0; ++y)
+            for (int x = 0; x < 20 && gx < 0; ++x) {
+                Terrain t = w.terrainAt(x, y);
+                if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+            }
+        chk(gx >= 0, "found a land tile for the city");
+        std::string nm;
+        chk(um.buildCity(gx, gy, 0, nm), "city founded");
+        const int cityId = 0;
+        chk(um.cities()[cityId].ownedBuildings.empty(),
+            "(1) new city: ownedBuildings starts empty");
+        chk(um.cities()[cityId].productionKind == City::ProductionKind::Unit,
+            "(1) new city: default productionKind == Unit");
+
+        // (2) switch to Barracks (cost 40 shields).
+        chk(um.setCityProductionBuilding(cityId, BuildingType::Barracks),
+            "(2) setCityProductionBuilding(Barracks) -> true");
+        chk(um.cities()[cityId].productionKind == City::ProductionKind::Building,
+            "(2) productionKind switched to Building");
+        chk(um.cities()[cityId].productionBuildingType == BuildingType::Barracks,
+            "(2) productionBuildingType == Barracks");
+        chk(um.cities()[cityId].production == buildingDefOf(BuildingType::Barracks).cost,
+            "(2) production cost synced to Barracks cost (40)");
+
+        // Spin EOTs until the building completes (shields reset + Barracks
+        // appears in ownedBuildings). Assert NO unit was produced during the
+        // building cycle (units[] grows only by AI auto-found settlers etc.,
+        // not from this city's production pass).
+        std::size_t unitsBefore = um.units().size();
+        int budget = 200;
+        bool built = false;
+        while (budget-- > 0) {
+            g.checkPlayerTurn().processEndOfTurn();
+            const City& c = um.cities()[cityId];
+            if (c.hasBuilding(BuildingType::Barracks)) { built = true; break; }
+        }
+        chk(built, "(2) Barracks added to ownedBuildings after enough EOTs");
+        const City& c = um.cities()[cityId];
+        chk(c.ownedBuildings.size() == 1, "(2) exactly ONE building owned");
+        chk(c.shields < buildingDefOf(BuildingType::Barracks).cost,
+            "(2) shields reset (below building cost)");
+        // The production pass spawns a unit ONLY in the Unit branch; the
+        // building branch must NOT have appended a unit to units_ at any
+        // point. units().size() can have grown only via the back-fall to
+        // Militia AFTER the building completes — which would need another
+        // 10 shields. We just-completed the building so this should hold:
+        chk(um.units().size() == unitsBefore,
+            "(2) no unit produced during the Barracks build cycle");
+
+        // (3) re-attempting Barracks refuses (already owned).
+        chk(!um.setCityProductionBuilding(cityId, BuildingType::Barracks),
+            "(3) setCityProductionBuilding(Barracks) refused (already owned)");
+    }
+
+    // ---- (4): Walls combat statistics ------------------------------------
+    // Baseline (no walls): Cavalry (a=2, d=1) attacker vs Phalanx (a=1, d=2)
+    // defender. With Civ1 integer rolls + "defender wins ties":
+    //   no walls: atkRoll in {0,1}, defRoll in {0,1} -> attacker wins iff
+    //             atkRoll=1 AND defRoll=0 (independent), P=1/4 = 25%, so
+    //             defender wins ~75%. We assert 50%..90% as the loose band.
+    //   with walls (def x3 -> 6): atkRoll in {0,1}, defRoll in {0..5} ->
+    //             attacker wins iff atkRoll=1 AND defRoll=0, P=1/12 ~= 8%,
+    //             so defender wins ~92%. We assert > 80% as the contract.
+    {
+        const int trials = 4000;
+        auto runTrials = [&](bool walls) -> int {
+            int defWins = 0;
+            uint32_t rng = 0x12345678u;
+            for (int i = 0; i < trials; ++i) {
+                Unit atk; atk.owner = 0; atk.type = UnitType::Cavalry;
+                atk.x = 0; atk.y = 0; atk.alive = true;
+                Unit def; def.owner = 1; def.type = UnitType::Phalanx;
+                def.x = 1; def.y = 0; def.alive = true;
+                bool atkSurvived = UnitManagement::resolveCombat(atk, def, rng, walls);
+                if (!atkSurvived) ++defWins;
+            }
+            return defWins;
+        };
+        int wbWalls = runTrials(true);
+        int wbPlain = runTrials(false);
+        double plainRate = double(wbPlain) / double(trials);
+        double wallsRate = double(wbWalls) / double(trials);
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "(4) plain defender win rate in [50%%,90%%] (got %.2f%%) — baseline",
+                      plainRate * 100.0);
+        chk(plainRate >= 0.50 && plainRate <= 0.90, buf);
+        std::snprintf(buf, sizeof(buf),
+                      "(4) Walls defender win rate > 80%% (got %.2f%%)",
+                      wallsRate * 100.0);
+        chk(wallsRate > 0.80, buf);
+        chk(wallsRate > plainRate + 0.10,
+            "(4) Walls increases defender win rate by > 10 percentage points");
+
+        // Integrated test: enemy attacks a city with Walls via moveUnit.
+        // Build a defender-city, give it Walls (direct insert), place a
+        // Phalanx defender on the city tile, a Cavalry attacker adjacent;
+        // over many seeded attempts the attacker rarely wins.
+        OpenCiv1Game g;
+        auto& um = g.unitManagement();
+        um.setMapBounds(20, 20);
+        std::string nm;
+        chk(um.buildCity(10, 10, 1, nm), "(4) built defender city at (10,10)");
+        um.citiesMut()[0].ownedBuildings.insert(BuildingType::Walls);
+        int defenders = 0;
+        const int N = 400;
+        for (int i = 0; i < N; ++i) {
+            // fresh units each trial; tile-walls lookup is implicit via moveUnit
+            int atkId = um.addUnit(0, UnitType::Cavalry, 9, 10);
+            int defId = um.addUnit(1, UnitType::Phalanx, 10, 10);
+            um.setCombatRngSeed(uint32_t(0xBEEF0000u + i));
+            um.moveUnit(atkId, 1, 0);
+            if (um.units()[std::size_t(defId)].alive) ++defenders;
+            // Clean up by killing the survivors so the next trial starts fresh.
+            um.unitsMut()[std::size_t(atkId)].alive = false;
+            um.unitsMut()[std::size_t(defId)].alive = false;
+        }
+        double winsWithWalls = double(defenders) / double(N);
+        std::snprintf(buf, sizeof(buf),
+                      "(4) moveUnit-on-Walled-city defender wins > 80%% (got %.2f%%)",
+                      winsWithWalls * 100.0);
+        chk(winsWithWalls > 0.80, buf);
+    }
+
+    // ---- (5): Save/load round-trip preserves building state --------------
+    {
+        const char* savePath = "/tmp/openciv1pp_buildingtest.sav";
+        OpenCiv1Game g1;
+        setupGame(g1, 320, 200);
+        Translator::instance().enabled = true;
+        MiniWorld w(20, 20, 9999u);
+        w.attachGame(g1);
+        auto& um1 = g1.unitManagement();
+        int gx = -1, gy = -1;
+        for (int y = 0; y < 20 && gx < 0; ++y)
+            for (int x = 0; x < 20 && gx < 0; ++x) {
+                Terrain t = w.terrainAt(x, y);
+                if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+            }
+        std::string nm;
+        um1.buildCity(gx, gy, 0, nm);
+        um1.citiesMut()[0].ownedBuildings.insert(BuildingType::Granary);
+        um1.citiesMut()[0].ownedBuildings.insert(BuildingType::Walls);
+        // mid-production of Barracks
+        um1.setCityProductionBuilding(0, BuildingType::Barracks);
+        um1.citiesMut()[0].shields = 15;
+        // also tag a veteran unit so unit-line round-trip is exercised.
+        int uid = um1.addUnit(0, UnitType::Militia, gx, gy);
+        um1.unitsMut()[std::size_t(uid)].veteran = true;
+
+        bool sok = g1.gameLoadAndSave().saveToFile(savePath, nullptr);
+        chk(sok, "(5) saveToFile succeeded (v4 header)");
+
+        OpenCiv1Game g2;
+        setupGame(g2, 320, 200);
+        bool lok = g2.gameLoadAndSave().loadFromFile(savePath, nullptr);
+        chk(lok, "(5) loadFromFile succeeded");
+        const auto& cv = g2.unitManagement().cities();
+        chk(cv.size() == 1, "(5) city count preserved");
+        if (!cv.empty()) {
+            const City& cc = cv[0];
+            chk(cc.hasBuilding(BuildingType::Granary), "(5) Granary preserved");
+            chk(cc.hasBuilding(BuildingType::Walls), "(5) Walls preserved");
+            chk(!cc.hasBuilding(BuildingType::Barracks),
+                "(5) Barracks NOT in ownedBuildings (was mid-build)");
+            chk(cc.productionKind == City::ProductionKind::Building,
+                "(5) productionKind preserved (Building)");
+            chk(cc.productionBuildingType == BuildingType::Barracks,
+                "(5) productionBuildingType preserved (Barracks)");
+            chk(cc.shields == 15, "(5) shields preserved");
+        }
+        const auto& uv = g2.unitManagement().units();
+        chk(!uv.empty() && uv.back().veteran,
+            "(5) per-unit veteran flag preserved");
+    }
+
+    // ---- (6): Translate ON vs OFF render differs (building names i18n) ---
+    std::size_t i18nDiff = 0;
+    {
+        auto render = [&](bool translate) -> std::vector<uint8_t> {
+            OpenCiv1Game g;
+            setupGame(g, 480, 300);
+            Translator::instance().enabled = translate;
+            MiniWorld ww(40, 30, 1111u);
+            ww.attachGame(g);
+            auto& um = g.unitManagement();
+            int gx = -1, gy = -1;
+            for (int y = 0; y < 30 && gx < 0; ++y)
+                for (int x = 0; x < 40 && gx < 0; ++x) {
+                    Terrain t = ww.terrainAt(x, y);
+                    if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+                }
+            std::string nm;
+            um.buildCity(gx, gy, 0, nm);
+            um.citiesMut()[0].ownedBuildings.insert(BuildingType::Barracks);
+            um.citiesMut()[0].ownedBuildings.insert(BuildingType::Walls);
+            um.setCityProductionBuilding(0, BuildingType::Granary);
+            ww.draw(g.graphics, 1, 12);
+            return g.graphics.screen(0).pixels();
+        };
+        std::vector<uint8_t> zh = render(true);
+        std::vector<uint8_t> en = render(false);
+        chk(zh.size() == en.size() && !zh.empty(),
+            "(6) both renders produced a buffer");
+        for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+            if (zh[i] != en[i]) ++i18nDiff;
+        chk(i18nDiff > 0,
+            "(6) Chinese vs English HUD pixels DIFFER (building names i18n)");
+    }
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail) std::printf("BUILDINGTEST: %d failure(s)\n", fail);
+    else      std::printf("BUILDINGTEST: all pass (Granary/Barracks/Walls + "
+                          "veteran/walls combat + save round-trip; %zu i18n "
+                          "pixels differ)\n", i18nDiff);
+    return fail ? 1 : 0;
+}
+
 // ---------------- Tech research / tech-gated build (--techtest) ----------
 // Verifies the TechResearch CodeObject end-to-end:
 //   (1) initCivs(7): every civ starts with no known techs + researching
@@ -4391,6 +4642,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--techtest")) { return techtest(); }
         else if (!std::strcmp(argv[i], "--minimaptest")) { return minimaptest(); }
         else if (!std::strcmp(argv[i], "--improvementtest")) { return improvementtest(); }
+        else if (!std::strcmp(argv[i], "--buildingtest")) { return buildingtest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -4456,7 +4708,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

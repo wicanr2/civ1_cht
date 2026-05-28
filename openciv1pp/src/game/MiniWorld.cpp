@@ -364,6 +364,10 @@ void MiniWorld::renderUnits(GBitmap& screen) const {
                 screen.drawLine(cxg - inset / 2, cyg + inset / 2,
                                 cxg + inset / 2, cyg - inset / 2, 210);
                 break;
+            case UnitType::Cavalry:
+                // small horizontal dash (mounted/horseback mark)
+                screen.drawLine(cxg - inset / 2, cyg, cxg + inset / 2, cyg, 210);
+                break;
         }
     }
 }
@@ -780,17 +784,46 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
         }
     }
     // Production line: when at least one city is founded, append the FIRST
-    // city's shields/production threshold (the "current city" placeholder
-    // until per-city focus is wired). Mirrors the HUD line CityWorker draws
-    // for the active city ("Production: SHIELDS/COST").
+    // city's currently-built thing (Unit name OR Building name, translated)
+    // plus the shields/production threshold. Mirrors the HUD line CityWorker
+    // draws for the active city ("Production: <NAME> SHIELDS/COST").
     if (nCities > 0) {
         const auto& c0 = game_->unitManagement().cities()[0];
         penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
         penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
                               "Production:", 207);
+        const char* whatKey = nullptr;
+        if (c0.productionKind == City::ProductionKind::Building &&
+            c0.productionBuildingType != BuildingType::None) {
+            whatKey = buildingDefOf(c0.productionBuildingType).name;
+        } else {
+            whatKey = unitDefOf(c0.productionType).name;
+        }
+        if (whatKey && whatKey[0]) {
+            penX3 = fb.drawString(font, penX3, line3Y, " ", 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  whatKey, 207);
+        }
         char pbuf[32];
         std::snprintf(pbuf, sizeof(pbuf), " %d/%d", c0.shields, c0.production);
         penX3 = fb.drawString(font, penX3, line3Y, pbuf, 207);
+        // Buildings line: also show the FIRST city's owned-buildings list so
+        // the HUD reflects "this city has Barracks/Walls/...". Each name is
+        // routed through the chokepoint Translator (e.g. "Walls"->"城牆").
+        if (!c0.ownedBuildings.empty()) {
+            penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  "Buildings:", 207);
+            bool first = true;
+            for (BuildingType b : c0.ownedBuildings) {
+                penX3 = fb.drawString(font, penX3, line3Y,
+                                      first ? " " : ", ", 207);
+                const char* nm = buildingDefOf(b).name;
+                penX3 = gd.drawString(GDriver::MainScreen, font, penX3,
+                                      line3Y, nm, 207);
+                first = false;
+            }
+        }
     }
     // Research line: show the HUMAN civ (civ 0)'s current research target
     // + progress (pts/cost), translated via the Translator. Drawn at the
