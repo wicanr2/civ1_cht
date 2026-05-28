@@ -35,6 +35,14 @@ public:
     // on the nearest non-water tile to the map centre.
     MiniWorld(const MapManagement& mm, uint32_t unitSeed = 0);
 
+    // Re-populate this world's terrain grid from the faithful Civ1 world
+    // generator (MapManagement::generate(seed)). Resizes to MapManagement's
+    // 80x50 if needed. After this the unit is placed at the nearest non-water
+    // tile to the map centre, and `usesRealGenerator()` returns true. The
+    // value-noise terrain (set by the (w,h,seed) ctor) is REPLACED.
+    bool useRealGenerator(MapManagement& mm, uint32_t seed);
+    bool usesRealGenerator() const { return usesRealGenerator_; }
+
     // ---- pure / testable API ----
     int width()  const { return w_; }
     int height() const { return h_; }
@@ -84,6 +92,8 @@ private:
 
     std::unique_ptr<GBitmap> tileset_;
     std::unique_ptr<GBitmap> sprites_;
+
+    bool usesRealGenerator_ = false;
 
     // Cached viewport math from the last draw() — used by screenToTile() to
     // invert the same camera/tile-size mapping. mutable so the const draw()

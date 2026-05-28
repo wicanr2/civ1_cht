@@ -1,4 +1,5 @@
 #include "MiniWorld.h"
+#include "MapManagement.h"
 #include "../resource/PicLoader.h"
 #include <algorithm>
 #include <cstdint>
@@ -56,6 +57,39 @@ MiniWorld::MiniWorld(int w, int h, uint32_t seed)
         }
     }
     // Place the unit at the map centre, nudged onto the nearest non-water tile.
+    unitX_ = w_ / 2;
+    unitY_ = h_ / 2;
+    if (terrainAt(unitX_, unitY_) == Terrain::Water) {
+        for (int r = 1; r < std::max(w_, h_); ++r) {
+            bool found = false;
+            for (int dy = -r; dy <= r && !found; ++dy)
+                for (int dx = -r; dx <= r && !found; ++dx) {
+                    int nx = unitX_ + dx, ny = unitY_ + dy;
+                    if (nx >= 0 && ny >= 0 && nx < w_ && ny < h_ &&
+                        terrainAt(nx, ny) != Terrain::Water) {
+                        unitX_ = nx; unitY_ = ny; found = true;
+                    }
+                }
+            if (found) break;
+        }
+    }
+}
+
+bool MiniWorld::useRealGenerator(MapManagement& mm, uint32_t seed) {
+    mm.generate(int32_t(seed));
+    w_ = mm.width();
+    h_ = mm.height();
+    tiles_.assign(std::size_t(w_) * h_, Terrain::Water);
+    for (int y = 0; y < h_; ++y)
+        for (int x = 0; x < w_; ++x)
+            at(x, y) = mm.terrainAt(x, y);
+    usesRealGenerator_ = true;
+    // Place the unit at the map centre, nudged onto the nearest non-water tile.
+    placeUnitNearCenter();
+    return true;
+}
+
+void MiniWorld::placeUnitNearCenter() {
     unitX_ = w_ / 2;
     unitY_ = h_ / 2;
     if (terrainAt(unitX_, unitY_) == Terrain::Water) {

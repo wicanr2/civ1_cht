@@ -22,6 +22,7 @@
 #include "game/MainCode.h"
 #include "game/MainIntro.h"
 #include "game/MiniWorld.h"
+#include "game/MapManagement.h"
 #include "localization/Translator.h"
 #include "platform/SdlPresenter.h"
 #include "resource/PicLoader.h"
@@ -2171,15 +2172,147 @@ static int maptest() {
     return fail ? 1 : 0;
 }
 
+// Headless verification of the FAITHFUL Civ1 world generator
+// (MapManagement::generate, ported from MapInitAndIntro.F7_0000_0012_GenerateMap).
+// Checks: (1) determinism for a given seed; (2) standard 80x50 dimensions;
+// (3) sanity — generator produces > 0 of each major terrain (water-heavy maps
+// allowed: we accept "majority is water + collectively land terrains > 0");
+// (4) when OPENCIV1_DOS_ASSETS is set, render one frame of the real-generated
+// map via MiniWorld's faithful TER257 path, dump to /tmp/realgen.ppm and assert
+// non-zero ink. Without assets the (4) sub-check is skipped, the others must
+// still pass.
+static int realgentest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // (1) Determinism: two generators with the same seed -> identical terrain
+    //     at every sampled cell.
+    {
+        OpenCiv1Game g1, g2;
+        g1.mapManagement().generate(int32_t(12345));
+        g2.mapManagement().generate(int32_t(12345));
+        bool same = true;
+        for (int y = 0; y < 50 && same; ++y)
+            for (int x = 0; x < 80; ++x)
+                if (g1.mapManagement().terrainAt(x, y) !=
+                    g2.mapManagement().terrainAt(x, y)) { same = false; break; }
+        chk(same, "seed=12345 -> identical map across two MapManagement runs");
+
+        // Sanity: a different seed should produce a different map (at SOME cell).
+        OpenCiv1Game g3;
+        g3.mapManagement().generate(int32_t(67890));
+        bool differs = false;
+        for (int y = 0; y < 50 && !differs; ++y)
+            for (int x = 0; x < 80; ++x)
+                if (g1.mapManagement().terrainAt(x, y) !=
+                    g3.mapManagement().terrainAt(x, y)) { differs = true; break; }
+        chk(differs, "seed=67890 -> different map than seed=12345");
+    }
+
+    // (2) Dimensions: 80x50 (Civ1 standard, 1:1 with MapManagement.Size).
+    {
+        OpenCiv1Game g;
+        chk(g.mapManagement().width() == 80 &&
+            g.mapManagement().height() == 50,
+            "MapManagement is 80x50 (Civ1 standard)");
+    }
+
+    // (3) Sanity: generated map has > 0 Water AND > 0 collectively across the
+    //     major land terrains. Civ1 maps default ~70% water so we explicitly
+    //     allow water-heavy.
+    {
+        OpenCiv1Game g;
+        g.mapManagement().generate(int32_t(12345));
+        int counts[12] = {0};
+        for (int y = 0; y < 50; ++y)
+            for (int x = 0; x < 80; ++x) {
+                Terrain t = g.mapManagement().terrainAt(x, y);
+                int idx = int(t);
+                if (idx >= 0 && idx < 12) ++counts[idx];
+            }
+        int water     = counts[int(Terrain::Water)];
+        int grassland = counts[int(Terrain::Grassland)];
+        int plains    = counts[int(Terrain::Plains)];
+        int forest    = counts[int(Terrain::Forest)];
+        int mountains = counts[int(Terrain::Mountains)];
+        int desert    = counts[int(Terrain::Desert)];
+        int land      = grassland + plains + forest + mountains + desert +
+                        counts[int(Terrain::Hills)] + counts[int(Terrain::Tundra)] +
+                        counts[int(Terrain::Arctic)] + counts[int(Terrain::Swamp)] +
+                        counts[int(Terrain::Jungle)] + counts[int(Terrain::River)];
+        chk(water > 0, "generated map has Water cells");
+        chk(land  > 0, "generated map has at least some land");
+        chk(grassland + plains + forest + mountains + desert > 0,
+            "Grassland/Plains/Forest/Mountains/Desert collectively present");
+        std::printf("  realgen counts: water=%d land=%d "
+                    "(grass=%d plains=%d forest=%d mtn=%d desert=%d hills=%d "
+                    "tundra=%d arctic=%d swamp=%d jungle=%d river=%d)\n",
+                    water, land, grassland, plains, forest, mountains, desert,
+                    counts[int(Terrain::Hills)], counts[int(Terrain::Tundra)],
+                    counts[int(Terrain::Arctic)], counts[int(Terrain::Swamp)],
+                    counts[int(Terrain::Jungle)], counts[int(Terrain::River)]);
+    }
+
+    // (4) Real-asset render path: MiniWorld::useRealGenerator + faithful TER257.
+    {
+        std::string dir = resolveAssetDir(nullptr);
+        std::error_code ec;
+        if (!dir.empty() &&
+            std::filesystem::exists(std::filesystem::path(dir) / "TER257.PIC", ec)) {
+            OpenCiv1Game g;
+            setupGame(g, 480, 300);
+            Translator::instance().enabled = true;
+            MiniWorld w(80, 50, 0u);
+            chk(w.useRealGenerator(g.mapManagement(), 12345u),
+                "MiniWorld::useRealGenerator returns true");
+            chk(w.usesRealGenerator(),
+                "MiniWorld now reports real generator in use");
+            chk(w.loadTileset(dir), "real TER257.PIC loads from OPENCIV1_DOS_ASSETS");
+            w.draw(g.graphics, 1, 16);
+            const GBitmap& fb = g.graphics.screen(0);
+            std::size_t ink = 0;
+            for (auto px : fb.pixels()) if (px != 208) ++ink;
+            chk(ink > 0, "real-tile render of real-generated map produced non-zero ink");
+            dumpPPM(fb, "/tmp/realgen.ppm");
+            std::printf("  (real-gen + real-tile frame -> /tmp/realgen.ppm)\n");
+        } else {
+            std::printf("  (no DOS assets at OPENCIV1_DOS_ASSETS; real-tile render sub-check skipped)\n");
+            // Fallback: still exercise useRealGenerator + colored-rect draw so
+            // the integration path is verified headlessly.
+            OpenCiv1Game g;
+            setupGame(g, 480, 300);
+            MiniWorld w(80, 50, 0u);
+            chk(w.useRealGenerator(g.mapManagement(), 12345u),
+                "MiniWorld::useRealGenerator (fallback path) returns true");
+            w.draw(g.graphics, 1, 6); // small tiles so 80x50 fits in 480x300
+            const GBitmap& fb = g.graphics.screen(0);
+            bool hasTerrain = false;
+            for (auto px : fb.pixels())
+                if (px >= 200 && px <= 206) { hasTerrain = true; break; }
+            chk(hasTerrain, "fallback colored-rect render drew terrain from real generator");
+        }
+    }
+
+    if (fail)
+        std::printf("REALGENTEST: %d failure(s)\n", fail);
+    else
+        std::printf("REALGENTEST: all pass\n");
+    return fail ? 1 : 0;
+}
+
 // Interactive playable slice (SDL). setupGame, translation ON, build a world,
 // then loop draw -> present -> pollKey -> (arrows move / Enter endTurn / Esc
 // quit). Under the dummy SDL driver pollKey blocks for input — that's expected.
-static int playInteractive(const std::string& assetDir) {
+static int playInteractive(const std::string& assetDir, bool realgen = false) {
     OpenCiv1Game g;
     setupGame(g, 480, 300);
     Translator::instance().enabled = true;
 
-    MiniWorld world(40, 30, 12345u);
+    MiniWorld world(realgen ? 80 : 40, realgen ? 50 : 30, 12345u);
+    if (realgen) {
+        world.useRealGenerator(g.mapManagement(), 12345u);
+        std::printf("[play] using faithful Civ1 generator (MapManagement::generate)\n");
+    }
     if (!assetDir.empty()) {
         if (world.loadTileset(assetDir))
             std::printf("[play] real Civ1 tiles from %s\n", assetDir.c_str());
@@ -2225,11 +2358,12 @@ static int playInteractive(const std::string& assetDir) {
 // Headless one-frame render of the playable map to a PPM (no SDL window). Loads
 // the real tileset when assetDir is non-empty + TER257.PIC is present; otherwise
 // renders the colored-rect fallback. Used by `--play --assets <dir> --dump <ppm>`.
-static int playDump(const std::string& assetDir, const char* ppmPath) {
+static int playDump(const std::string& assetDir, const char* ppmPath, bool realgen = false) {
     OpenCiv1Game g;
     setupGame(g, 480, 300);
     Translator::instance().enabled = true;
-    MiniWorld world(40, 30, 12345u);
+    MiniWorld world(realgen ? 80 : 40, realgen ? 50 : 30, 12345u);
+    if (realgen) world.useRealGenerator(g.mapManagement(), 12345u);
     bool real = !assetDir.empty() && world.loadTileset(assetDir);
     world.draw(g.graphics, 1, world.hasTileset() ? 16 : 12);
     if (!dumpPPM(g.graphics.screen(0), ppmPath)) {
@@ -2258,6 +2392,7 @@ static void drawScene(OpenCiv1Game& g) {
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false;
+    bool realgen = false;
     const char* dumpPath = nullptr;
     const char* picPath = nullptr;
     const char* gfxDumpPath = nullptr;
@@ -2266,6 +2401,7 @@ int main(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) { dump = true; dumpPath = argv[++i]; }
         else if (!std::strcmp(argv[i], "--assets") && i + 1 < argc) { assetsDir = argv[++i]; }
         else if (!std::strcmp(argv[i], "--play")) { play = true; }
+        else if (!std::strcmp(argv[i], "--realgen")) { realgen = true; }
         else if (!std::strcmp(argv[i], "--title")) { title = true; }
         else if (!std::strcmp(argv[i], "--newgame")) { newgame = true; }
         else if (!std::strcmp(argv[i], "--intro")) { intro = true; }
@@ -2308,10 +2444,15 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--newgametest")) { return newgametest(); }
         else if (!std::strcmp(argv[i], "--mousetest")) { return mousetest(); }
         else if (!std::strcmp(argv[i], "--introtest")) { return introtest(); }
+        else if (!std::strcmp(argv[i], "--realgentest")) { return realgentest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
+            // Add `--realgen` (anywhere on the command line) to use the
+            // faithful Civ1 world-generator instead of value-noise.
             const char* dir = argv[++i]; const char* out = argv[++i];
-            return playDump(resolveAssetDir(dir), out);
+            bool rg = realgen;
+            for (int k = 1; k < argc; ++k) if (!std::strcmp(argv[k], "--realgen")) rg = true;
+            return playDump(resolveAssetDir(dir), out, rg);
         }
         else if (!std::strcmp(argv[i], "--menu")) { return menuInteractive(); }
         else if (!std::strcmp(argv[i], "--menuflow")) { return menuflowInteractive(); }
@@ -2331,8 +2472,8 @@ int main(int argc, char** argv) {
     // renders one headless frame to the PPM instead of opening an SDL window.
     if (play) {
         std::string dir = resolveAssetDir(assetsDir);
-        if (dump && dumpPath) return playDump(dir, dumpPath);
-        return playInteractive(dir);
+        if (dump && dumpPath) return playDump(dir, dumpPath, realgen);
+        return playInteractive(dir, realgen);
     }
 
     // --title: the authentic Civ1 boot screen — LOGO.PIC (when a DOS asset dir is
@@ -2361,7 +2502,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
