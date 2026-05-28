@@ -38,7 +38,7 @@ int valueNoise(int x, int y, uint32_t seed, int cell) {
 } // namespace
 
 MiniWorld::MiniWorld(int w, int h, uint32_t seed)
-    : w_(w), h_(h), tiles_(std::size_t(w) * h, Terrain::Ocean) {
+    : w_(w), h_(h), tiles_(std::size_t(w) * h, Terrain::Water) {
     // Two octaves of value noise -> an elevation field, thresholded to terrain.
     for (int y = 0; y < h_; ++y) {
         for (int x = 0; x < w_; ++x) {
@@ -46,7 +46,7 @@ MiniWorld::MiniWorld(int w, int h, uint32_t seed)
             // moisture field for grass/plains/desert split
             int m = valueNoise(x, y, seed ^ 0xA53Cu, 5);
             Terrain t;
-            if (e < 90)       t = Terrain::Ocean;
+            if (e < 90)       t = Terrain::Water;
             else if (e < 130) t = (m < 110 ? Terrain::Desert : Terrain::Plains);
             else if (e < 165) t = (m < 120 ? Terrain::Plains : Terrain::Grassland);
             else if (e < 195) t = Terrain::Forest;
@@ -55,17 +55,17 @@ MiniWorld::MiniWorld(int w, int h, uint32_t seed)
             at(x, y) = t;
         }
     }
-    // Place the unit at the map centre, nudged onto the nearest non-ocean tile.
+    // Place the unit at the map centre, nudged onto the nearest non-water tile.
     unitX_ = w_ / 2;
     unitY_ = h_ / 2;
-    if (terrainAt(unitX_, unitY_) == Terrain::Ocean) {
+    if (terrainAt(unitX_, unitY_) == Terrain::Water) {
         for (int r = 1; r < std::max(w_, h_); ++r) {
             bool found = false;
             for (int dy = -r; dy <= r && !found; ++dy)
                 for (int dx = -r; dx <= r && !found; ++dx) {
                     int nx = unitX_ + dx, ny = unitY_ + dy;
                     if (nx >= 0 && ny >= 0 && nx < w_ && ny < h_ &&
-                        terrainAt(nx, ny) != Terrain::Ocean) {
+                        terrainAt(nx, ny) != Terrain::Water) {
                         unitX_ = nx; unitY_ = ny; found = true;
                     }
                 }
@@ -75,27 +75,21 @@ MiniWorld::MiniWorld(int w, int h, uint32_t seed)
 }
 
 Terrain MiniWorld::terrainAt(int x, int y) const {
-    if (x < 0 || y < 0 || x >= w_ || y >= h_) return Terrain::Ocean;
+    if (x < 0 || y < 0 || x >= w_ || y >= h_) return Terrain::Water;
     return tiles_[std::size_t(y) * w_ + x];
 }
 
-const char* MiniWorld::terrainNameKey(Terrain t) {
-    switch (t) {
-        case Terrain::Ocean:     return "Ocean";
-        case Terrain::Grassland: return "Grassland";
-        case Terrain::Plains:    return "Plains";
-        case Terrain::Forest:    return "Forest";
-        case Terrain::Hills:     return "Hills";
-        case Terrain::Mountains: return "Mountains";
-        case Terrain::Desert:    return "Desert";
-        default:                 return "Ocean";
-    }
-}
+// terrainNameKey is provided as an inline forwarder in MiniWorld.h that calls
+// oc1::terrainNameKey (defined in TerrainTiles.cpp). No definition needed here.
 
 uint8_t MiniWorld::terrainColor(Terrain t) {
-    // Custom indices (installed by draw()): distinct, readable map colours.
+    // Custom indices (installed by draw()): distinct, readable map colours used
+    // ONLY in the colored-rect fallback (no real tileset). The 7 indices match
+    // the original MiniWorld terrains; the additional Civ1 terrains
+    // (Tundra/Arctic/Swamp/Jungle/River) fall through to Water for the
+    // fallback view — the real tileset draws them faithfully via TER257.
     switch (t) {
-        case Terrain::Ocean:     return 200;
+        case Terrain::Water:     return 200;
         case Terrain::Grassland: return 201;
         case Terrain::Plains:    return 202;
         case Terrain::Forest:    return 203;
@@ -103,25 +97,6 @@ uint8_t MiniWorld::terrainColor(Terrain t) {
         case Terrain::Mountains: return 205;
         case Terrain::Desert:    return 206;
         default:                 return 200;
-    }
-}
-
-// Map each terrain enum to a (col,row) 16x16 tile in TER257.PIC. These were
-// picked by eyeballing the real tilesheet (320x200, 20 cols x 12 rows; top-left
-// origin). Not perfect Civ1 fidelity — just visually-sensible base tiles:
-//   row 0  = desert (tan dotted)        row 3  = forest (dense green)
-//   row 4  = grassland/plains (green)   row 5  = mountains/hills (grey rocky)
-//   row 11 = ocean (solid blue)
-void MiniWorld::terrainTile(Terrain t, int& col, int& row) {
-    switch (t) {
-        case Terrain::Ocean:     col = 0; row = 11; break; // solid blue water
-        case Terrain::Grassland: col = 0; row = 4;  break; // bright green
-        case Terrain::Plains:    col = 1; row = 4;  break; // green (lighter variant)
-        case Terrain::Forest:    col = 0; row = 3;  break; // dense green blobs
-        case Terrain::Hills:     col = 1; row = 5;  break; // grey rocky
-        case Terrain::Mountains: col = 0; row = 5;  break; // grey rocky (peak)
-        case Terrain::Desert:    col = 0; row = 0;  break; // tan dotted
-        default:                 col = 0; row = 11; break;
     }
 }
 
@@ -167,7 +142,7 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
         tileSize = 16; // real tiles are 16x16
     } else {
         // Fallback: install the synthetic terrain palette colours.
-        fb.palette.set(200,  40,  60, 160); // Ocean
+        fb.palette.set(200,  40,  60, 160); // Water
         fb.palette.set(201,  70, 170,  60); // Grassland
         fb.palette.set(202, 150, 170,  70); // Plains
         fb.palette.set(203,  30, 110,  40); // Forest
@@ -198,12 +173,13 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
         for (int rx = 0; rx < cols; ++rx) {
             int mx = camX + rx, my = camY + ry;
             int px = rx * tileSize, py = ry * tileSize;
-            Terrain t = (mx < w_ && my < h_) ? terrainAt(mx, my) : Terrain::Ocean;
+            Terrain t = (mx < w_ && my < h_) ? terrainAt(mx, my) : Terrain::Water;
             if (useTiles) {
-                int col, row;
-                terrainTile(t, col, row);
+                // Faithful TER257 base tile from TerrainTiles.h (1:1 with
+                // Array_b886[terrain,0] in OpenCiv1 StartGameMenu).
+                TileXY tile = terrainToTileXY(t);
                 fb.drawBitmap(px, py, *tileset_,
-                              Rect{col * 16, row * 16, 16, 16}, false);
+                              Rect{tile.col * 16, tile.row * 16, 16, 16}, false);
             } else {
                 fb.fillRect(Rect{px, py, tileSize, tileSize}, terrainColor(t));
                 fb.drawRect(Rect{px, py, tileSize, tileSize}, 210); // grid

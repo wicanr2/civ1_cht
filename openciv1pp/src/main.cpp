@@ -1443,7 +1443,7 @@ static int playtest() {
     chk(differs, "different seed -> different map");
 
     // terrainNameKey returns the expected English key for a known tile.
-    chk(std::string(MiniWorld::terrainNameKey(Terrain::Ocean)) == "Ocean" &&
+    chk(std::string(MiniWorld::terrainNameKey(Terrain::Water)) == "Ocean" &&
         std::string(MiniWorld::terrainNameKey(Terrain::Mountains)) == "Mountains",
         "terrainNameKey returns expected English keys");
     chk(std::string(MiniWorld::terrainNameKey(a.terrainAt(a.unitX(), a.unitY()))).size() > 0,
@@ -1541,6 +1541,116 @@ static int playtest() {
     else
         std::printf("PLAYTEST: all pass (MiniWorld playable slice; "
                     "%zu localized HUD pixels differ)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
+// Headless verification of the faithful TER257.PIC (col,row) mapping in
+// TerrainTiles.h/.cpp. Three checks:
+//   (1) terrainToTileXY returns Civ1's documented (col=0, row=terrainID) for
+//       the land terrains (1:1 with Array_b886[terrain,0] in OpenCiv1
+//       StartGameMenu.F5_0000_1455_LoadBitmaps);
+//   (2) determinism: MiniWorld(seed)==MiniWorld(seed) (sanity);
+//   (3) with OPENCIV1_DOS_ASSETS pointing at a real DOS install, render one
+//       frame using the faithful tiles and dump it to /tmp/realmap.ppm,
+//       asserting the frame has non-zero ink. Without assets the sub-check
+//       is skipped (the test still passes).
+static int maptest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // (1) Faithful (col,row) mapping for the base tile of each terrain. These
+    // are the documented Civ1 values: Array_b886[terrain,0] = ScreenToBitmap(
+    // 1, 0, terrain*16, 16, 16). Same expected values for Ocean/Grassland/
+    // Forest/Mountain as the task spec calls out.
+    {
+        TileXY ocean = terrainToTileXY(Terrain::Water);
+        TileXY grass = terrainToTileXY(Terrain::Grassland);
+        TileXY forest = terrainToTileXY(Terrain::Forest);
+        TileXY mtn = terrainToTileXY(Terrain::Mountains);
+        TileXY desert = terrainToTileXY(Terrain::Desert);
+        TileXY plains = terrainToTileXY(Terrain::Plains);
+        TileXY hills = terrainToTileXY(Terrain::Hills);
+        // Water uses coastal/overlay regions (Array_d294 at y=176, overlay at
+        // 256,120) — the base (col,row) returned is the closest aligned 16x16
+        // ocean cell in TER257.PIC (col=15, row=7).
+        chk(ocean.col == 15 && ocean.row == 7,
+            "Water base tile is the (15,7) ocean cell (closest aligned 16x16 to TER257 ocean overlay)");
+        // Land terrains: faithful (col=0, row=terrainID) from Array_b886.
+        chk(grass.col == 0  && grass.row == 2,  "Grassland -> (0,2)");
+        chk(forest.col == 0 && forest.row == 3, "Forest    -> (0,3)");
+        chk(mtn.col == 0    && mtn.row == 5,    "Mountains -> (0,5)");
+        chk(desert.col == 0 && desert.row == 0, "Desert    -> (0,0)");
+        chk(plains.col == 0 && plains.row == 1, "Plains    -> (0,1)");
+        chk(hills.col == 0  && hills.row == 4,  "Hills     -> (0,4)");
+        // Tundra/Arctic/Swamp/Jungle: rows 6..9, col 0 (also faithful).
+        chk(terrainToTileXY(Terrain::Tundra).row == 6 &&
+            terrainToTileXY(Terrain::Arctic).row == 7 &&
+            terrainToTileXY(Terrain::Swamp).row  == 8 &&
+            terrainToTileXY(Terrain::Jungle).row == 9,
+            "Tundra/Arctic/Swamp/Jungle base tiles -> rows 6..9");
+    }
+
+    // (2) Determinism sanity (same seed -> same map) using MiniWorld's
+    // existing seed-based generator. Cheap full-grid compare.
+    {
+        const int W = 32, H = 24;
+        const uint32_t seed = 0xC1Au;
+        MiniWorld a(W, H, seed), b(W, H, seed);
+        bool same = true;
+        for (int y = 0; y < H && same; ++y)
+            for (int x = 0; x < W; ++x)
+                if (a.terrainAt(x, y) != b.terrainAt(x, y)) { same = false; break; }
+        chk(same, "MiniWorld(seed) is deterministic across two builds");
+    }
+
+    // (3) Real-asset path: render a frame using the faithful TER257 mapping
+    // and dump it to /tmp/realmap.ppm. Only when OPENCIV1_DOS_ASSETS points
+    // at a directory containing TER257.PIC; otherwise skip (the test still
+    // passes — headless CI must stay green with no assets).
+    {
+        std::string dir = resolveAssetDir(nullptr);
+        std::error_code ec;
+        if (!dir.empty() &&
+            std::filesystem::exists(std::filesystem::path(dir) / "TER257.PIC", ec)) {
+            OpenCiv1Game g;
+            setupGame(g, 480, 300);
+            Translator::instance().enabled = true;
+            MiniWorld m(40, 30, 12345u);
+            chk(m.loadTileset(dir), "real TER257.PIC loads from OPENCIV1_DOS_ASSETS");
+            chk(m.hasTileset(), "tileset is present after loadTileset");
+            m.draw(g.graphics, 1, 16);
+            // Non-zero ink: at least one map pixel must be set (clear() uses
+            // index 208 for HUD bg; any other index counts as ink).
+            const GBitmap& fb = g.graphics.screen(0);
+            std::size_t ink = 0;
+            for (auto px : fb.pixels()) if (px != 208) ++ink;
+            chk(ink > 0, "real-tile render produced non-zero ink");
+            dumpPPM(fb, "/tmp/realmap.ppm");
+            std::printf("  (real-tile frame -> /tmp/realmap.ppm)\n");
+        } else {
+            std::printf("  (no DOS assets at OPENCIV1_DOS_ASSETS; real-tile sub-check skipped)\n");
+            // Fallback path must still pass: colored-rect render produces
+            // ink in the 200..210 palette range and the unit marker (209).
+            OpenCiv1Game g;
+            setupGame(g, 480, 300);
+            MiniWorld m(40, 30, 12345u);
+            m.draw(g.graphics, 1, 12);
+            const GBitmap& fb = g.graphics.screen(0);
+            bool hasTerrain = false, hasUnit = false;
+            for (auto px : fb.pixels()) {
+                if (px >= 200 && px <= 206) hasTerrain = true;
+                if (px == 209) hasUnit = true;
+                if (hasTerrain && hasUnit) break;
+            }
+            chk(hasTerrain, "fallback colored-rect render drew terrain");
+            chk(hasUnit, "fallback render drew the unit marker");
+        }
+    }
+
+    if (fail)
+        std::printf("MAPTEST: %d failure(s)\n", fail);
+    else
+        std::printf("MAPTEST: all pass (faithful TER257 base-tile mapping verified)\n");
     return fail ? 1 : 0;
 }
 
@@ -1650,6 +1760,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--flowtest")) { return flowtest(); }
         else if (!std::strcmp(argv[i], "--gamemenutest")) { return gamemenutest(); }
         else if (!std::strcmp(argv[i], "--playtest")) { return playtest(); }
+        else if (!std::strcmp(argv[i], "--maptest")) { return maptest(); }
         else if (!std::strcmp(argv[i], "--titletest")) { return titletest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
@@ -1689,7 +1800,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += titletest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
