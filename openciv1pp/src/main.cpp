@@ -26,6 +26,7 @@
 #include "game/UnitManagement.h"
 #include "game/CheckPlayerTurn.h"
 #include "game/CityView.h"
+#include "game/GameLoadAndSave.h"
 #include "localization/Translator.h"
 #include "platform/SdlPresenter.h"
 #include "resource/PicLoader.h"
@@ -3609,6 +3610,134 @@ static int aimovetest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Save / Load round-trip ---------------------------------
+// Drives the GameLoadAndSave CodeObject end-to-end:
+//   (1) integrated PLAYING (7 civs) is set up via FrontEndFlow,
+//   (2) a few end-of-turn passes are run + the human Settlers builds a city
+//       (so units/cities/turn/year are all NON-default),
+//   (3) saveToFile writes /tmp/openciv1pp_test.sav,
+//   (4) a SECOND, fresh OpenCiv1Game + FrontEndFlow is constructed,
+//   (5) loadFromFile rebuilds the second game from the savefile,
+//   (6) the second game's turn/year, civs count, units (count + sample pos),
+//       cities (count + sample name), and a sampled terrain cell ALL match
+//       the pre-save state byte-for-byte.
+//
+// NOTE: this is NOT a port of the faithful Civ1 CIVIL*.SVE binary format —
+// see GameLoadAndSave.h. The savefile is a small human-inspectable text
+// snapshot that's enough to demonstrate the round-trip on the C++ port's
+// in-memory state. The deeper .SVE binary port stays a TODO.
+static int savetest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    const char* savePath = "/tmp/openciv1pp_test.sav";
+
+    // ---- (1)+(2) build a known PLAYING state ----------------------------
+    OpenCiv1Game g1;
+    setupGame(g1, 480, 300);
+    Translator::instance().enabled = true;
+    FrontEndFlow flow1(g1);
+    flow1.enterTitle();
+    for (int k = 0; k < 6; ++k) flow1.handleKey(MenuBoxDialog::KeyEnter);
+    State s1 = flow1.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+    chk(s1 == State::PLAYING, "g1 reached PLAYING");
+    chk(flow1.miniWorld() != nullptr, "g1 has a MiniWorld");
+
+    // Run a few end-of-turn passes so the turn/year advance away from
+    // defaults and AI cities get founded (productionType=Militia + shields).
+    for (int t = 0; t < 4; ++t) g1.checkPlayerTurn().processEndOfTurn();
+
+    // Build a city at the human Settlers' tile so cities() is non-empty
+    // even before any AI cities (the AI founds capitals via aibehaviortest
+    // on the first end-of-turn, but we want a HUMAN city in the snapshot).
+    std::string cityName;
+    bool built = flow1.miniWorld()->buildCityAtUnit(cityName, /*playerId*/ 0);
+    // built==false is OK if the human's tile is Water/Arctic (unlikely on a
+    // generated map but possible) — the AI cities founded above still cover
+    // the cities-roundtrip case. We do NOT assert it here, only that there
+    // is AT LEAST ONE city after the pre-save state is settled.
+    (void)built;
+    chk(g1.unitManagement().cityCount() >= 1,
+        "pre-save: at least one city exists");
+    chk(!g1.unitManagement().units().empty(),
+        "pre-save: at least one unit exists");
+
+    // Snapshot the values we will compare AFTER load.
+    int preTurn  = flow1.miniWorld()->turn();
+    int preYear  = g1.unitManagement().year();
+    std::size_t preCivCount   = g1.unitManagement().civs().size();
+    std::size_t preUnitCount  = g1.unitManagement().units().size();
+    std::size_t preCityCount  = g1.unitManagement().cityCount();
+    int preU0Owner = g1.unitManagement().units()[0].owner;
+    int preU0X     = g1.unitManagement().units()[0].x;
+    int preU0Y     = g1.unitManagement().units()[0].y;
+    int preU0Type  = int(g1.unitManagement().units()[0].type);
+    bool preU0Alive = g1.unitManagement().units()[0].alive;
+    std::string preCity0Name = g1.unitManagement().cities()[0].name;
+    int preCity0X = g1.unitManagement().cities()[0].x;
+    int preCity0Y = g1.unitManagement().cities()[0].y;
+    int preChosenTribe = flow1.chosenTribe();
+    int preChosenDiff  = flow1.chosenDifficulty();
+    // A sampled terrain cell (middle of the map).
+    int sx = MapManagement::kWidth / 2, sy = MapManagement::kHeight / 2;
+    Terrain preSampleTerrain = flow1.miniWorld()->terrainAt(sx, sy);
+    int preUx = flow1.miniWorld()->unitX();
+    int preUy = flow1.miniWorld()->unitY();
+
+    // ---- (3) save -------------------------------------------------------
+    bool saveOk = g1.gameLoadAndSave().saveToFile(savePath, &flow1);
+    chk(saveOk, "saveToFile succeeded");
+
+    // ---- (4)+(5) fresh game, then load --------------------------------
+    OpenCiv1Game g2;
+    setupGame(g2, 480, 300);
+    Translator::instance().enabled = true;
+    FrontEndFlow flow2(g2);
+    bool loadOk = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
+    chk(loadOk, "loadFromFile succeeded");
+    chk(flow2.state() == State::PLAYING, "post-load: state == PLAYING");
+    chk(flow2.miniWorld() != nullptr, "post-load: MiniWorld exists");
+
+    // ---- (6) verify byte-for-byte equality -----------------------------
+    chk(flow2.miniWorld()->turn() == preTurn, "post-load: turn matches");
+    chk(g2.unitManagement().year() == preYear, "post-load: year matches");
+    chk(g2.unitManagement().civs().size() == preCivCount,
+        "post-load: civs count matches");
+    chk(g2.unitManagement().units().size() == preUnitCount,
+        "post-load: units count matches");
+    chk(g2.unitManagement().cityCount() == preCityCount,
+        "post-load: cities count matches");
+    if (!g2.unitManagement().units().empty()) {
+        const Unit& u0 = g2.unitManagement().units()[0];
+        chk(u0.owner == preU0Owner, "post-load: unit[0].owner matches");
+        chk(u0.x == preU0X && u0.y == preU0Y, "post-load: unit[0] position matches");
+        chk(int(u0.type) == preU0Type, "post-load: unit[0].type matches");
+        chk(u0.alive == preU0Alive, "post-load: unit[0].alive matches");
+    }
+    if (!g2.unitManagement().cities().empty()) {
+        const City& c0 = g2.unitManagement().cities()[0];
+        chk(c0.name == preCity0Name, "post-load: city[0].name matches");
+        chk(c0.x == preCity0X && c0.y == preCity0Y, "post-load: city[0] position matches");
+    }
+    chk(flow2.chosenTribe() == preChosenTribe,
+        "post-load: chosenTribe matches");
+    chk(flow2.chosenDifficulty() == preChosenDiff,
+        "post-load: chosenDifficulty matches");
+    chk(flow2.miniWorld()->terrainAt(sx, sy) == preSampleTerrain,
+        "post-load: sampled terrain byte matches");
+    chk(flow2.miniWorld()->unitX() == preUx &&
+        flow2.miniWorld()->unitY() == preUy,
+        "post-load: human unit position on MiniWorld matches");
+
+    if (fail) std::printf("SAVETEST: %d failure(s)\n", fail);
+    else      std::printf("SAVETEST: all pass (save/load round-trip: %zu civs, "
+                          "%zu units, %zu cities, turn=%d, year=%d)\n",
+                          preCivCount, preUnitCount, preCityCount,
+                          preTurn, preYear);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -3674,6 +3803,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--cityviewtest")) { return cityviewtest(); }
         else if (!std::strcmp(argv[i], "--combattest")) { return combattest(); }
         else if (!std::strcmp(argv[i], "--aimovetest")) { return aimovetest(); }
+        else if (!std::strcmp(argv[i], "--savetest")) { return savetest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -3739,7 +3869,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

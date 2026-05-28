@@ -176,6 +176,8 @@ public:
     // a STUB — only the {tribeIdx, color, name, isHuman} subset is materialised.
     void setupCivs(int humanTribe, int numAi);
     const std::vector<CivState>& civs() const { return civs_; }
+    // Direct-write access used by GameLoadAndSave to restore civs from disk.
+    std::vector<CivState>& civsMut() { return civs_; }
 
     // ---- units (multi-civ) ----
     // Append a Unit owned by `owner` (civ index) at (x,y). Returns its index.

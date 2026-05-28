@@ -141,6 +141,29 @@ void FrontEndFlow::enterPlaying() {
     miniWorld_->setUnitPosition(sx, sy);
 }
 
+void FrontEndFlow::rebuildPlayingShell() {
+    // The subset of enterPlaying() that creates the MiniWorld and links it
+    // to the game host — WITHOUT spawning civs/units/cities (those are
+    // restored verbatim by GameLoadAndSave). The world is regenerated with
+    // the recorded seed so the underlying terrain matches; the loader then
+    // overwrites individual tiles to restore the exact saved grid (covers
+    // the case where seed -> map determinism ever drifts, and makes the
+    // savefile self-contained).
+    state_ = State::PLAYING;
+    uint32_t seed = worldSeedOverride_;
+    if (seed == 0) {
+        uint32_t d = uint32_t(chosenDifficulty_ < 0 ? 0 : chosenDifficulty_);
+        uint32_t t = uint32_t(chosenTribe_      < 0 ? 0 : chosenTribe_);
+        seed = 0xC1110001u ^ (d * 0x9E3779B1u) ^ (t * 0x85EBCA77u);
+    }
+    miniWorld_ = std::make_unique<MiniWorld>(MapManagement::kWidth,
+                                             MapManagement::kHeight, seed);
+    miniWorld_->useRealGenerator(p.mapManagement(), seed);
+    if (!assetDir_.empty()) miniWorld_->loadTileset(assetDir_);
+    miniWorld_->attachGame(p);
+    p.unitManagement().setChosenTribe(chosenTribe_);
+}
+
 void FrontEndFlow::enterName() {
     state_ = State::NAME;
     // No menu navigation — the NAME screen is a single-line edit box (stubbed).

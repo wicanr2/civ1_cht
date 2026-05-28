@@ -48,6 +48,13 @@ public:
     int width()  const { return w_; }
     int height() const { return h_; }
     Terrain terrainAt(int x, int y) const;
+
+    // Direct-write a terrain cell. Out-of-bounds writes are a no-op. Used by
+    // GameLoadAndSave to restore the persisted terrain grid byte-for-byte.
+    void setTerrainAt(int x, int y, Terrain t) {
+        if (x < 0 || y < 0 || x >= w_ || y >= h_) return;
+        at(x, y) = t;
+    }
     static const char* terrainNameKey(Terrain t) { return oc1::terrainNameKey(t); }
 
     int unitX() const { return unitX_; }
@@ -63,6 +70,10 @@ public:
     // coords were in bounds (i.e. the unit was placed exactly there); false if
     // they had to be clamped.
     bool setUnitPosition(int x, int y);
+
+    // Direct-write the turn counter (for GameLoadAndSave restore). Bypasses
+    // end-of-turn housekeeping — this is a raw setter for snapshot replay.
+    void setTurnForRestore(int t) { turn_ = t; }
 
     // End-of-turn: increments the turn counter AND, when a host game is
     // attached, calls CheckPlayerTurn::processEndOfTurn() (per-civ city pass:

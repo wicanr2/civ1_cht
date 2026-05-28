@@ -109,6 +109,21 @@ public:
     // seed is derived deterministically from chosenDifficulty + chosenTribe +
     // a base (so the same picks always produce the same map).
     void setWorldSeed(uint32_t s) { worldSeedOverride_ = s; }
+    uint32_t worldSeed() const { return worldSeedOverride_; }
+
+    // Direct-write accessors used by GameLoadAndSave to restore the front-end's
+    // chosen{...} fields from disk WITHOUT replaying the menu navigation. They
+    // are also used by --savetest to install a known state before snapshotting.
+    void setChosenDifficulty(int d) { chosenDifficulty_ = d; }
+    void setChosenTribe(int t)      { chosenTribe_ = t; }
+    void setChosenName(std::string n) { chosenName_ = std::move(n); }
+    void setState(State s)          { state_ = s; }
+
+    // GameLoadAndSave calls this AFTER restoring chosen{Difficulty,Tribe,Seed}
+    // and BEFORE replaying the recorded units/cities/terrain — it spins up the
+    // MiniWorld (the playable map host) without rerunning setupCivs / unit
+    // placement (those are restored verbatim from the savefile).
+    void rebuildPlayingShell();
 
 private:
     // (Re)arm the menu's navStep state for the screen we just entered.
