@@ -54,9 +54,43 @@ int CheckPlayerTurn::processEndOfTurn() {
     auto& um = p.unitManagement();
     auto& cities = um.citiesMut();
 
-    // OUTER LOOP: iterate civs (player + AI placeholders). The current port
-    // only has player 0 in cities[]; the loop SHAPE is faithful so AI civs
-    // can be added incrementally without changing the dispatcher.
+    // ---- AI BEHAVIOUR PASS (faithful approximation) -----------------------
+    // Mirrors the "AI civ first acts" decision in C# CheckPlayerTurn (which
+    // dispatches to Segment_25fb.F0_25fb_0c9d for each AI unit). The full AI
+    // decision-tree is 359KB of x86 logic and out of scope here; the milestone
+    // is "AI exists and acts" — the simplest faithful action being: if an AI
+    // civ still has a Settlers unit AND has founded no city, found its capital
+    // on that Settlers' tile (1:1 with the player's B-key BUILD-CITY action,
+    // which is how every Civ1 game's first AI capital appears in turn 1).
+    {
+        auto& units = um.unitsMut();
+        const auto& civs = um.civs();
+        for (std::size_t cIdx = 0; cIdx < civs.size(); ++cIdx) {
+            if (civs[cIdx].isHuman) continue; // human acts via the input loop
+            int civId = int(cIdx);
+            // Skip if this civ already founded a city this game.
+            bool hasCity = false;
+            for (const auto& cc : cities)
+                if (cc.owner == civId) { hasCity = true; break; }
+            if (hasCity) continue;
+            // Find the first alive Settlers owned by this civ.
+            for (auto& u : units) {
+                if (!u.alive || u.owner != civId ||
+                    u.type != UnitType::Settlers) continue;
+                std::string nm;
+                if (um.buildCity(u.x, u.y, civId, nm)) {
+                    // Settlers is consumed by the BUILD-CITY action
+                    // (mirrors F0_1866_01dc removing the unit on success).
+                    u.alive = false;
+                }
+                break; // only one action per AI civ per turn (1:1 with C#)
+            }
+        }
+    }
+
+    // OUTER LOOP: iterate civs (player + AI placeholders). After the AI pass
+    // above the cities[] table also contains AI capitals, so the per-civ city
+    // pass is now genuinely multi-civ.
     // C# equivalent: Segment_1238 per-turn housekeeping iterates all 8
     // player slots (GameData.Players[0..7]) before incrementing TurnCount.
     const int numCivs = 8; // matches GameData.Players[8]

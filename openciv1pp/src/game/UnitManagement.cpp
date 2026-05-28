@@ -142,12 +142,22 @@ bool UnitManagement::buildCity(int x, int y, int playerId, int turn,
     int nthForPlayer = 0;
     for (const auto& c : cities_) if (c.owner == playerId) ++nthForPlayer;
 
+    // Pick the tribe whose capital-name pool to draw from. When civs() has
+    // been populated (multi-civ slice), each civ has its own tribeIdx so AI
+    // cities get THEIR tribe's capital (e.g. civ 1's first city = "Babylon"
+    // even when chosenTribe_ = 0 = Romans for the human). When civs() is
+    // empty (single-player citytest path), fall back to chosenTribe_ as
+    // before.
+    int tribeForName = chosenTribe_;
+    if (playerId >= 0 && std::size_t(playerId) < civs_.size())
+        tribeForName = civs_[std::size_t(playerId)].tribeIdx;
+
     City c;
     c.id = id;
     c.owner = playerId;
     c.x = x;
     c.y = y;
-    c.name = nthCityNameKey(chosenTribe_, nthForPlayer);
+    c.name = nthCityNameKey(tribeForName, nthForPlayer);
     c.foundedTurn = turn;
     cities_.push_back(std::move(c));
     outName = cities_.back().name;

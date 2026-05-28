@@ -3039,6 +3039,94 @@ static int aitest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- AI behaviour (turn 1 auto-found) headless test -----------
+// Goal: prove the "AI exists and acts" milestone. After driving the full
+// TITLE..PLAYING flow (7 civs spawned, 7 Settlers placed) and calling
+// CheckPlayerTurn::processEndOfTurn() ONCE:
+//   * cities() goes 0 -> 6 (all 6 AI civs founded their capitals; the human
+//     keeps theirs because the human controls their Settlers manually).
+//   * Each AI city's name matches that civ's tribe-capital (kTribeCapitalEnglish
+//     from UnitManagement.cpp: civ 1 -> Babylon, civ 2 -> Berlin, ...).
+//   * Each AI Settlers ends with alive=false (consumed by the build action).
+//   * The human Settlers remains alive (owner==0).
+static int aibehaviortest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    OpenCiv1Game g;
+    setupGame(g, 480, 300);
+    Translator::instance().enabled = true;
+    FrontEndFlow flow(g);
+    flow.enterTitle();
+    flow.handleKey(MenuBoxDialog::KeyEnter); // -> MAIN_MENU
+    flow.handleKey(MenuBoxDialog::KeyEnter); // -> DIFFICULTY (item 0)
+    flow.handleKey(MenuBoxDialog::KeyEnter); // -> TRIBE (Chieftain)
+    flow.handleKey(MenuBoxDialog::KeyEnter); // -> NAME (tribe 0 = Romans)
+    flow.handleKey(MenuBoxDialog::KeyEnter); // -> STARTING
+    State s = flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+    chk(s == State::PLAYING, "integrated flow reached PLAYING");
+
+    auto& um = g.unitManagement();
+    chk(um.cities().size() == 0, "initial cities() == 0");
+    chk(um.units().size() == 7, "initial units() == 7 (1 human + 6 AI)");
+    chk(um.civs().size() == 7, "civs() == 7");
+
+    // Drive one full end-of-turn pass — this is where the AI acts.
+    g.checkPlayerTurn().processEndOfTurn();
+
+    // 6 AI civs founded; human did NOT (human controls their own Settlers).
+    chk(um.cities().size() == 6,
+        "after 1 end-of-turn: cities().size() == 6 (all AI capitals founded)");
+
+    // Per-civ assertions: each AI civ owns exactly one city, named after its
+    // tribe's capital (kTribeCapitalEnglish[tribeIdx]).
+    static const char* kCap[14] = {
+        "Rome", "Babylon", "Berlin", "Thebes", "Washington", "Athens",
+        "Delhi", "Moscow", "Zimbabwe", "Paris", "Tenochtitlan",
+        "Peking", "London", "Samarkand"
+    };
+    for (std::size_t i = 1; i < um.civs().size(); ++i) {
+        int civId = int(i);
+        int cnt = 0; std::string name;
+        for (const auto& c : um.cities())
+            if (c.owner == civId) { ++cnt; name = c.name; }
+        char buf[96];
+        std::snprintf(buf, sizeof(buf),
+                      "AI civ %d owns exactly 1 city", civId);
+        chk(cnt == 1, buf);
+        int tribe = um.civs()[i].tribeIdx;
+        if (tribe >= 0 && tribe < 14) {
+            std::snprintf(buf, sizeof(buf),
+                          "AI civ %d city name == '%s' (tribe %d capital)",
+                          civId, kCap[tribe], tribe);
+            chk(name == kCap[tribe], buf);
+        }
+    }
+
+    // Human (civ 0) MUST NOT have a city yet (human acts via input loop).
+    bool humanHasCity = false;
+    for (const auto& c : um.cities()) if (c.owner == 0) { humanHasCity = true; break; }
+    chk(!humanHasCity, "human (civ 0) has NO city after AI pass");
+
+    // Every AI Settlers consumed; human Settlers still alive.
+    int aliveAi = 0, aliveHuman = 0;
+    for (const auto& u : um.units()) {
+        if (u.owner == 0 && u.alive) ++aliveHuman;
+        if (u.owner != 0 && u.alive) ++aliveAi;
+    }
+    chk(aliveAi == 0, "all AI Settlers consumed (alive=false) after founding");
+    chk(aliveHuman == 1, "human Settlers still alive");
+
+    Translator::instance().enabled = true;
+
+    if (fail)
+        std::printf("AIBEHAVIORTEST: %d failure(s)\n", fail);
+    else
+        std::printf("AIBEHAVIORTEST: all pass (6 AI capitals founded in 1 turn)\n");
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -3100,6 +3188,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--turntest")) { return turntest(); }
         else if (!std::strcmp(argv[i], "--gameflowtest")) { return gameflowtest(); }
         else if (!std::strcmp(argv[i], "--aitest")) { return aitest(); }
+        else if (!std::strcmp(argv[i], "--aibehaviortest")) { return aibehaviortest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -3165,7 +3254,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
