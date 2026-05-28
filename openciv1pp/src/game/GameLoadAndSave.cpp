@@ -95,8 +95,9 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     std::ofstream os(path, std::ios::binary);
     if (!os) return false;
 
-    // Header. v2 adds the per-civ tech-tree state (techcivs/techcsv records).
-    os << "OpenCiv1pp savegame v2\n";
+    // Header. v3 adds the improvements grid + per-unit work state.
+    // v2 added per-civ tech-tree state; v1 was the pre-tech baseline.
+    os << "OpenCiv1pp savegame v3\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -139,12 +140,15 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
            << (c.isHuman ? 1 : 0) << " " << c.name << "\n";
     }
 
-    // Units.
+    // Units. v3: per-unit work state (workTurnsLeft, workTarget) appended at
+    // the end of each unit line. Older readers stop at the alive field; the
+    // v3 loader picks up the extra fields when present (default to 0).
     const auto& units = p.unitManagement().units();
     os << "units " << units.size() << "\n";
     for (const auto& u : units) {
         os << "unit " << u.owner << " " << u.x << " " << u.y << " "
-           << int(u.type) << " " << (u.alive ? 1 : 0) << "\n";
+           << int(u.type) << " " << (u.alive ? 1 : 0)
+           << " " << u.workTurnsLeft << " " << int(u.workTarget) << "\n";
     }
 
     // Cities.
@@ -161,6 +165,25 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     os << "terrain ";
     writeHex(os, dumpTerrainBytes(const_cast<OpenCiv1Game&>(p)));
     os << "\n";
+
+    // v3: improvements grid (same row-major byte-per-tile layout as terrain,
+    // 80*50 = 4000 bytes -> 8000 hex chars). Each byte holds the
+    // TerrainImprovementFlagsEnum bitmask (Road=8, Irrigation=2, ...).
+    {
+        std::vector<uint8_t> improvBytes;
+        improvBytes.resize(std::size_t(MapManagement::kWidth) *
+                           MapManagement::kHeight);
+        const auto& mm = p.mapManagement();
+        for (int y = 0; y < MapManagement::kHeight; ++y) {
+            for (int x = 0; x < MapManagement::kWidth; ++x) {
+                improvBytes[std::size_t(y) * MapManagement::kWidth + x] =
+                    mm.getImprovements(x, y);
+            }
+        }
+        os << "improvements ";
+        writeHex(os, improvBytes);
+        os << "\n";
+    }
 
     // Per-civ tech state. One techcsv line per civ; the techCsv tail is the
     // comma-separated list of Tech enum ids the civ knows ("" when none).
@@ -195,10 +218,12 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
 
     std::string header;
     if (!std::getline(is, header)) return false;
-    // Accept v1 (pre-tech-tree) and v2 (current). v1 files just skip the
-    // tech state restore and TechResearch::initCivs runs (Alphabet default).
+    // Accept v1 (pre-tech-tree), v2 (pre-improvements), v3 (current).
+    // v1 files skip the tech-state restore; v2 files skip the improvements
+    // grid + per-unit work state (those fields default to 0).
     if (header != "OpenCiv1pp savegame v1" &&
-        header != "OpenCiv1pp savegame v2") return false;
+        header != "OpenCiv1pp savegame v2" &&
+        header != "OpenCiv1pp savegame v3") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -210,6 +235,7 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     std::vector<Unit> units;
     std::vector<City> cities;
     std::vector<uint8_t> terrain;
+    std::vector<uint8_t> improvements;
     // Per-civ tech state we'll restore after the main vectors are applied.
     struct TechRow { int civId; int researching; int points; std::vector<int> known; };
     std::vector<TechRow> techRows;
@@ -256,6 +282,13 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             iss >> u.owner >> u.x >> u.y >> t >> alive;
             u.type = UnitType(t);
             u.alive = (alive != 0);
+            // v3: trailing workTurnsLeft + workTarget. Absent in v1/v2 (the
+            // istream extraction silently fails and the defaults persist).
+            int wtLeft = 0, wtTarget = 0;
+            if (iss >> wtLeft) {
+                u.workTurnsLeft = wtLeft;
+                if (iss >> wtTarget) u.workTarget = uint8_t(wtTarget);
+            }
             units.push_back(u);
         }
         else if (key == "cities")     { /* count */ }
@@ -277,6 +310,15 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             if (!parseHex(hex, terrain)) return false;
             if (terrain.size() != std::size_t(MapManagement::kWidth) *
                                   MapManagement::kHeight) {
+                return false;
+            }
+        }
+        else if (key == "improvements") {
+            std::string hex;
+            iss >> hex;
+            if (!parseHex(hex, improvements)) return false;
+            if (improvements.size() != std::size_t(MapManagement::kWidth) *
+                                       MapManagement::kHeight) {
                 return false;
             }
         }
@@ -327,6 +369,22 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     MiniWorld* mw = flow ? flow->miniWorld() : nullptr;
     if (!terrain.empty()) {
         restoreTerrainBytes(p, mw, terrain);
+    }
+    // v3: improvements grid. When absent (v1/v2 save), clear and skip — the
+    // generator's clearImprovements() in rebuildPlayingShell already left
+    // the grid empty for those legacy files.
+    {
+        auto& mm = p.mapManagement();
+        if (!improvements.empty()) {
+            for (int y = 0; y < MapManagement::kHeight; ++y) {
+                for (int x = 0; x < MapManagement::kWidth; ++x) {
+                    mm.setImprovementsRaw(x, y,
+                        improvements[std::size_t(y) * MapManagement::kWidth + x]);
+                }
+            }
+        } else {
+            mm.clearImprovements();
+        }
     }
 
     // Restore human unit position and turn counter on MiniWorld.

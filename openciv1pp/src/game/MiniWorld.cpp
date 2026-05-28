@@ -225,6 +225,46 @@ bool MiniWorld::buildCityAtUnit(std::string& outName, int playerId) {
     return false;
 }
 
+int MiniWorld::humanSettlerAtCursor(int playerId) const {
+    if (!game_) return -1;
+    const auto& us = game_->unitManagement().units();
+    for (std::size_t i = 0; i < us.size(); ++i) {
+        if (!us[i].alive) continue;
+        if (us[i].owner != playerId) continue;
+        if (us[i].type != UnitType::Settlers) continue;
+        if (us[i].x == unitX_ && us[i].y == unitY_) return int(i);
+    }
+    return -1;
+}
+
+bool MiniWorld::startBuildRoadAtUnit(int playerId) {
+    if (!game_) return false;
+    int uid = humanSettlerAtCursor(playerId);
+    if (uid < 0) return false;
+    auto& um = game_->unitManagement();
+    um.setMapBounds(w_, h_);
+    if (um.startBuildRoad(uid)) {
+        lastActionKey_ = "Build Road";
+        lastCityName_.clear();
+        return true;
+    }
+    return false;
+}
+
+bool MiniWorld::startBuildIrrigationAtUnit(int playerId) {
+    if (!game_) return false;
+    int uid = humanSettlerAtCursor(playerId);
+    if (uid < 0) return false;
+    auto& um = game_->unitManagement();
+    um.setMapBounds(w_, h_);
+    if (um.startBuildIrrigation(uid)) {
+        lastActionKey_ = "Build Irrigation";
+        lastCityName_.clear();
+        return true;
+    }
+    return false;
+}
+
 void MiniWorld::renderCities(GBitmap& screen) const {
     if (!game_) return;
     const auto& cities = game_->unitManagement().cities();
@@ -591,6 +631,30 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
                 fb.fillRect(Rect{px, py, tileSize, tileSize}, terrainColor(t));
                 fb.drawRect(Rect{px, py, tileSize, tileSize}, 210); // grid
             }
+            // Improvements overlay: a small road/irrigation glyph painted
+            // on the tile when the matching MapManagement bit is set. Pulled
+            // from the parallel improvements grid so this is independent of
+            // the terrain pixel encoding. Drawn AFTER the base tile so the
+            // overlay is visible even when a real TER257 tile is used.
+            if (game_ && mx >= 0 && my >= 0) {
+                uint8_t impr = game_->mapManagement().getImprovements(mx, my);
+                if (impr & MapManagement::kImprovementRoad) {
+                    // Bright horizontal line crossing the tile (palette 14
+                    // == VGA bright yellow, installed at index 209 region).
+                    fb.palette.set(218, 240, 240, 80); // road yellow
+                    int yMid = py + tileSize / 2;
+                    fb.drawLine(px + 1, yMid, px + tileSize - 2, yMid, 218);
+                }
+                if (impr & MapManagement::kImprovementIrrigation) {
+                    // Small cyan dots forming an irrigation grid in the tile.
+                    fb.palette.set(219, 80, 220, 220); // irrigation cyan
+                    int q = tileSize / 4;
+                    fb.setPixel(px + q,             py + q,             219);
+                    fb.setPixel(px + tileSize - q,  py + q,             219);
+                    fb.setPixel(px + q,             py + tileSize - q,  219);
+                    fb.setPixel(px + tileSize - q,  py + tileSize - q,  219);
+                }
+            }
             if (mx == unitX_ && my == unitY_) {
                 if (useTiles && sprites_) {
                     // Settlers sprite: SP257 tile (col 0, row 10). Drawn
@@ -695,6 +759,24 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
             // entry for it (e.g. "Capital" -> "首都").
             gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
                           lastCityName_, 207);
+        }
+    }
+    // Working: <remaining> — when the human's Settlers at the cursor tile
+    // is mid-improvement, append the per-turn countdown so the HUD shows
+    // exactly how many turns remain until the road/irrigation completes.
+    if (game_) {
+        int uid = humanSettlerAtCursor(0);
+        if (uid >= 0) {
+            const auto& us = game_->unitManagement().units();
+            const Unit& u = us[std::size_t(uid)];
+            if (u.workTurnsLeft > 0) {
+                penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+                penX3 = gd.drawString(GDriver::MainScreen, font, penX3,
+                                      line3Y, "Working:", 207);
+                char wb[16];
+                std::snprintf(wb, sizeof(wb), " %d", u.workTurnsLeft);
+                penX3 = fb.drawString(font, penX3, line3Y, wb, 207);
+            }
         }
     }
     // Production line: when at least one city is founded, append the FIRST

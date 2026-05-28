@@ -102,6 +102,8 @@ int SdlPresenter::pollKey() {
                 case SDLK_RIGHT:  return 6;
                 case SDLK_b:      return 7;
                 case SDLK_m:      return 8;
+                case SDLK_r:      return 9;
+                case SDLK_i:      return 10;
                 default: break;
             }
         }

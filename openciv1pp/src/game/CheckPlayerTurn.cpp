@@ -5,6 +5,7 @@
 #include "CheckPlayerTurn.h"
 #include "OpenCiv1Game.h"
 #include "UnitManagement.h"
+#include "MapManagement.h"
 #include "TerrainTiles.h"
 #include "TechResearch.h"
 #include <algorithm>
@@ -54,6 +55,36 @@ int CheckPlayerTurn::shieldYield(int adjacentGoodTiles) {
 int CheckPlayerTurn::processEndOfTurn() {
     auto& um = p.unitManagement();
     auto& cities = um.citiesMut();
+
+    // ---- SETTLERS IMPROVEMENT TICK ---------------------------------------
+    // Mirrors the per-turn dispatcher entry where a Settlers with an
+    // outstanding work counter has it decremented and the matching
+    // improvement bit is OR-d into the map at completion. We iterate
+    // every civ's units (human + AI), so AI-started improvements would
+    // also complete here when the AI ever issues startBuildRoad/Irrigation
+    // (no AI work code yet — TODO). On completion the unit unlocks
+    // (workTurnsLeft=0, workTarget=kWorkNone).
+    {
+        auto& units = um.unitsMut();
+        auto& mm = p.mapManagement();
+        for (auto& u : units) {
+            if (!u.alive) continue;
+            if (u.workTurnsLeft <= 0) continue;
+            --u.workTurnsLeft;
+            if (u.workTurnsLeft == 0) {
+                uint8_t flag = 0;
+                if (u.workTarget == UnitManagement::kWorkRoad) {
+                    flag = MapManagement::kImprovementRoad;
+                } else if (u.workTarget == UnitManagement::kWorkIrrigation) {
+                    flag = MapManagement::kImprovementIrrigation;
+                }
+                if (flag) mm.setImprovementFlag(u.x, u.y, flag);
+                u.workTarget = UnitManagement::kWorkNone;
+                // TODO: food/movement bonuses (Road = move/3, Irrigation
+                // = +1 food) not yet modeled; only the bitflag is tracked.
+            }
+        }
+    }
 
     // ---- AI BEHAVIOUR PASS (faithful approximation) -----------------------
     // Mirrors the "AI civ first acts" decision in C# CheckPlayerTurn (which

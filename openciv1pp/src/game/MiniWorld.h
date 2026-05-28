@@ -162,6 +162,19 @@ public:
     // game is attached or the current tile is invalid (Water/Arctic).
     bool buildCityAtUnit(std::string& outName, int playerId = 0);
 
+    // Player-driven Build Road / Build Irrigation actions (R / I keys).
+    // Routes to UnitManagement::startBuildRoad / startBuildIrrigation on the
+    // human (owner==0) Settlers currently at the cursor tile (unitX_/unitY_).
+    // Sets lastActionKey to "Build Road" / "Build Irrigation" so the HUD
+    // line reflects it. Returns false when no host game is attached, no
+    // such Settlers is at the tile, or the terrain/state guard refuses.
+    bool startBuildRoadAtUnit(int playerId = 0);
+    bool startBuildIrrigationAtUnit(int playerId = 0);
+
+    // Returns the unitId of the human's Settlers at the cursor tile, or -1
+    // when none is at the tile. Used by the HUD to look up workTurnsLeft.
+    int humanSettlerAtCursor(int playerId = 0) const;
+
     // Last action message to show on the HUD second line (English key, run
     // through the Translator at draw time).
     const std::string& lastActionKey() const { return lastActionKey_; }

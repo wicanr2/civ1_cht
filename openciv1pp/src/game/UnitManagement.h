@@ -84,6 +84,17 @@ struct Unit {
     int x = 0, y = 0;         // Position (matches C# GPoint)
     UnitType type = UnitType::Settlers;
     bool alive = true;
+    // Settlers work state (faithful subset of C# UnitManagement
+    // F0_1866_* build-road / build-irrigation flow + the per-unit
+    // RemainingMoves / Status state used to lock a Settlers on its tile
+    // while improvements are under construction). workTarget encodes
+    // WHICH improvement is being built (0=None, 1=Road, 2=Irrigation),
+    // workTurnsLeft is the per-improvement countdown decremented in
+    // CheckPlayerTurn::processEndOfTurn; on reaching 0 the matching
+    // improvement bit is set on MapManagement's improvements grid
+    // (see MapManagement::setImprovementFlag) and workTarget clears.
+    int workTurnsLeft = 0;
+    uint8_t workTarget = 0;   // 0=None, 1=Road, 2=Irrigation
 };
 
 // Per-civilization state (a SUBSET of GameData.Players[i] + Nations[i]).
@@ -186,6 +197,33 @@ public:
     const std::vector<CivState>& civs() const { return civs_; }
     // Direct-write access used by GameLoadAndSave to restore civs from disk.
     std::vector<CivState>& civsMut() { return civs_; }
+
+    // ---- Settlers improvement actions (faithful subset of F0_1866_*) ----
+    // Work-target ids match the (Road/Irrigation) subset of the C#
+    // TerrainImprovementFlagsEnum order; the actual map-grid bitflag
+    // values live in MapManagement (kImprovementRoad / kImprovementIrrigation).
+    static constexpr uint8_t kWorkNone       = 0;
+    static constexpr uint8_t kWorkRoad       = 1;
+    static constexpr uint8_t kWorkIrrigation = 2;
+    // Per-improvement turn cost. Civ1 has terrain-dependent durations
+    // (e.g. road on Plains is 2 turns, Forest is 4); we use a flat value
+    // for now and note that as a TODO. Mirrors GameData.TerrainModifications
+    // RoadEffect / IrrigationEffect threshold logic at a simplified level.
+    static constexpr int kRoadTurns       = 2;
+    static constexpr int kIrrigationTurns = 4;
+
+    // Start a build-road action on `unitId` (Settlers only). Refuses
+    // (returns false) when the unit isn't a Settlers, is dead, is already
+    // working, is out of bounds, or stands on Water/Arctic. On success the
+    // unit's workTarget becomes kWorkRoad and workTurnsLeft = kRoadTurns;
+    // moveUnit/buildCity will refuse until the work completes (see the
+    // end-of-turn pass in CheckPlayerTurn::processEndOfTurn).
+    bool startBuildRoad(int unitId);
+    // Start a build-irrigation action on `unitId` (Settlers only). Refuses
+    // unless the terrain is Grassland/Plains/Desert (a simplified faithful
+    // subset of GameData.TerrainModifications[t].IrrigationEffect == -2 —
+    // the C# guard that gates the Build Irrigation menu entry).
+    bool startBuildIrrigation(int unitId);
 
     // ---- units (multi-civ) ----
     // Append a Unit owned by `owner` (civ index) at (x,y). Returns its index.

@@ -67,6 +67,17 @@ public:
     // Map dimensions (1:1 with C#: GSize Size = (80, 50)).
     static constexpr int kWidth  = 80;
     static constexpr int kHeight = 50;
+    // Improvement bitflag values — a faithful subset of OpenCiv1's
+    // TerrainImprovementFlagsEnum (see
+    // OpenCiv1/src/Game/State/Definitions/TerrainImprovementFlagsEnum.cs):
+    // Irrigation=0x2, Mines=0x4, Road=0x8. We keep the SAME numeric bit
+    // positions so a future widening (RailRoad=0x10, etc.) is a straight
+    // extension. (The full enum also has City=0x1 / Pollution=0x40 / Flag80;
+    // those are not yet modeled by this port.)
+    static constexpr uint8_t kImprovementNone       = 0x0;
+    static constexpr uint8_t kImprovementIrrigation = 0x2;
+    static constexpr uint8_t kImprovementMine       = 0x4;
+    static constexpr uint8_t kImprovementRoad       = 0x8;
     // VCPU memory location of the terrain grid (layer 1 in the C# GBitmap
     // layout). 80*50 = 4000 bytes. Chosen at a DS offset that doesn't overlap
     // the other ported CodeObjects' working areas (the LanguageTools/CAPI
@@ -110,12 +121,30 @@ public:
     // it with pixel-value 1 == Water).
     void CreateNewEmptyMap();
 
+    // ---- improvements grid -------------------------------------------------
+    // A parallel uint8_t grid (sized kWidth*kHeight, default 0) holding the
+    // per-tile TerrainImprovementFlagsEnum bitmask (see kImprovement* above).
+    // generate() resets it to all zeros so a fresh world starts with no
+    // improvements. setImprovementFlag OR-s in `flag` (use kImprovementRoad
+    // / kImprovementIrrigation). getImprovements returns the raw byte.
+    // Out-of-bounds reads return 0; out-of-bounds writes are no-ops.
+    uint8_t getImprovements(int x, int y) const;
+    void    setImprovementFlag(int x, int y, uint8_t flag);
+    void    clearImprovements();
+    // Direct-write accessor used by GameLoadAndSave to restore the grid
+    // byte-for-byte from a hex dump (see kImprovement* bitflags above).
+    void    setImprovementsRaw(int x, int y, uint8_t bits);
+
     // TODO(port): LoadEarthMap — needs the bundled map.pic asset, not part of
     // the generator path.
 
 private:
     OpenCiv1Game& p_;
     VCPU& cpu_;
+    // Improvements grid (parallel to the VCPU terrain bytes); separate
+    // from the VCPU layer to keep the terrain memory layout 1:1 with the
+    // C# pixel-encoded map. Sized kWidth*kHeight, row-major (y*kWidth+x).
+    std::vector<uint8_t> improvements_;
 
     static const int kTerrainToPixel[12];
     static const int8_t kPixelToTerrain[16];

@@ -1,4 +1,5 @@
 #include "MapManagement.h"
+#include <algorithm>
 #include <cstdlib>
 #include <utility>
 #include <vector>
@@ -108,7 +109,36 @@ const int8_t MapManagement::kPixelToTerrain[16] = {
 // ctor + core get/set (VCPU memory model)
 // ---------------------------------------------------------------------------
 MapManagement::MapManagement(OpenCiv1Game& parent) : p_(parent), cpu_(parent.cpu) {
+    improvements_.assign(std::size_t(kWidth) * kHeight, 0);
     CreateNewEmptyMap();
+}
+
+// ---- improvements grid ----------------------------------------------------
+// Parallel grid storing the per-tile TerrainImprovementFlagsEnum bitmask.
+// We keep this as a std::vector<uint8_t> (NOT in VCPU memory) — the C#
+// equivalent (F0_2aea_1585_GetVisibleTerrainImprovements + the Flag80 pass
+// on the river tail) reads from the SAME GBitmap as the terrain, packed
+// into the upper nibble; we keep the two grids physically separate so the
+// faithful terrain bytes stay 1:1 with the C# pixel encoding (which the
+// generator passes already depend on) while the improvements layer can
+// evolve independently.
+uint8_t MapManagement::getImprovements(int x, int y) const {
+    if (x < 0 || y < 0 || x >= kWidth || y >= kHeight) return 0;
+    return improvements_[std::size_t(y) * kWidth + x];
+}
+
+void MapManagement::setImprovementFlag(int x, int y, uint8_t flag) {
+    if (x < 0 || y < 0 || x >= kWidth || y >= kHeight) return;
+    improvements_[std::size_t(y) * kWidth + x] |= flag;
+}
+
+void MapManagement::setImprovementsRaw(int x, int y, uint8_t bits) {
+    if (x < 0 || y < 0 || x >= kWidth || y >= kHeight) return;
+    improvements_[std::size_t(y) * kWidth + x] = bits;
+}
+
+void MapManagement::clearImprovements() {
+    std::fill(improvements_.begin(), improvements_.end(), uint8_t(0));
 }
 
 int MapManagement::AdjustXPosition(int xPos) const {
@@ -157,6 +187,7 @@ void MapManagement::generate(const GenSettings& s) {
     RandomMT19937 rng(s.seed);
 
     CreateNewEmptyMap();
+    clearImprovements();
 
     // ---- Stage 1: Generate continents ----
     {

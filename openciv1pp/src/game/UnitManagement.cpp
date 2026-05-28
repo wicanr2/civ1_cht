@@ -117,6 +117,50 @@ int UnitManagement::addUnit(int owner, UnitType type, int x, int y) {
     return idx;
 }
 
+// ---- Settlers improvement actions (faithful subset of F0_1866_*) --------
+// The C# UnitManagement set an in-progress Settlers' Status flag so the
+// per-turn dispatcher would re-enter F0_1866_* and tick down the remaining
+// build counter. We model that with workTarget + workTurnsLeft on Unit;
+// CheckPlayerTurn::processEndOfTurn does the per-turn decrement and OR-s
+// the matching MapManagement bitflag in when the counter reaches 0.
+bool UnitManagement::startBuildRoad(int unitId) {
+    if (unitId < 0 || std::size_t(unitId) >= units_.size()) return false;
+    Unit& u = units_[std::size_t(unitId)];
+    if (!u.alive) return false;
+    if (u.type != UnitType::Settlers) return false;
+    if (u.workTurnsLeft > 0) return false; // already busy
+    if (u.x < 0 || u.y < 0 || u.x >= mapW_ || u.y >= mapH_) return false;
+    if (terrainAt_) {
+        Terrain t = terrainAt_(u.x, u.y);
+        if (t == Terrain::Water || t == Terrain::Arctic) return false;
+    }
+    u.workTarget = kWorkRoad;
+    u.workTurnsLeft = kRoadTurns;
+    return true;
+}
+
+bool UnitManagement::startBuildIrrigation(int unitId) {
+    if (unitId < 0 || std::size_t(unitId) >= units_.size()) return false;
+    Unit& u = units_[std::size_t(unitId)];
+    if (!u.alive) return false;
+    if (u.type != UnitType::Settlers) return false;
+    if (u.workTurnsLeft > 0) return false;
+    if (u.x < 0 || u.y < 0 || u.x >= mapW_ || u.y >= mapH_) return false;
+    if (terrainAt_) {
+        Terrain t = terrainAt_(u.x, u.y);
+        // Faithful subset of GameData.TerrainModifications[t].IrrigationEffect
+        // == -2 (the C# guard at GameMenus.cs line 262). Civ1 also irrigates
+        // a few more terrains via the "Change to" path; we keep the gate to
+        // the three classic Settlers-irrigation tiles for the first cut.
+        if (t != Terrain::Grassland &&
+            t != Terrain::Plains &&
+            t != Terrain::Desert) return false;
+    }
+    u.workTarget = kWorkIrrigation;
+    u.workTurnsLeft = kIrrigationTurns;
+    return true;
+}
+
 bool UnitManagement::setCityProductionType(int cityId, UnitType t) {
     if (cityId < 0 || std::size_t(cityId) >= cities_.size()) return false;
     // Tech gate: refuse when the OWNER civ does not yet know the unit's
@@ -172,6 +216,10 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
     if (unitId < 0 || std::size_t(unitId) >= units_.size()) return false;
     Unit& u = units_[std::size_t(unitId)];
     if (!u.alive) return false;
+    // Settlers locked while building an improvement (faithful to the C#
+    // per-turn dispatcher refusing to re-dispatch a worker until its
+    // counter ticks to 0).
+    if (u.workTurnsLeft > 0) return false;
     int nx = u.x + dx, ny = u.y + dy;
     // Out-of-bounds destinations: no movement, unit still alive.
     if (nx < 0 || ny < 0 || nx >= mapW_ || ny >= mapH_) return true;
@@ -274,6 +322,17 @@ bool UnitManagement::buildCity(int x, int y, int playerId, int turn,
     if (terrainAt_) {
         Terrain t = terrainAt_(x, y);
         if (t == Terrain::Water || t == Terrain::Arctic) return false;
+    }
+    // Settlers-locked check: if any of THIS player's Settlers at (x,y) is
+    // mid-improvement (workTurnsLeft > 0), refuse the build-city action.
+    // Faithful to the C# dispatcher which won't accept new orders for a
+    // worker still ticking down a build counter.
+    for (const auto& u : units_) {
+        if (!u.alive) continue;
+        if (u.owner != playerId) continue;
+        if (u.type != UnitType::Settlers) continue;
+        if (u.x != x || u.y != y) continue;
+        if (u.workTurnsLeft > 0) return false;
     }
 
     // City id allocation — sequential, matches GameData.Cities[i].ID = i.

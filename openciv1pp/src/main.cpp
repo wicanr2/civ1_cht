@@ -2730,6 +2730,22 @@ static int playInteractive(const std::string& assetDir, bool realgen = false) {
                 break;
             }
             case SdlPresenter::KeyM: world.toggleMinimap(); dirty = true; break;
+            case SdlPresenter::KeyR: {
+                if (world.startBuildRoadAtUnit(0)) {
+                    std::printf("[play] start build road at (%d,%d)\n",
+                                world.unitX(), world.unitY());
+                    dirty = true;
+                }
+                break;
+            }
+            case SdlPresenter::KeyI: {
+                if (world.startBuildIrrigationAtUnit(0)) {
+                    std::printf("[play] start build irrigation at (%d,%d)\n",
+                                world.unitX(), world.unitY());
+                    dirty = true;
+                }
+                break;
+            }
             case SdlPresenter::KeyEsc:   pres.shutdown(); return 0;
             default: break;
         }
@@ -2994,6 +3010,22 @@ static int gameInteractive(const std::string& assetDir) {
                     break;
                 }
                 case SdlPresenter::KeyM: w->toggleMinimap(); dirty = true; break;
+                case SdlPresenter::KeyR: {
+                    if (w->startBuildRoadAtUnit(0)) {
+                        std::printf("[game] start build road at (%d,%d)\n",
+                                    w->unitX(), w->unitY());
+                        dirty = true;
+                    }
+                    break;
+                }
+                case SdlPresenter::KeyI: {
+                    if (w->startBuildIrrigationAtUnit(0)) {
+                        std::printf("[game] start build irrigation at (%d,%d)\n",
+                                    w->unitX(), w->unitY());
+                        dirty = true;
+                    }
+                    break;
+                }
                 case SdlPresenter::KeyEsc: {
                     // ESC in PLAYING backs out to MAIN_MENU (a new game can be
                     // started); does NOT quit the whole app — that's what ESC
@@ -3893,6 +3925,253 @@ static int savetest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Settlers improvements (--improvementtest) --------------
+// Exercises Build Road + Build Irrigation end-to-end:
+//   (1) Place a Settlers on a Grassland tile; startBuildRoad sets workTarget
+//       = Road / workTurnsLeft = 2; moveUnit while working refuses; two
+//       end-of-turn passes complete the road -> tile's improvements has the
+//       Road bit set, workTarget cleared.
+//   (2) startBuildIrrigation on the same tile; 4 end-of-turn passes ->
+//       Irrigation bit set on top of the existing Road bit.
+//   (3) Save with mid-work state; load fresh -> improvements grid + per-unit
+//       workTurnsLeft/workTarget preserved.
+//   (4) Render with translate-on vs translate-off -> framebuffer pixels
+//       differ (the Chinese "建造: N" HUD line vs the English "Working: N").
+static int improvementtest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // (1)+(2) Build Road then Build Irrigation; verify state transitions.
+    {
+        OpenCiv1Game g;
+        setupGame(g, 480, 300);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow(g);
+        flow.enterTitle();
+        for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+        State s1 = flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+        chk(s1 == State::PLAYING, "improvementtest: reached PLAYING");
+        MiniWorld* w = flow.miniWorld();
+        chk(w != nullptr, "improvementtest: MiniWorld exists");
+        if (!w) {
+            if (fail) std::printf("IMPROVEMENTTEST: %d failure(s)\n", fail);
+            return fail ? 1 : 0;
+        }
+
+        auto& um = g.unitManagement();
+        // Find the human Settlers (owner 0). Move it onto a Grassland-or-
+        // Plains tile by scanning the map and writing the position back to
+        // both the cursor (MiniWorld) AND the units() entry.
+        int humanId = -1;
+        for (std::size_t i = 0; i < um.units().size(); ++i) {
+            if (um.units()[i].owner == 0 &&
+                um.units()[i].type == UnitType::Settlers) {
+                humanId = int(i); break;
+            }
+        }
+        chk(humanId >= 0, "found human Settlers unit");
+        int chosenX = -1, chosenY = -1;
+        for (int y = 0; y < w->height() && chosenY < 0; ++y) {
+            for (int x = 0; x < w->width(); ++x) {
+                Terrain t = w->terrainAt(x, y);
+                if (t == Terrain::Grassland || t == Terrain::Plains) {
+                    chosenX = x; chosenY = y; break;
+                }
+            }
+        }
+        chk(chosenX >= 0, "found a Grassland/Plains tile on the map");
+        if (humanId < 0 || chosenX < 0) {
+            std::printf("IMPROVEMENTTEST: setup failure\n");
+            return 1;
+        }
+        w->setUnitPosition(chosenX, chosenY);
+        um.unitsMut()[std::size_t(humanId)].x = chosenX;
+        um.unitsMut()[std::size_t(humanId)].y = chosenY;
+
+        // ---- start build road ----
+        bool startR = um.startBuildRoad(humanId);
+        chk(startR, "startBuildRoad -> true");
+        chk(um.units()[std::size_t(humanId)].workTurnsLeft == 2,
+            "workTurnsLeft == 2 after startBuildRoad");
+        chk(um.units()[std::size_t(humanId)].workTarget == 1,
+            "workTarget == 1 (Road) after startBuildRoad");
+
+        // moveUnit refused while locked.
+        int beforeX = um.units()[std::size_t(humanId)].x;
+        int beforeY = um.units()[std::size_t(humanId)].y;
+        bool moved = um.moveUnit(humanId, 1, 0);
+        chk(!moved, "moveUnit refused while workTurnsLeft > 0");
+        chk(um.units()[std::size_t(humanId)].x == beforeX &&
+            um.units()[std::size_t(humanId)].y == beforeY,
+            "unit did NOT move while locked");
+
+        // Two end-of-turn passes -> road completes.
+        g.checkPlayerTurn().processEndOfTurn();
+        chk(um.units()[std::size_t(humanId)].workTurnsLeft == 1,
+            "after 1 EOT: workTurnsLeft == 1");
+        g.checkPlayerTurn().processEndOfTurn();
+        uint8_t impr = g.mapManagement().getImprovements(chosenX, chosenY);
+        chk((impr & MapManagement::kImprovementRoad) != 0,
+            "after 2 EOT: ROAD bit set on tile improvements");
+        chk(um.units()[std::size_t(humanId)].workTurnsLeft == 0,
+            "after 2 EOT: workTurnsLeft == 0");
+        chk(um.units()[std::size_t(humanId)].workTarget == 0,
+            "after 2 EOT: workTarget cleared");
+
+        // ---- start build irrigation; 4 EOT -> irrigation bit ----
+        bool startI = um.startBuildIrrigation(humanId);
+        chk(startI, "startBuildIrrigation -> true");
+        chk(um.units()[std::size_t(humanId)].workTurnsLeft == 4,
+            "workTurnsLeft == 4 after startBuildIrrigation");
+        for (int k = 0; k < 4; ++k) g.checkPlayerTurn().processEndOfTurn();
+        uint8_t impr2 = g.mapManagement().getImprovements(chosenX, chosenY);
+        chk((impr2 & MapManagement::kImprovementIrrigation) != 0,
+            "after 4 EOT: IRRIGATION bit set on tile improvements");
+        chk((impr2 & MapManagement::kImprovementRoad) != 0,
+            "ROAD bit STILL set (improvements accumulate, not replace)");
+        chk(um.units()[std::size_t(humanId)].workTurnsLeft == 0,
+            "post-irrigation: workTurnsLeft == 0");
+    }
+
+    // (3) save mid-work state; load fresh; round-trip improvements + work state.
+    {
+        const char* savePath = "/tmp/openciv1pp_improvementtest.sav";
+        OpenCiv1Game g1;
+        setupGame(g1, 480, 300);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow1(g1);
+        flow1.enterTitle();
+        for (int k = 0; k < 6; ++k) flow1.handleKey(MenuBoxDialog::KeyEnter);
+        flow1.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+
+        auto& um1 = g1.unitManagement();
+        int hid = -1;
+        for (std::size_t i = 0; i < um1.units().size(); ++i) {
+            if (um1.units()[i].owner == 0 &&
+                um1.units()[i].type == UnitType::Settlers) {
+                hid = int(i); break;
+            }
+        }
+        // Move onto Grassland/Plains so the irrigation gate passes too.
+        int xx = -1, yy = -1;
+        MiniWorld* mw1 = flow1.miniWorld();
+        for (int y = 0; y < mw1->height() && yy < 0; ++y)
+            for (int x = 0; x < mw1->width(); ++x) {
+                Terrain t = mw1->terrainAt(x, y);
+                if (t == Terrain::Grassland || t == Terrain::Plains) {
+                    xx = x; yy = y; break;
+                }
+            }
+        if (hid >= 0 && xx >= 0) {
+            mw1->setUnitPosition(xx, yy);
+            um1.unitsMut()[std::size_t(hid)].x = xx;
+            um1.unitsMut()[std::size_t(hid)].y = yy;
+            // Pre-completed road on a NEARBY tile (the improvements grid
+            // needs to carry a SET bit through the round-trip independent
+            // of mid-work state).
+            g1.mapManagement().setImprovementFlag(xx, yy,
+                MapManagement::kImprovementRoad);
+            // Mid-work irrigation (won't complete before save).
+            bool ok = um1.startBuildIrrigation(hid);
+            chk(ok, "save-roundtrip: startBuildIrrigation succeeded");
+            g1.checkPlayerTurn().processEndOfTurn(); // tick once -> wtl=3
+            chk(um1.units()[std::size_t(hid)].workTurnsLeft == 3,
+                "save-roundtrip: workTurnsLeft == 3 pre-save");
+        }
+
+        // Snapshot expected values from g1.
+        uint8_t preImpr = g1.mapManagement().getImprovements(xx, yy);
+        int preWtl = (hid >= 0) ? um1.units()[std::size_t(hid)].workTurnsLeft : 0;
+        int preWt  = (hid >= 0) ? int(um1.units()[std::size_t(hid)].workTarget) : 0;
+
+        bool sok = g1.gameLoadAndSave().saveToFile(savePath, &flow1);
+        chk(sok, "save-roundtrip: saveToFile succeeded");
+
+        OpenCiv1Game g2;
+        setupGame(g2, 480, 300);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow2(g2);
+        bool lok = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
+        chk(lok, "save-roundtrip: loadFromFile succeeded");
+
+        uint8_t postImpr = g2.mapManagement().getImprovements(xx, yy);
+        chk(postImpr == preImpr,
+            "save-roundtrip: improvements bits at (xx,yy) preserved");
+        if (hid >= 0 && std::size_t(hid) < g2.unitManagement().units().size()) {
+            const Unit& u2 = g2.unitManagement().units()[std::size_t(hid)];
+            chk(u2.workTurnsLeft == preWtl,
+                "save-roundtrip: workTurnsLeft preserved");
+            chk(int(u2.workTarget) == preWt,
+                "save-roundtrip: workTarget preserved");
+        }
+    }
+
+    // (4) Render translate-on vs translate-off -> pixels differ (Chinese HUD).
+    {
+        OpenCiv1Game g;
+        setupGame(g, 480, 300);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow(g);
+        flow.enterTitle();
+        for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+        MiniWorld* w = flow.miniWorld();
+        if (w) {
+            auto& um = g.unitManagement();
+            int hid = -1;
+            for (std::size_t i = 0; i < um.units().size(); ++i) {
+                if (um.units()[i].owner == 0 &&
+                    um.units()[i].type == UnitType::Settlers) {
+                    hid = int(i); break;
+                }
+            }
+            // Force an in-progress irrigation so the HUD has the
+            // "Working: <N>" / "建造: N" line.
+            if (hid >= 0) {
+                int xx = -1, yy = -1;
+                for (int y = 0; y < w->height() && yy < 0; ++y)
+                    for (int x = 0; x < w->width(); ++x) {
+                        Terrain t = w->terrainAt(x, y);
+                        if (t == Terrain::Grassland || t == Terrain::Plains) {
+                            xx = x; yy = y; break;
+                        }
+                    }
+                if (xx >= 0) {
+                    w->setUnitPosition(xx, yy);
+                    um.unitsMut()[std::size_t(hid)].x = xx;
+                    um.unitsMut()[std::size_t(hid)].y = yy;
+                    um.startBuildIrrigation(hid);
+                }
+            }
+            // Also set a road improvement on the cursor tile so the
+            // overlay glyph contributes pixels too.
+            g.mapManagement().setImprovementFlag(w->unitX(), w->unitY(),
+                MapManagement::kImprovementRoad);
+
+            // Frame 1: Chinese.
+            Translator::instance().enabled = true;
+            flow.draw();
+            GBitmap& fb = g.graphics.screen(0);
+            std::vector<uint8_t> chFrame = fb.pixels();
+            // Frame 2: English.
+            Translator::instance().enabled = false;
+            flow.draw();
+            std::vector<uint8_t> enFrame = fb.pixels();
+            // Restore.
+            Translator::instance().enabled = true;
+            chk(chFrame != enFrame,
+                "translate ON vs OFF: rendered HUD pixels differ");
+        }
+    }
+
+    if (fail) std::printf("IMPROVEMENTTEST: %d failure(s)\n", fail);
+    else      std::printf("IMPROVEMENTTEST: all pass\n");
+    return fail ? 1 : 0;
+}
+
 // ---------------- Tech research / tech-gated build (--techtest) ----------
 // Verifies the TechResearch CodeObject end-to-end:
 //   (1) initCivs(7): every civ starts with no known techs + researching
@@ -4111,6 +4390,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--savetest")) { return savetest(); }
         else if (!std::strcmp(argv[i], "--techtest")) { return techtest(); }
         else if (!std::strcmp(argv[i], "--minimaptest")) { return minimaptest(); }
+        else if (!std::strcmp(argv[i], "--improvementtest")) { return improvementtest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -4176,7 +4456,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

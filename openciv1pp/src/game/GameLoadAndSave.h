@@ -12,8 +12,9 @@
 // same place" without depending on a binary format we don't yet handle.
 //
 // FORMAT (single text file, ASCII; one record per line):
-//   line 1   : "OpenCiv1pp savegame v2"   (was v1 pre-tech-tree; v1 still loads
-//              for back-compat — tech records are OPTIONAL)
+//   line 1   : "OpenCiv1pp savegame v3"   (v1 = pre-tech-tree; v2 = pre-
+//              improvements; both still load for back-compat — the missing
+//              tail fields default to 0/empty)
 //   line 2+  : "<KEY> <value...>" records, in this order:
 //                turn          <int>
 //                year          <int>
@@ -27,11 +28,14 @@
 //                civ           <tribeIdx> <color> <isHuman 0|1> <name...>
 //                units         <count>
 //                unit          <owner> <x> <y> <typeInt> <alive 0|1>
+//                              [<workTurnsLeft> <workTargetInt>]   (v3+)
 //                cities        <count>
 //                city          <id> <owner> <x> <y> <foundedTurn> <shields>
 //                              <production> <units> <productionTypeInt> <name...>
 //                terrain       <80*50 hex bytes; one byte per cell in row-major
 //                              (y * 80 + x) order; 4000 bytes -> 8000 hex chars>
+//                improvements  <80*50 hex bytes; per-tile TerrainImprovementFlags
+//                              bitmask (Road=8, Irrigation=2, ...)>   (v3+)
 //                techcivs      <count>   (per-civ tech state count)
 //                techcsv       <civId> <researchingInt> <points> <techCsv>
 //                              techCsv = comma-separated integer Tech ids the
