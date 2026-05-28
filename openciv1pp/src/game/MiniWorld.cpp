@@ -278,6 +278,30 @@ bool MiniWorld::makePeaceWithRival(int playerId) {
     return true;
 }
 
+int MiniWorld::humanUnitAtCursor(int playerId) const {
+    if (!game_) return -1;
+    const auto& us = game_->unitManagement().units();
+    for (std::size_t i = 0; i < us.size(); ++i) {
+        if (!us[i].alive) continue;
+        if (us[i].owner != playerId) continue;
+        if (us[i].x == unitX_ && us[i].y == unitY_) return int(i);
+    }
+    return -1;
+}
+
+bool MiniWorld::fortifyAtUnit(int playerId) {
+    if (!game_) return false;
+    int uid = humanUnitAtCursor(playerId);
+    if (uid < 0) return false;
+    auto& um = game_->unitManagement();
+    if (um.startFortify(uid)) {
+        lastActionKey_ = "Fortify";
+        lastCityName_.clear();
+        return true;
+    }
+    return false;
+}
+
 bool MiniWorld::startBuildIrrigationAtUnit(int playerId) {
     if (!game_) return false;
     int uid = humanSettlerAtCursor(playerId);
@@ -906,6 +930,39 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
             char mb[16];
             std::snprintf(mb, sizeof(mb), " %d", u.movePointsLeft);
             penX3 = fb.drawString(font, penX3, line3Y, mb, 207);
+        }
+        // FORTIFY status: when any human unit (not just Settlers) at the
+        // cursor tile is fortified / fortifying, append a status line.
+        // Routed through the chokepoint Translator (Fortified -> 防守中,
+        // Fortifying -> 防守中...). When BOTH a Settlers (above) and a
+        // combat unit live on the same tile, this line prefers the first
+        // alive unit (humanUnitAtCursor's contract).
+        int huid = humanUnitAtCursor(0);
+        if (huid >= 0) {
+            const auto& us = game_->unitManagement().units();
+            const Unit& hu = us[std::size_t(huid)];
+            if (hu.fortified) {
+                penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+                penX3 = gd.drawString(GDriver::MainScreen, font, penX3,
+                                      line3Y, "Fortified", 207);
+            } else if (hu.fortifying) {
+                penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+                penX3 = gd.drawString(GDriver::MainScreen, font, penX3,
+                                      line3Y, "Fortifying", 207);
+            }
+            // Terrain bonus indicator: when this unit stands on a tile
+            // with a defender bonus > 1.0x, show the multiplier so the
+            // player sees the dig-in advantage at a glance.
+            float tb = UnitManagement::terrainDefenseBonusOf(
+                int(terrainAt(hu.x, hu.y)));
+            if (tb > 1.0f) {
+                penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+                penX3 = gd.drawString(GDriver::MainScreen, font, penX3,
+                                      line3Y, "Terrain bonus", 207);
+                char tbuf[16];
+                std::snprintf(tbuf, sizeof(tbuf), " x%.1f", tb);
+                penX3 = fb.drawString(font, penX3, line3Y, tbuf, 207);
+            }
         }
     }
     // Production line: when at least one city is founded, append the FIRST

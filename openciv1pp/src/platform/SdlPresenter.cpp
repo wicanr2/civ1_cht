@@ -106,6 +106,7 @@ int SdlPresenter::pollKey() {
                 case SDLK_i:      return 10;
                 case SDLK_w:      return 11; // Declare War (vs selected rival)
                 case SDLK_p:      return 12; // Make Peace (vs selected rival)
+                case SDLK_f:      return 13; // Fortify (+50% defense)
                 default: break;
             }
         }

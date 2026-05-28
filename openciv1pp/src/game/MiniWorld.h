@@ -171,9 +171,22 @@ public:
     bool startBuildRoadAtUnit(int playerId = 0);
     bool startBuildIrrigationAtUnit(int playerId = 0);
 
+    // Player-driven Fortify action (F key). Routes to UnitManagement::
+    // startFortify on the FIRST alive human-owned unit at the cursor tile
+    // (any unit type — Settlers, Militia, Phalanx, ...). Sets lastActionKey
+    // to "Fortify" so the HUD reflects it. Returns false when no host game
+    // attached, no human unit at the tile, or startFortify refused (already
+    // fortified / busy).
+    bool fortifyAtUnit(int playerId = 0);
+
     // Returns the unitId of the human's Settlers at the cursor tile, or -1
     // when none is at the tile. Used by the HUD to look up workTurnsLeft.
     int humanSettlerAtCursor(int playerId = 0) const;
+
+    // Returns the unitId of the FIRST alive human unit (any type) at the
+    // cursor tile, or -1 when none. Used by the HUD's fortify status line
+    // and the F-key fortify command.
+    int humanUnitAtCursor(int playerId = 0) const;
 
     // ---- Diplomacy (W / P keys) ------------------------------------------
     // Declare War on the selected rival civ. Symmetric write through

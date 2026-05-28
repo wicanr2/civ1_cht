@@ -134,6 +134,22 @@ int CheckPlayerTurn::processEndOfTurn() {
     auto& um = p.unitManagement();
     auto& cities = um.citiesMut();
 
+    // ---- FORTIFY slice: promote fortifying -> fortified at top of turn ---
+    // Civ1: issuing Fortify takes 1 turn to fully engage. The unit becomes
+    // visually/mechanically "fortified" the turn AFTER the command. Done
+    // BEFORE the mvp reset below so the dig-in-this-turn unit doesn't
+    // accidentally get a fresh budget on the same turn the flip happens.
+    {
+        auto& units = um.unitsMut();
+        for (auto& u : units) {
+            if (!u.alive) continue;
+            if (u.fortifying) {
+                u.fortified = true;
+                u.fortifying = false;
+            }
+        }
+    }
+
     // ---- ROAD-MOVEMENT slice: reset per-unit movement budget -----------
     // Civ1: every unit's movement budget regenerates at the top of each
     // turn. We do a single global reset here so BOTH the AI movement pass
@@ -141,11 +157,19 @@ int CheckPlayerTurn::processEndOfTurn() {
     // human's NEXT turn (driven by the next handleKey loop) see a fresh
     // budget. mvp is stored in INTEGER THIRDS-of-move so road steps can
     // cost 1 (1/3 of move) and non-road steps cost 3 (full move).
+    // FORTIFIED units stay at 0 mvp — they're dug in and don't move (until
+    // un-fortified by an explicit move command). fortifying (just-issued
+    // this turn — but the flip above just turned them fortified) is
+    // handled by the same zero-mvp branch.
     {
         auto& units = um.unitsMut();
         for (auto& u : units) {
             if (!u.alive) continue;
-            u.movePointsLeft = UnitManagement::unitMovePointsMax(u.type);
+            if (u.fortified || u.fortifying) {
+                u.movePointsLeft = 0;
+            } else {
+                u.movePointsLeft = UnitManagement::unitMovePointsMax(u.type);
+            }
         }
     }
 
@@ -275,11 +299,28 @@ int CheckPlayerTurn::processEndOfTurn() {
                 // alive check survives between iterations (a unit may have
                 // died if an earlier combat went wrong way — defensive).
                 if (!units[std::size_t(uid)].alive) continue;
+                // FORTIFY: skip movement for an already-fortified AI unit.
+                // It's intentionally dug in (faithful Civ1 city defenders).
+                if (units[std::size_t(uid)].fortified ||
+                    units[std::size_t(uid)].fortifying) continue;
                 int steps = unitDefOf(units[std::size_t(uid)].type).move;
                 if (steps < 1) steps = 1;
+                bool didStep = false;
                 for (int s = 0; s < steps; ++s) {
                     if (!units[std::size_t(uid)].alive) break;
                     if (!um.aiStep(uid)) break; // no target / can't move
+                    didStep = true;
+                }
+                // ---- AI SMART FORTIFY -----------------------------------
+                // Faithful Civ1 AI behaviour: a combat unit with no enemy
+                // in sight (no step taken this turn) digs in to defend
+                // its city/tile. This makes AI cities self-defend without
+                // needing a per-tile garrison decision tree.
+                if (!didStep &&
+                    units[std::size_t(uid)].alive &&
+                    !units[std::size_t(uid)].fortified &&
+                    !units[std::size_t(uid)].fortifying) {
+                    um.startFortify(uid);
                 }
             }
         }

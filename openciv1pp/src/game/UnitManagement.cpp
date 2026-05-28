@@ -337,6 +337,23 @@ bool UnitManagement::startBuildIrrigation(int unitId) {
     return true;
 }
 
+// ---- FORTIFY (Civ1 +50% defense, 1-turn engage cycle) -------------------
+// Issue a Fortify command. Any alive unit not already fortifying/fortified
+// and not mid-improvement can dig in. The command consumes this turn's
+// movement (movePointsLeft=0); CheckPlayerTurn::processEndOfTurn promotes
+// fortifying -> fortified at the top of the next turn. Returns false when
+// the command was refused (out of range, dead, already fortified, or busy).
+bool UnitManagement::startFortify(int unitId) {
+    if (unitId < 0 || std::size_t(unitId) >= units_.size()) return false;
+    Unit& u = units_[std::size_t(unitId)];
+    if (!u.alive) return false;
+    if (u.fortified || u.fortifying) return false;
+    if (u.workTurnsLeft > 0) return false; // mid-improvement: locked
+    u.fortifying = true;
+    u.movePointsLeft = 0; // act of digging in consumes movement
+    return true;
+}
+
 bool UnitManagement::setCityProductionType(int cityId, UnitType t) {
     if (cityId < 0 || std::size_t(cityId) >= cities_.size()) return false;
     // Tech gate: refuse when the OWNER civ does not yet know the unit's
@@ -463,10 +480,35 @@ static inline uint32_t xorshift32(uint32_t& s) {
     return x;
 }
 
+// ---- TERRAIN DEFENSE BONUS (faithful Civ1 manual) -----------------------
+// Multiplicative defender bonus by the defender's tile terrain. Values are
+// the Civ1 manual / community wiki canonical defender-side bonuses:
+//   Hills      = 1.5x  (+50%)
+//   Mountains  = 3.0x  (+200%)
+//   Forest     = 1.5x  (+50%)
+//   Jungle     = 1.5x  (+50%)
+//   Swamp      = 1.5x  (+50%)
+//   River      = 1.5x  (+50%)
+//   All others = 1.0x  (no bonus)
+// terrainEnum < 0 means "no terrain provider attached" -> 1.0x (safe default).
+float UnitManagement::terrainDefenseBonusOf(int terrainEnum) {
+    if (terrainEnum < 0) return 1.0f;
+    switch (Terrain(terrainEnum)) {
+        case Terrain::Hills:     return 1.5f;
+        case Terrain::Mountains: return 3.0f;
+        case Terrain::Forest:    return 1.5f;
+        case Terrain::Jungle:    return 1.5f;
+        case Terrain::Swamp:     return 1.5f;
+        case Terrain::River:     return 1.5f;
+        default:                 return 1.0f;
+    }
+}
+
 bool UnitManagement::resolveCombat(Unit& attacker, Unit& defender,
                                    uint32_t& rngState,
                                    bool defenderHasWalls,
-                                   bool defenderInOwnCityWithGreatWall) {
+                                   bool defenderInOwnCityWithGreatWall,
+                                   int defenderTerrain) {
     const UnitDef& aDef = unitDefOf(attacker.type);
     const UnitDef& dDef = unitDefOf(defender.type);
     int atk = aDef.attack;     if (atk < 0) atk = 0;
@@ -491,6 +533,24 @@ bool UnitManagement::resolveCombat(Unit& attacker, Unit& defender,
     // (so a Walled city of a Great-Wall-owning civ is x3 * 3/2 = x4.5 ->
     // integer floor). Off-city defenders and other civs don't get the bonus.
     if (defenderInOwnCityWithGreatWall) def = (def * 3) / 2;
+    // ---- TERRAIN defense bonus (Civ1 manual) ----------------------------
+    // Multiplicative defender bonus by defender's tile terrain (Hills/
+    // Forest/Jungle/Swamp/River = 1.5x; Mountains = 3.0x; flatlands = 1.0x).
+    // Applied as a float multiply with rounded truncation so the integer
+    // roll math stays clean. Stacks with everything above.
+    {
+        float tBonus = terrainDefenseBonusOf(defenderTerrain);
+        if (tBonus > 1.0f) {
+            // Round to nearest int (>=1 — guard against degenerate def==0).
+            int scaled = int(float(def) * tBonus + 0.5f);
+            def = scaled > def ? scaled : def + 1;
+        }
+    }
+    // ---- FORTIFIED defender bonus (Civ1 +50%) ----------------------------
+    // Civ1: a dug-in (fortified) unit defends with +50% strength. Applied
+    // as an integer 3/2 multiply, AFTER all the other multipliers so it
+    // stacks faithfully on top of terrain + walls + great wall.
+    if (defender.fortified) def = (def * 3) / 2;
     if (def <= 0) def = 1;
     if (atk < 0) atk = 0;
     int attackerRoll = (atk > 0) ? int(xorshift32(rngState) % uint32_t(atk)) : 0;
@@ -603,11 +663,21 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
                     cc.owner == enemy.owner) { defGreatWall = true; break; }
             }
         }
+        // FORTIFY: sample the defender's tile terrain so resolveCombat
+        // can apply the per-terrain defender bonus. When no terrain
+        // provider is wired, pass -1 (resolveCombat skips the bonus).
+        int defT = -1;
+        if (terrainAt_) defT = int(terrainAt_(enemy.x, enemy.y));
         bool survived = resolveCombat(u, enemy, combatRng_, defWalls,
-                                      defGreatWall);
+                                      defGreatWall, defT);
         if (survived) {
-            // attacker wins -> move into the (now-empty) tile
+            // attacker wins -> move into the (now-empty) tile.
+            // FORTIFY: a unit that moves (even by combat-into-vacancy) is
+            // no longer fortified — faithful Civ1 "walking away breaks
+            // the dig-in".
             u.x = nx; u.y = ny;
+            u.fortified = false;
+            u.fortifying = false;
             lastCombatKey_ = "Victory";
             return true;
         }
@@ -618,6 +688,9 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
     if (u.movePointsLeft < moveCost) return false;
     u.movePointsLeft -= moveCost;
     u.x = nx; u.y = ny;
+    // FORTIFY: clear dig-in flags whenever the unit actually steps.
+    u.fortified = false;
+    u.fortifying = false;
     return true;
 }
 

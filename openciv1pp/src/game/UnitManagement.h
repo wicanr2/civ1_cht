@@ -337,6 +337,17 @@ struct Unit {
     // bypasses addUnit (e.g. citytest); addUnit explicitly sets the right
     // value from the def.
     int movePointsLeft = 3;
+    // ---- FORTIFY slice (Civ1 +50% defense, takes 1 turn to engage) -------
+    // fortifying: this unit issued a Fortify command this turn and has not
+    // yet completed the 1-turn fortify cycle. CheckPlayerTurn promotes
+    // fortifying -> fortified at the top of the NEXT turn. While fortifying
+    // the unit's movePointsLeft is zeroed (cannot move/attack this turn).
+    // fortified: the unit is fully dug in and gets +50% defense in
+    // resolveCombat. moveUnit clears both flags the moment the unit
+    // successfully steps to a new tile (faithful Civ1: walking away
+    // breaks the fortification).
+    bool fortifying = false;
+    bool fortified  = false;
 };
 
 // Per-civilization state (a SUBSET of GameData.Players[i] + Nations[i]).
@@ -697,10 +708,39 @@ public:
     // It is computed by moveUnit (which knows whether the defender stands
     // on a city tile owned by its own civ, and whether that civ owns the
     // Great Wall). Pure-headless callers pass true when testing the bonus.
+    // `defenderTerrain` is the Terrain enum value of the DEFENDER's tile;
+    // resolveCombat looks up its multiplicative defense bonus via
+    // terrainDefenseBonusOf (Hills/Forest/Jungle/Swamp/River = 1.5x,
+    // Mountains = 3.0x, everything else 1.0x — faithful Civ1 manual). All
+    // bonuses stack multiplicatively: defense_eff = defense * veteran *
+    // walls * greatwall * terrain * fortified, then truncated to int for
+    // the standard rng()%def roll. Default int(-1) means "no terrain
+    // provider attached" -> skip the terrain bonus (back-compat for the
+    // pre-FORTIFY combattest/wondertest call sites that don't pass it).
     static bool resolveCombat(Unit& attacker, Unit& defender,
                               uint32_t& rngState,
                               bool defenderHasWalls = false,
-                              bool defenderInOwnCityWithGreatWall = false);
+                              bool defenderInOwnCityWithGreatWall = false,
+                              int defenderTerrain = -1);
+
+    // ---- Terrain defense bonus (Civ1 manual) ----------------------------
+    // Multiplicative defender bonus by terrain — faithful Civ1 manual
+    // values. Hills, Forest, Jungle, Swamp, River = 1.5x; Mountains = 3.0x;
+    // Grassland/Plains/Desert/Tundra/Arctic/Water = 1.0x. Used by
+    // resolveCombat and the HUD/CityView "Terrain bonus" line.
+    static float terrainDefenseBonusOf(int terrainEnum);
+
+    // ---- FORTIFY (Civ1 +50% defense, 1-turn engage cycle) ---------------
+    // Issue a Fortify command for unit `unitId`. Faithful Civ1 rules:
+    //   - unit must be alive,
+    //   - unit must not already be fortifying or fortified,
+    //   - unit must not be mid-improvement (workTurnsLeft > 0).
+    // On success: fortifying=true, movePointsLeft=0 (the act of digging in
+    // consumes this turn's movement; the unit can't also walk this turn).
+    // CheckPlayerTurn::processEndOfTurn promotes fortifying->fortified at
+    // the top of the NEXT turn. Returns true on success, false when the
+    // command was refused.
+    bool startFortify(int unitId);
 
     // moveUnit: move a unit by (dx,dy) by ONE step. When the destination tile
     // has an enemy alive unit, runs combat instead of moving (see resolveCombat).

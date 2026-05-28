@@ -259,6 +259,10 @@
   "Map Making": "製圖術",
   "Move points:": "移動點: ",
   "Road bonus": "道路加成",
+  "Fortify": "防守",
+  "Fortified": "防守中",
+  "Fortifying": "防守中...",
+  "Terrain bonus": "地形加成",
   "format": "string (utf-8, will be encoded to cp950 by patcher)",
   "policy": " delimiters (menu group separator), %s %d ^0 ^1 format placeholders, leading/trailing spaces, and punctuation",
   "to open a saved game?": "開啟存檔嗎?"

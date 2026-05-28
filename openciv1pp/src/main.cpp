@@ -39,6 +39,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -2763,6 +2764,14 @@ static int playInteractive(const std::string& assetDir, bool realgen = false) {
                 }
                 break;
             }
+            case SdlPresenter::KeyF: {
+                if (world.fortifyAtUnit(0)) {
+                    std::printf("[play] fortify at (%d,%d)\n",
+                                world.unitX(), world.unitY());
+                    dirty = true;
+                }
+                break;
+            }
             case SdlPresenter::KeyEsc:   pres.shutdown(); return 0;
             default: break;
         }
@@ -3055,6 +3064,14 @@ static int gameInteractive(const std::string& assetDir) {
                     if (w->makePeaceWithRival(0)) {
                         std::printf("[game] made peace with rival civ %d\n",
                                     g.unitManagement().selectedRivalCiv());
+                        dirty = true;
+                    }
+                    break;
+                }
+                case SdlPresenter::KeyF: {
+                    if (w->fortifyAtUnit(0)) {
+                        std::printf("[game] fortify at (%d,%d)\n",
+                                    w->unitX(), w->unitY());
                         dirty = true;
                     }
                     break;
@@ -7102,6 +7119,272 @@ static int aiexpandtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Fortify + terrain defense bonus (--fortifytest) ---------
+// Goal: verify the FORTIFY slice end-to-end (combat depth):
+//   (1) startFortify(unitId) cycle: fortifying=true now, fortified after one
+//       end-of-turn pass; movePointsLeft consumed.
+//   (2) resolveCombat: fortified Militia vs vanilla Militia attacker -> the
+//       defender wins statistically MORE than baseline (Militia attacker
+//       beats Militia defender ~50% without bonuses; with fortified
+//       defender's defense becomes floor(1*1.5)=1 → still 50%. So we test
+//       with Phalanx (def=2): baseline vs fortified must show LIFT in
+//       defender win-rate.
+//   (3) Terrain bonus: Militia on Hills vs Militia on Grassland — defender
+//       wins MORE than the flat baseline.
+//   (4) Stack: fortified + Hills + Walls Phalanx defender vs Militia
+//       attacker -> defender wins ALMOST always (>= 95%).
+//   (5) Move clears fortified flag (and fortifying).
+//   (6) Save/load v12 round-trips fortified + fortifying flags.
+//   (7) HUD: Chinese pixels DIFFER when a fortified human unit is on the
+//       cursor tile (the 防守中 label is drawn).
+static int fortifytest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // ---- (1): Fortify cycle ---------------------------------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(20, 20);
+        int mid = um.addUnit(0, UnitType::Militia, 5, 5);
+        chk(!um.units()[std::size_t(mid)].fortified, "(1) starts NOT fortified");
+        chk(!um.units()[std::size_t(mid)].fortifying, "(1) starts NOT fortifying");
+        chk(um.startFortify(mid), "(1) startFortify accepted");
+        chk(um.units()[std::size_t(mid)].fortifying, "(1) post-call: fortifying=true");
+        chk(!um.units()[std::size_t(mid)].fortified, "(1) post-call: NOT yet fortified");
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 0,
+            "(1) movePointsLeft consumed by Fortify");
+        // Second Fortify on a fortifying unit is refused.
+        chk(!um.startFortify(mid), "(1) startFortify refused while already fortifying");
+        // End-of-turn promotes fortifying -> fortified.
+        g.checkPlayerTurn().processEndOfTurn();
+        chk(um.units()[std::size_t(mid)].fortified, "(1) post-EOT: fortified=true");
+        chk(!um.units()[std::size_t(mid)].fortifying, "(1) post-EOT: fortifying=false");
+        // Fortified unit also has mvp held at 0 by the EOT reset.
+        chk(um.units()[std::size_t(mid)].movePointsLeft == 0,
+            "(1) fortified unit's mvp stays 0 after EOT reset");
+    }
+
+    // ---- (2): Fortified defender wins MORE than baseline -----------------
+    // Use Cannon (a=8) attacker vs Phalanx (d=2) defender so baseline win
+    // rate is well below 100% (cannon roll in [0,7] vs phalanx in [0,1]
+    // -> attacker wins ~7/8 = 87.5% baseline; fortified Phalanx def=floor
+    // (2*3/2)=3 -> roll [0,2], so defender win rate climbs noticeably).
+    {
+        const int trials = 2000;
+        int baselineDefWins = 0, fortDefWins = 0;
+        uint32_t rng1 = 0xCAFEBABEu, rng2 = 0xCAFEBABEu;
+        for (int i = 0; i < trials; ++i) {
+            Unit a; a.type = UnitType::Cannon; a.alive = true; a.owner = 0;
+            Unit d; d.type = UnitType::Phalanx; d.alive = true; d.owner = 1;
+            bool surv = UnitManagement::resolveCombat(a, d, rng1);
+            if (!surv) ++baselineDefWins;
+        }
+        for (int i = 0; i < trials; ++i) {
+            Unit a; a.type = UnitType::Cannon; a.alive = true; a.owner = 0;
+            Unit d; d.type = UnitType::Phalanx; d.alive = true; d.owner = 1;
+            d.fortified = true;
+            bool surv = UnitManagement::resolveCombat(a, d, rng2);
+            if (!surv) ++fortDefWins;
+        }
+        char buf[128];
+        std::snprintf(buf, sizeof(buf),
+                      "(2) fortified Phalanx vs Cannon beats baseline: "
+                      "%d vs %d / %d", fortDefWins, baselineDefWins, trials);
+        chk(fortDefWins > baselineDefWins, buf);
+    }
+
+    // ---- (3): Terrain bonus — defender on Hills wins more ---------------
+    // Use Cannon (a=8) attacker vs Phalanx (d=2) defender so the baseline
+    // win rate (defender ~12.5%) leaves headroom for the Hills bonus to
+    // measurably lift the defender's wins (Phalanx eff def: 2 -> 3 on Hills).
+    {
+        const int trials = 2000;
+        int baselineDefWins = 0, hillsDefWins = 0;
+        uint32_t rng1 = 0x12345678u, rng2 = 0x12345678u;
+        for (int i = 0; i < trials; ++i) {
+            Unit a; a.type = UnitType::Cannon; a.alive = true;
+            Unit d; d.type = UnitType::Phalanx; d.alive = true;
+            // baseline: no terrain -> defaults to 1.0x
+            if (!UnitManagement::resolveCombat(a, d, rng1)) ++baselineDefWins;
+        }
+        for (int i = 0; i < trials; ++i) {
+            Unit a; a.type = UnitType::Cannon; a.alive = true;
+            Unit d; d.type = UnitType::Phalanx; d.alive = true;
+            // Hills defender: terrain enum value = int(Terrain::Hills)
+            if (!UnitManagement::resolveCombat(a, d, rng2, false, false,
+                                               int(Terrain::Hills)))
+                ++hillsDefWins;
+        }
+        char buf[128];
+        std::snprintf(buf, sizeof(buf),
+                      "(3) Hills Phalanx vs Cannon beats flat: %d vs %d / %d",
+                      hillsDefWins, baselineDefWins, trials);
+        chk(hillsDefWins > baselineDefWins, buf);
+        // Bonus lookup spot-check.
+        chk(UnitManagement::terrainDefenseBonusOf(int(Terrain::Hills))     == 1.5f,
+            "(3) terrainDefenseBonusOf(Hills) == 1.5x");
+        chk(UnitManagement::terrainDefenseBonusOf(int(Terrain::Mountains)) == 3.0f,
+            "(3) terrainDefenseBonusOf(Mountains) == 3.0x");
+        chk(UnitManagement::terrainDefenseBonusOf(int(Terrain::Grassland)) == 1.0f,
+            "(3) terrainDefenseBonusOf(Grassland) == 1.0x");
+        chk(UnitManagement::terrainDefenseBonusOf(int(Terrain::Forest))    == 1.5f,
+            "(3) terrainDefenseBonusOf(Forest) == 1.5x");
+        chk(UnitManagement::terrainDefenseBonusOf(int(Terrain::River))     == 1.5f,
+            "(3) terrainDefenseBonusOf(River) == 1.5x");
+        chk(UnitManagement::terrainDefenseBonusOf(-1) == 1.0f,
+            "(3) terrainDefenseBonusOf(-1 no-provider) == 1.0x");
+    }
+
+    // ---- (4): Stack fortified + Hills + Walls -> defender ~always wins --
+    {
+        const int trials = 1000;
+        int defWins = 0;
+        uint32_t rng = 0xDEADBEEFu;
+        for (int i = 0; i < trials; ++i) {
+            Unit a; a.type = UnitType::Militia; a.alive = true;
+            Unit d; d.type = UnitType::Phalanx; d.alive = true;
+            d.fortified = true;
+            if (!UnitManagement::resolveCombat(a, d, rng, /*walls*/true,
+                                               /*greatwall*/false,
+                                               int(Terrain::Hills)))
+                ++defWins;
+        }
+        char buf[128];
+        std::snprintf(buf, sizeof(buf),
+                      "(4) stacked def (fortified+Hills+Walls Phalanx) wins "
+                      ">= 95%%: got %d/%d", defWins, trials);
+        chk(defWins >= int(trials * 0.95), buf);
+    }
+
+    // ---- (5): moveUnit clears fortified ---------------------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(20, 20);
+        int mid = um.addUnit(0, UnitType::Militia, 5, 5);
+        chk(um.startFortify(mid), "(5) startFortify accepted");
+        g.checkPlayerTurn().processEndOfTurn();
+        chk(um.units()[std::size_t(mid)].fortified, "(5) fortified after EOT");
+        // Manually grant mvp so the move can be attempted (EOT held it at 0).
+        um.unitsMut()[std::size_t(mid)].movePointsLeft =
+            UnitManagement::unitMovePointsMax(UnitType::Militia);
+        bool moved = um.moveUnit(mid, 1, 0);
+        chk(moved, "(5) moveUnit succeeded");
+        chk(!um.units()[std::size_t(mid)].fortified,
+            "(5) successful move CLEARS fortified flag");
+        chk(!um.units()[std::size_t(mid)].fortifying,
+            "(5) successful move CLEARS fortifying flag");
+    }
+
+    // ---- (6): Save/load v12 round-trips fortified + fortifying ----------
+    {
+        using State = FrontEndFlow::State;
+        const char* savePath = "/tmp/openciv1pp_fortifytest.sav";
+        OpenCiv1Game g1; setupGame(g1, 640, 480);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow1(g1);
+        flow1.enterTitle();
+        for (int k = 0; k < 6; ++k) flow1.handleKey(MenuBoxDialog::KeyEnter);
+        State s1 = flow1.handleKey(MenuBoxDialog::KeyEnter);
+        chk(s1 == State::PLAYING, "(6) g1 reached PLAYING");
+        // Mark unit 0 fortified and unit 1 (if exists) fortifying directly
+        // so the save sees both flags.
+        auto& units1 = g1.unitManagement().unitsMut();
+        chk(!units1.empty(), "(6) at least one unit exists");
+        units1[0].fortified = true;
+        units1[0].fortifying = false;
+        bool haveU1 = units1.size() > 1;
+        if (haveU1) {
+            units1[1].fortifying = true;
+            units1[1].fortified = false;
+        }
+        chk(g1.gameLoadAndSave().saveToFile(savePath, &flow1),
+            "(6) save succeeded");
+        // Fresh load.
+        OpenCiv1Game g2; setupGame(g2, 640, 480);
+        FrontEndFlow flow2(g2);
+        chk(g2.gameLoadAndSave().loadFromFile(savePath, &flow2),
+            "(6) load succeeded");
+        const auto& units2 = g2.unitManagement().units();
+        chk(units2.size() == units1.size(), "(6) unit count matches");
+        chk(units2[0].fortified, "(6) unit 0 fortified preserved");
+        chk(!units2[0].fortifying, "(6) unit 0 fortifying still false");
+        if (haveU1 && units2.size() > 1) {
+            chk(units2[1].fortifying, "(6) unit 1 fortifying preserved");
+            chk(!units2[1].fortified, "(6) unit 1 fortified still false");
+        }
+    }
+
+    // ---- (6b): backward-compat load of v11 (no fortify columns) ----------
+    {
+        const char* sp = "/tmp/openciv1pp_fortifytest_v11.sav";
+        // Write a minimal v11 savegame by hand (just the header + a single
+        // unit with the v11 column count) and confirm v12 loader defaults
+        // the missing columns to false.
+        {
+            std::ofstream os(sp);
+            os << "OpenCiv1pp savegame v11\n";
+            os << "turn 1\n";
+            os << "year -4000\n";
+            os << "difficulty -1\n";
+            os << "tribe -1\n";
+            os << "seed 0\n";
+            os << "name\n";
+            os << "state 0\n";
+            os << "unitpos 0 0\n";
+            os << "civs 0\n";
+            os << "units 1\n";
+            os << "unit 0 1 1 1 1 0 0 0 3\n"; // owner x y type alive wt wtT vet mvp
+            os << "cities 0\n";
+        }
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        FrontEndFlow flow(g);
+        bool ok = g.gameLoadAndSave().loadFromFile(sp, &flow);
+        chk(ok, "(6b) v11 save loaded by v12 reader");
+        if (ok && !g.unitManagement().units().empty()) {
+            const Unit& u = g.unitManagement().units()[0];
+            chk(!u.fortified, "(6b) v11 unit: fortified defaults to false");
+            chk(!u.fortifying, "(6b) v11 unit: fortifying defaults to false");
+        }
+    }
+
+    // ---- (7): HUD: Chinese pixels DIFFER when fortified label shows -----
+    std::size_t diffPixels = 0;
+    {
+        auto renderHud = [&](bool translateOn) -> std::vector<uint8_t> {
+            OpenCiv1Game g; setupGame(g, 640, 480);
+            Translator::instance().enabled = translateOn;
+            MiniWorld w(20, 20, 4242u);
+            w.attachGame(g);
+            auto& um = g.unitManagement();
+            um.setMapBounds(w.width(), w.height());
+            int uid = um.addUnit(0, UnitType::Militia, 10, 10);
+            w.setUnitPosition(10, 10);
+            // Drive through startFortify + EOT so the HUD reads "Fortified".
+            um.startFortify(uid);
+            g.checkPlayerTurn().processEndOfTurn();
+            w.draw(g.graphics, 1, 12);
+            return g.graphics.screen(0).pixels();
+        };
+        std::vector<uint8_t> zh = renderHud(true);
+        std::vector<uint8_t> en = renderHud(false);
+        chk(zh.size() == en.size() && !zh.empty(),
+            "(7) both fortified HUD renders produced a buffer");
+        for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+            if (zh[i] != en[i]) ++diffPixels;
+        chk(diffPixels > 0,
+            "(7) Chinese vs English fortified HUD pixels DIFFER (防守中)");
+        Translator::instance().enabled = true;
+    }
+
+    if (fail) std::printf("FORTIFYTEST: %d failure(s)\n", fail);
+    else      std::printf("FORTIFYTEST: all pass (fortify cycle + terrain "
+                          "bonus + stack + move-clears + v12 save/load + "
+                          "HUD delta=%zu px)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -7182,6 +7465,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--happinesstest")) { return happinesstest(); }
         else if (!std::strcmp(argv[i], "--roadmovetest")) { return roadmovetest(); }
         else if (!std::strcmp(argv[i], "--aiexpandtest")) { return aiexpandtest(); }
+        else if (!std::strcmp(argv[i], "--fortifytest")) { return fortifytest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -7247,7 +7531,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

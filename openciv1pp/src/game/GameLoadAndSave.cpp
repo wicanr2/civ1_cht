@@ -115,7 +115,10 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     // v11 adds per-unit movePointsLeft (ROAD-MOVEMENT slice). v1..v10
     // readers ignore the trailing column; v11 readers parse it and
     // default to unitMovePointsMax(type) when absent.
-    os << "OpenCiv1pp savegame v11\n";
+    // v12 adds per-unit fortified + fortifying flags (FORTIFY slice).
+    // v1..v11 readers default both to false; v12 readers parse the two
+    // trailing 0/1 columns appended after movePointsLeft.
+    os << "OpenCiv1pp savegame v12\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -193,6 +196,8 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
            << " " << u.workTurnsLeft << " " << int(u.workTarget)
            << " " << (u.veteran ? 1 : 0)
            << " " << u.movePointsLeft  // v11: ROAD-MOVEMENT per-unit mvp
+           << " " << (u.fortified ? 1 : 0)   // v12: FORTIFY fortified
+           << " " << (u.fortifying ? 1 : 0)  // v12: FORTIFY fortifying
            << "\n";
     }
 
@@ -346,7 +351,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         header != "OpenCiv1pp savegame v8" &&
         header != "OpenCiv1pp savegame v9" &&
         header != "OpenCiv1pp savegame v10" &&
-        header != "OpenCiv1pp savegame v11") return false;
+        header != "OpenCiv1pp savegame v11" &&
+        header != "OpenCiv1pp savegame v12") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -449,13 +455,22 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             // load fixup below seeds movePointsLeft to max for legacy
             // saves so the unit can act on the first restored turn).
             int wtLeft = 0, wtTarget = 0, vet = 0, mvp = -1;
+            int fortdone = 0, forting = 0; // v12 trailing columns
             if (iss >> wtLeft) {
                 u.workTurnsLeft = wtLeft;
                 if (iss >> wtTarget) {
                     u.workTarget = uint8_t(wtTarget);
                     if (iss >> vet) {
                         u.veteran = (vet != 0);
-                        if (iss >> mvp) u.movePointsLeft = mvp;
+                        if (iss >> mvp) {
+                            u.movePointsLeft = mvp;
+                            // v12: trailing fortified + fortifying.
+                            // Absent in v1..v11 -> default false (struct
+                            // init). The two extractions are independent
+                            // so a half-truncated row still loads.
+                            if (iss >> fortdone) u.fortified = (fortdone != 0);
+                            if (iss >> forting)  u.fortifying = (forting != 0);
+                        }
                     }
                 }
             }
@@ -464,6 +479,11 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             if (mvp < 0) {
                 u.movePointsLeft = UnitManagement::unitMovePointsMax(u.type);
             }
+            // FORTIFY invariant: fortified+fortifying together is invalid
+            // (the engage cycle is mutually exclusive). On the rare case
+            // both columns were set, drop fortifying (the unit is now
+            // dug in for real).
+            if (u.fortified) u.fortifying = false;
             units.push_back(u);
         }
         else if (key == "cities")     { /* count */ }
