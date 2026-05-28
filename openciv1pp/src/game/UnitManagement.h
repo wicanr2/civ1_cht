@@ -1,0 +1,931 @@
+// UnitManagement.h — ported CodeObject (OpenCiv1 UnitManagement.cs, F0_1866_*).
+//
+// Ports the BUILD-CITY action faithfully: a Settlers unit on a valid land
+// terrain founds a city at (x,y) with an owner playerID and a tribe-derived
+// name. Mirrors the bookkeeping in OpenCiv1's UnitManagement.F0_1866_* family:
+// the original creates a City record at the unit's tile (validating land vs.
+// water/ice) and removes the Settlers. The deeper city init (production /
+// worker tiles / improvements) is OUT OF SCOPE here — we only persist a "city
+// placed at (x,y) by player N, named S, on turn T" record (the minimum the C#
+// City class needs to be queryable: ID, PlayerID, Position, NameID + the
+// rendered/looked-up name). cpu.* hooks (RNG, log) are wired the same way the
+// other ported CodeObjects use the shared OpenCiv1Game.cpu.
+//
+// Faithful mapping:
+//   * City record fields (id, owner, x, y, name, foundedTurn) match the subset
+//     of OpenCiv1.City used by F0_1866_01dc and the GameData City[] arrays
+//     (see OpenCiv1/src/Game/State/City.cs and GameData.cs Cities[128]).
+//   * Invalid build sites = Water + Arctic (1:1 with the C# build-site checks
+//     that reject TerrainTypeEnum.Water and Arctic).
+//
+// STUBS (// TODO(port) in .cpp):
+//   * deeper city init (Improvements, WorkerFlags, ActualSize, FoodCount, ...)
+//   * Settlers-unit consumption inside the Players[].Units[] table (we only
+//     return success; the caller (MiniWorld) handles the visible-side effect).
+//   * production/work tiles, trade route arrays, city-status flags.
+#pragma once
+#include "TerrainTiles.h"
+#include "TechResearch.h"
+#include "Government.h"
+#include <cstdint>
+#include <functional>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace oc1 {
+
+class OpenCiv1Game;
+
+// ---- AI / multi-civ slice ----
+// Unit types — a faithful SUBSET of C# UnitTypeEnum (UnitTypeEnum.cs lines
+// 9-41). Settlers/Militia/Phalanx cover the early-era handful the gameplay
+// slice needs (founder + cheap attacker + cheap defender). Numeric values
+// are kept 1:1 with the C# enum so save/load round-trip is straight-through
+// when the deeper port lands.
+// Cavalry (3) is the first unit with attack > 1 — added so combat-with-Walls
+// statistics can be exercised against a non-degenerate baseline (atk=1 vs
+// def=2 always rolls 0/0..1 which gives a 100% defender win rate even
+// without Walls). Cavalry stats: a=2 d=1 m=2 cost=20 (faithful Civ1).
+//
+// MORE-UNITS slice (Legion/Knight/Catapult/Musketeers/Cannon): faithful
+// Civ1 manual stats (atk/def/move/cost*10, see UnitDef table). Numeric
+// values 4..8 do NOT mirror the C# UnitTypeEnum ordering 1:1 (C# has
+// Legion=3, Musketeers=4, Cavalry=6, Knights=7, Catapult=8, Cannon=9) —
+// because our existing Cavalry=3 was chosen ahead of the larger roster.
+// The save format stores int(type), so the numeric values are STABLE
+// across this port's saves; a future deeper port that wants 1:1 with C#
+// will need a save migration step. Documented divergence.
+enum class UnitType : uint8_t {
+    Settlers   = 0,
+    Militia    = 1,
+    Phalanx    = 2,
+    Cavalry    = 3,
+    Legion     = 4,  // a=4 d=2 m=1 cost=40 (Civ1 manual) — tech IronWorking
+    Knight     = 5,  // a=4 d=2 m=2 cost=40 (Civ1 manual) — tech Feudalism
+    Catapult   = 6,  // a=6 d=1 m=1 cost=40 (Civ1 manual) — tech Mathematics
+    Musketeers = 7,  // a=3 d=3 m=1 cost=30 (Civ1 manual) — tech Gunpowder
+    Cannon     = 8,  // a=8 d=1 m=1 cost=40 (Civ1 manual) — tech Metallurgy
+    // NAVAL slice: first ship. Civ1 Trireme stats = 1/1/3 cost 40 (manual).
+    // Tech prereq is MAP MAKING in Civ1; the early-era subset doesn't include
+    // MapMaking yet, so we substitute Pottery (documented; see UnitDef table
+    // and TechResearch.h note). isNaval=true gates terrain validation in
+    // moveUnit: Triremes may ONLY enter Water; land units refuse Water.
+    Trireme    = 9,
+};
+// Number of UnitType values shipped. Keep in sync with the kDefs table below.
+static constexpr int kUnitTypeCount = 10;
+
+// ---- DIPLOMACY (faithful Civ1 NoContact/Peace/War subset) ---------------
+// Faithful SUBSET of the C# OpenCiv1 Diplomacy state machine
+// (OpenCiv1/src/Game/CodeObjects/MeetWithKing.cs ~143KB; way too big to port
+// 1:1) + the NxN GameData.Diplomacy[8,8] relation matrix (GameData.cs). The
+// full C# state machine has many sub-states (Ceasefire, Treaty, Alliance,
+// Vendetta, Embassy, ...); we ship the three classical ones the Civ1 manual
+// + community wikis identify as the load-bearing diplomatic axis:
+//   - NoContact: civs haven't met yet; combat is impossible, diplomacy
+//                screen unreachable. Default for every civ pair on game start.
+//   - Peace:     civs have met (got close enough at some point); combat
+//                is REFUSED until war is declared. Default after the
+//                meetCheck() upgrades NoContact -> Peace.
+//   - War:       active combat allowed. Either side may have declared.
+// Diagonal self-relation is Peace (a civ is never at war with itself).
+// Matrix is symmetric: setRelation(A,B,r) sets both directions.
+enum class Relation : uint8_t {
+    NoContact = 0,  // default; never met (combat impossible)
+    Peace     = 1,  // met; combat refused
+    War       = 2,  // combat allowed
+};
+
+// English key for HUD/CityView display. Translator turns these into Chinese
+// ("No Contact"->"未接觸", "Peace"->"和平", "War"->"戰爭").
+inline const char* relationNameKey(Relation r) {
+    switch (r) {
+        case Relation::NoContact: return "No Contact";
+        case Relation::Peace:     return "Peace";
+        case Relation::War:       return "War";
+    }
+    return "No Contact";
+}
+
+// A unit's fixed stats — faithful subset of UnitDefinition.cs (only the
+// fields actually consumed by the combat / cost / movement paths in this
+// slice). `cost` is the SHIELD threshold (C# stores Cost as 10s, multiplied
+// by local_4a in CityWorker.cs ~line 838; we store the EFFECTIVE shield cost
+// directly so end-of-turn comparisons stay simple — e.g. Militia=10 shields).
+struct UnitDef {
+    const char* name;     // English key (Translator turns it into Chinese)
+    int attack;           // AttackStrength (UnitDefinition.cs line 14)
+    int defense;          // DefenseStrength (UnitDefinition.cs line 15)
+    int move;             // MoveCount (line 12)
+    int cost;             // shield cost (Cost * local_4a, line 838)
+    Tech techPrereq;      // required tech (Tech::None means buildable from
+                          // game start). Mirrors UnitDefinition.PrerequisiteTech
+                          // (GameData.cs line 209-236, last enum arg).
+    // NAVAL flag: true for ships (Trireme so far). Naval units can ONLY
+    // enter Water tiles; land units (isNaval=false) are refused entry into
+    // Water. Faithful Civ1 land/sea separation. Mirrors C# UnitDefinition's
+    // domain bit (Land/Sea/Air); we keep a single bool for the slice and
+    // widen to an enum when Air units land.
+    bool isNaval = false;
+};
+
+// Faithful UnitDef table for the early-era handful. Index by UnitType.
+// Values mirror GameData.cs lines 209-211:
+//   Settlers: attack=0, defense=1, move=1, cost=4*10 = 40
+//   Militia:  attack=1, defense=1, move=1, cost=1*10 = 10
+//   Phalanx:  attack=1, defense=2, move=1, cost=2*10 = 20
+inline const UnitDef& unitDefOf(UnitType t) {
+    static const UnitDef kDefs[kUnitTypeCount] = {
+        // techPrereq matches the C# UnitDefinition.PrerequisiteTech args in
+        // GameData.cs lines 209-211: Settlers/Militia = None; Phalanx =
+        // BronzeWorking.
+        // Cavalry stats are the standard Civ1 horseback (a=2 d=1 m=2 cost=20,
+        // PrerequisiteTech HorsebackRiding). We leave the prereq as None for
+        // now so existing tech-gated paths continue to behave; Cavalry is
+        // primarily exercised by --buildingtest's combat statistics.
+        {"Settlers", 0, 1, 1, 40, Tech::None, false},
+        {"Militia",  1, 1, 1, 10, Tech::None, false},
+        {"Phalanx",  1, 2, 1, 20, Tech::BronzeWorking, false},
+        {"Cavalry",  2, 1, 2, 20, Tech::None, false},
+        // MORE-UNITS slice — faithful Civ1 MANUAL stats (which differ from
+        // the C# port's table in a few cases; e.g. C# Legion is 3/1/1 cost
+        // 2, the manual lists 4/2/1 cost 4 — we ship the manual numbers as
+        // the spec called for them and they give a sharper Knight>Phalanx
+        // statistical signal in tests). Tech prereqs match the C# table.
+        // cost field stores SHIELD cost = manual cost * 10 (same scheme as
+        // Settlers/Militia/Phalanx/Cavalry).
+        {"Legion",     4, 2, 1, 40, Tech::IronWorking, false},
+        {"Knight",     4, 2, 2, 40, Tech::Feudalism,   false},
+        {"Catapult",   6, 1, 1, 40, Tech::Mathematics, false},
+        {"Musketeers", 3, 3, 1, 30, Tech::Gunpowder,   false},
+        {"Cannon",     8, 1, 1, 40, Tech::Metallurgy,  false},
+        // NAVAL slice — Trireme: Civ1 manual stats a=1 d=1 m=3 cost 40.
+        // Tech prereq is MAP MAKING in Civ1; substituted to Pottery for the
+        // early-era subset (documented in TechResearch.h Tech::MapMaking
+        // note). isNaval=true gates terrain validation in moveUnit.
+        {"Trireme",    1, 1, 3, 40, Tech::Pottery,     true},
+    };
+    int i = int(t);
+    if (i < 0 || i >= kUnitTypeCount) i = 0;
+    return kDefs[i];
+}
+
+// ---- City improvements (buildings) -------------------------------------
+// A faithful SUBSET of the C# CityImprovementEnum (28 buildings in Civ1).
+// We ship 8 iconic Civ1 buildings: Granary, Barracks, Walls, Temple,
+// Marketplace, Library, Cathedral, Aqueduct. Numeric ids match the Civ1
+// order so future expansion can re-use the same integer encoding on disk
+// (see GameLoadAndSave v4 — the per-city ownedBuildings CSV transparently
+// flows new enum values through).
+enum class BuildingType : uint8_t {
+    None        = 0,
+    Granary     = 1,
+    Barracks    = 2,
+    Walls       = 3,
+    Temple      = 4,  // HAPPINESS slice: -1 unhappy citizen (Civ1 cost 40)
+    // MORE-BUILDINGS slice (faithful Civ1 effects + costs):
+    Marketplace = 5,  // +50% gold (Civ1 cost 60 shields, req Currency)
+    Library     = 6,  // +50% science (Civ1 cost 80 shields, req Writing)
+    // Cathedral: Civ1 prereq is Monotheism (NOT in the early-era subset);
+    // we substitute Mysticism as a documented simplification (see
+    // TechResearch.h Tech::Mysticism note). Civ1 cost 160 shields, -3
+    // unhappy citizens (stacks with Temple's -1).
+    Cathedral   = 7,
+    // Aqueduct: Civ1 cost 120 shields, req Construction. Gates city
+    // growth past population 8 — without one, the food box does not
+    // advance toward a pop-9 growth (population caps at 8).
+    Aqueduct    = 8,
+};
+// Count of BuildingType values shipped (including None at 0).
+static constexpr int kBuildingTypeCount = 9;
+
+// A building's fixed stats — faithful subset of the C# CityImprovement
+// definition table. `cost` is the SHIELD threshold (Civ1 standard values).
+struct BuildingDef {
+    const char* name;     // English key (Translator -> Chinese)
+    int cost;             // shield cost (Civ1 standard values per def)
+    Tech techPrereq;      // required tech to build (Tech::None = always
+                          // buildable; matches the C# CityImprovement
+                          // PrerequisiteTech field). Existing buildings
+                          // (Granary/Barracks/Walls/Temple) ship with
+                          // None — historically buildable from game start
+                          // in this port's slice; the MORE-BUILDINGS
+                          // slice gates Marketplace/Library/Cathedral/
+                          // Aqueduct behind their faithful Civ1 prereqs.
+};
+
+// Faithful BuildingDef table (Civ1 standard costs + prereqs).
+// Sources: Civ1 manual + community wikis (CivFanatics CityImprovements).
+inline const BuildingDef& buildingDefOf(BuildingType t) {
+    static const BuildingDef kDefs[kBuildingTypeCount] = {
+        {"None",        0,   Tech::None},
+        {"Granary",     60,  Tech::None},        // food-bonus (Granary halves food box)
+        {"Barracks",    40,  Tech::None},        // produces VETERAN units (+50% combat)
+        {"Walls",       80,  Tech::None},        // defender on city tile: defense x3
+        {"Temple",      40,  Tech::None},        // -1 unhappy citizen
+        // MORE-BUILDINGS slice. Civ1 prereqs (manual): Marketplace=Currency,
+        // Library=Writing, Cathedral=Monotheism (substituted to Mysticism;
+        // documented in BuildingType enum comment + TechResearch.h),
+        // Aqueduct=Construction.
+        {"Marketplace", 60,  Tech::Currency},    // +50% gold contribution
+        {"Library",     80,  Tech::Writing},     // +50% science contribution
+        {"Cathedral",   160, Tech::Mysticism},   // -3 unhappy citizens (stacks w/ Temple)
+        {"Aqueduct",    120, Tech::Construction},// gates city growth past pop 8
+    };
+    int i = int(t);
+    if (i < 0 || i >= kBuildingTypeCount) i = 0;
+    return kDefs[i];
+}
+
+// ---- Wonders of the World -----------------------------------------------
+// A faithful subset of Civ1's 28 wonders. We ship 4 iconic early-era wonders;
+// the full 28-wonder roster + senate/spaceship-tier wonders are // TODO(port).
+// Numeric ids are stable so v7 saves stay readable when more wonders ship.
+//
+// Wonder rules (faithful Civ1):
+//   - Each wonder can be owned by AT MOST ONE civ for the whole game.
+//   - Tech-gated: civ must know the WonderDef's techPrereq to start it.
+//   - Built like a building: a city accumulates shields to the cost.
+//   - When two civs simultaneously target the same wonder, the one that
+//     completes first wins (the second's production switches off and
+//     shields stay reserved — we don't model the "convert to gold" payoff).
+//
+// Effects (simplified — documented in WonderDef.effect_description):
+//   - Pyramids        : civ-wide +1 food per city (foodGross bump).
+//                       Civ1: any government works without Senate. We collapse
+//                       to +1 food/city (food is modeled; senate isn't).
+//   - HangingGardens  : civ-wide +1 science per city.
+//                       Civ1: +1 happy citizen everywhere. Happiness isn't
+//                       modeled, so we apply +1 science as a proxy effect.
+//   - GreatWall       : civ-wide defender on city tile +50% defense.
+//                       Civ1: Walls everywhere. We don't auto-grant Walls;
+//                       instead resolveCombat multiplies defender's defense
+//                       by 3/2 in cities owned by the Great Wall owner.
+//                       Stacks with explicit city Walls (a Walled city of
+//                       the Great Wall owner gets x3 * 3/2 = x4.5 → floor).
+//   - Colossus        : civ-wide +1 science per city.
+//                       Civ1: +1 trade per ocean tile. Trade isn't modeled
+//                       per-tile, so we apply +1 science as a proxy effect.
+enum class WonderType : uint8_t {
+    None           = 0,
+    Pyramids       = 1,
+    HangingGardens = 2,
+    GreatWall      = 3,
+    Colossus       = 4,
+};
+static constexpr int kWonderCount = 5; // includes None at index 0
+
+struct WonderDef {
+    const char* name;            // English key (Translator -> Chinese)
+    int         cost;            // shield cost (Civ1 wonders are 200; Great
+                                 // Wall is 300 in some Civ1 revisions — we
+                                 // use 200 across the board for parity).
+    Tech        techPrereq;      // required tech
+    const char* effect_description;
+};
+
+// Faithful WonderDef table. effect_description carries the simplification
+// note so HUD/translation can show a faithful summary.
+inline const WonderDef& wonderDefOf(WonderType w) {
+    static const WonderDef kDefs[kWonderCount] = {
+        {"None",            0,   Tech::None,          ""},
+        {"Pyramids",        200, Tech::Masonry,
+         "+1 food per city (Civ1: any govt w/o senate; simplified)"},
+        {"Hanging Gardens", 200, Tech::Pottery,
+         "+1 science per city (Civ1: +1 happy citizen; simplified)"},
+        {"Great Wall",      200, Tech::Construction,
+         "Defender +50% in own cities (stacks with Walls)"},
+        {"Colossus",        200, Tech::BronzeWorking,
+         "+1 science per city (Civ1: +1 trade per ocean tile; simplified)"},
+    };
+    int i = int(w);
+    if (i < 0 || i >= kWonderCount) i = 0;
+    return kDefs[i];
+}
+
+struct Unit {
+    int owner = 0;            // civ index into UnitManagement::civs()
+    int x = 0, y = 0;         // Position (matches C# GPoint)
+    UnitType type = UnitType::Settlers;
+    bool alive = true;
+    // Settlers work state (faithful subset of C# UnitManagement
+    // F0_1866_* build-road / build-irrigation flow + the per-unit
+    // RemainingMoves / Status state used to lock a Settlers on its tile
+    // while improvements are under construction). workTarget encodes
+    // WHICH improvement is being built (0=None, 1=Road, 2=Irrigation),
+    // workTurnsLeft is the per-improvement countdown decremented in
+    // CheckPlayerTurn::processEndOfTurn; on reaching 0 the matching
+    // improvement bit is set on MapManagement's improvements grid
+    // (see MapManagement::setImprovementFlag) and workTarget clears.
+    int workTurnsLeft = 0;
+    uint8_t workTarget = 0;   // 0=None, 1=Road, 2=Irrigation
+    // Veteran flag — set when this unit was produced in a city that owns
+    // a Barracks (Civ1: Barracks-built units are Veterans -> +50% combat).
+    // Mirrors C# Unit.IsVeteran. Resolved at production time in
+    // CheckPlayerTurn::processEndOfTurn.
+    bool veteran = false;
+    // ---- ROAD-MOVEMENT slice (per-unit movement budget, thirds-of-move) --
+    // Civ1 standard: roads let a unit move at 1/3 normal cost. We model
+    // this in INTEGER THIRDS — a unit's movement budget per turn is
+    // unitDefOf(type).move * 3 (so a move=1 unit has 3 mvp/turn, move=2 has
+    // 6 mvp/turn, move=3 Trireme has 9 mvp/turn). A standard step COSTS 3
+    // mvp; a step where BOTH source AND destination tiles have the ROAD
+    // improvement bit COSTS 1 mvp (faithful Civ1 road math). Reset at the
+    // top of each civ's pass in CheckPlayerTurn::processEndOfTurn. Default
+    // 3 in struct init covers the move=1 case for legacy code that
+    // bypasses addUnit (e.g. citytest); addUnit explicitly sets the right
+    // value from the def.
+    int movePointsLeft = 3;
+    // ---- FORTIFY slice (Civ1 +50% defense, takes 1 turn to engage) -------
+    // fortifying: this unit issued a Fortify command this turn and has not
+    // yet completed the 1-turn fortify cycle. CheckPlayerTurn promotes
+    // fortifying -> fortified at the top of the NEXT turn. While fortifying
+    // the unit's movePointsLeft is zeroed (cannot move/attack this turn).
+    // fortified: the unit is fully dug in and gets +50% defense in
+    // resolveCombat. moveUnit clears both flags the moment the unit
+    // successfully steps to a new tile (faithful Civ1: walking away
+    // breaks the fortification).
+    bool fortifying = false;
+    bool fortified  = false;
+};
+
+// Per-civilization state (a SUBSET of GameData.Players[i] + Nations[i]).
+// Enough for {tribeIdx -> name & first-city name, color -> map marker, isHuman
+// -> input routing}. The full Players[] record (Diplomacy, Treasury, Tech,
+// Government, ...) is OUT OF SCOPE here.
+struct CivState {
+    int tribeIdx = 0;         // index into MainCode::tribes() (0..13)
+    uint8_t color = 0;        // palette index for the AI unit marker
+    std::string name;         // resolved nation name (e.g. "Romans")
+    bool isHuman = false;
+
+    // ---- Government (GOVERNMENT slice) ----
+    // Civ1 civs START in Despotism (faithful: the C# StartGameMenu init also
+    // sets Players[].Government = Despotism). When a civ initiates a govt
+    // change via UnitManagement::changeGovernment, the EFFECTIVE government
+    // becomes Anarchy for `anarchyTurnsLeft` turns (Civ1 fixed at 3 turns
+    // for the basic case — a Statue-of-Liberty-style instant change would
+    // override, but wonders aren't ported); when the counter hits 0 the
+    // effective govt switches to `targetGovt` and the transition completes.
+    // Effective government for gameplay purposes is therefore:
+    //   anarchyTurnsLeft > 0 -> Anarchy
+    //   else                 -> govt
+    Government govt = Government::Despotism;
+    Government targetGovt = Government::Despotism;
+    int anarchyTurnsLeft = 0;
+
+    // ---- Wonders (civ-wide) ----------------------------------------------
+    // The set of Wonders this civ owns. Wonders are CIV-WIDE (not per-city)
+    // because their effects (Pyramids food, Great Wall combat, etc.) apply
+    // to every city of the owning civ. Single-ownership across the game is
+    // enforced by UnitManagement::wonderOwner(w) returning -1 when unowned.
+    std::set<WonderType> ownedWonders;
+    bool hasWonder(WonderType w) const {
+        return ownedWonders.find(w) != ownedWonders.end();
+    }
+
+    // ---- ECONOMY (gold + treasury + unit upkeep) ------------------------
+    // Civ1 standard starting treasury is 50 gold (per StartGameMenu init in
+    // the C# port; matches Civ1 manual). Each city contributes Trade per
+    // turn (simplified: 1 baseline + 1 per city, then * Government.tradeMul),
+    // half of which becomes Gold (3-way tax/lux/sci slider collapsed to a
+    // 50/0/50 implicit split — TODO: full slider). Each unit costs 1 gold/
+    // turn upkeep. When treasury would go negative the civ disbands the
+    // weakest non-Settlers units until balanced. Mirrors C# Player.Treasury
+    // + CheckPlayerTurn/CityWorker per-turn gold accumulation/deduction.
+    int gold = 50;                // current treasury (signed; goes <0 only briefly)
+    int upkeepGoldPerTurn = 0;    // cached for HUD/CityView display (= unit count)
+
+    // ---- Tax / Luxury / Science RATE SLIDER (Civ1 per-civ 3-way split) ---
+    // Faithful Civ1: each civ allocates trade across THREE buckets per
+    // turn (Tax/Luxury/Science), in units of tenths (each 0..10, summing
+    // to 10). The government caps the MAX single rate:
+    //   Anarchy   : no rate changes allowed (cap = 0, slider locked).
+    //   Despotism : max single rate = 6 (Civ1 manual)
+    //   Monarchy  : max single rate = 7
+    //   Republic  : max single rate = 8
+    //   Democracy : max single rate = 10 (any single allocation)
+    // Default rates: 5 tax / 0 lux / 5 sci (sum=10) — matches the prior
+    // implicit 50/0/50 split shipped before the slider landed. Set via
+    // UnitManagement::setCivRates(civId, t, l, s) which enforces both
+    // the sum==10 invariant and the per-government cap.
+    int taxRate = 5;
+    int luxRate = 0;
+    int sciRate = 5;
+};
+
+struct City {
+    int id = -1;
+    int owner = 0;            // PlayerID
+    int x = 0, y = 0;         // Position (matches C# GPoint)
+    std::string name;         // resolved + (later) translated city name
+    int foundedTurn = 0;      // founding turn (derived from the world's turn)
+
+    // Per-turn production state (mirrors City.ShieldsCount + the
+    // Units[CurrentProductionID].Cost threshold in CityWorker.cs). `productionType`
+    // is the unit type currently being built (mirrors City.CurrentProductionID
+    // in C# CityWorker.cs ~line 836); `production` caches its UnitDef.cost so
+    // the end-of-turn pass stays a single comparison. `units` is the running
+    // count of units produced by this city.
+    UnitType productionType = UnitType::Militia;  // default = cheapest defender
+    int shields = 0;
+    int production = 10;  // unitDefOf(productionType).cost, kept in sync
+    int units = 0;
+
+    // ---- Building (city improvement) production -----------------------
+    // Civ1 cities can build EITHER a unit OR a building per production cycle.
+    // `productionKind` selects which; when Building, `productionBuildingType`
+    // names the target and `production` caches buildingDefOf().cost so the
+    // end-of-turn threshold pass stays a single comparison.
+    // `ownedBuildings` is the set of buildings this city has already built;
+    // it can't build the same improvement twice (faithful Civ1 rule).
+    // ProductionKind expanded for the Wonders slice (v7): Wonder is the
+    // third producible category. Numeric values are stable so v7 saves stay
+    // readable. When productionKind == Wonder, productionWonderType names
+    // the target and `production` caches wonderDefOf().cost. Building/Unit
+    // branches stay 1:1 with the v4 path.
+    enum class ProductionKind : uint8_t { Unit = 0, Building = 1, Wonder = 2 };
+    ProductionKind productionKind = ProductionKind::Unit;
+    BuildingType   productionBuildingType = BuildingType::None;
+    WonderType     productionWonderType   = WonderType::None;
+    std::set<BuildingType> ownedBuildings;
+
+    // Convenience: does this city own `b`?
+    bool hasBuilding(BuildingType b) const {
+        return ownedBuildings.find(b) != ownedBuildings.end();
+    }
+
+    // ---- Food + population growth (Civ1 food box / ActualSize) ----------
+    // Faithful subset of CityWorker.cs FoodCount + ActualSize + the per-tile
+    // GetCityResourceCount food fan-out. Civ1 growth math:
+    //   - Each turn the city accumulates (foodPerTurn) into `food`,
+    //     where foodPerTurn = sum(yield over worked tiles) - population*2.
+    //   - When food >= growthThreshold = (population+1)*10 the city grows
+    //     (population++). Granary halves the threshold (*5) and retains
+    //     HALF the threshold's worth on growth (rest of the box keeps food).
+    //   - When food < 0 and population > 1, population shrinks by 1 and
+    //     food resets to 0 (faithful Civ1 starvation behaviour).
+    // foodPerTurn is recomputed each turn (not authoritative across saves)
+    // but kept on the struct so CityView can show the current per-turn
+    // delta without re-running the full tile-yield pass for the renderer.
+    int population = 1;
+    int food = 0;
+    int foodPerTurn = 0;
+
+    // ---- HAPPINESS / DISORDER (Civ1 happy/unhappy citizen accounting) ---
+    // Faithful Civ1 simplified rules (see CheckPlayerTurn::processEndOfTurn
+    // for the exact math):
+    //   - For each population point > 4, one unhappy citizen is created.
+    //   - Temple owned: -1 unhappy (clamped to >= 0).
+    //   - Civ owns Hanging Gardens wonder: -1 unhappy in every city
+    //     (clamped to >= 0). Civ-wide effect.
+    //   - happy is 0 baseline (Luxury/specialist Entertainer not modeled
+    //     yet -> TODO).
+    //   - disorder := (unhappy > happy). A disordered city produces NO
+    //     shields AND its population does NOT grow that turn (faithful
+    //     Civ1 "Civil Disorder" rule — production halts and the food
+    //     box does not advance toward growth this turn).
+    // These fields are recomputed each end-of-turn pass; they persist on
+    // save/load (v10) so a saved-mid-disorder city renders correctly on
+    // reload (CityView/HUD read them directly).
+    int  happy    = 0;
+    int  unhappy  = 0;
+    bool disorder = false;
+};
+
+class UnitManagement {
+public:
+    explicit UnitManagement(OpenCiv1Game& parent);
+
+    // Faithful (subset of) F0_1866_01dc / city-creation path: validate the
+    // tile, allocate a new City record and assign it the next tribe city name.
+    // Returns false when the tile is invalid (Water/Arctic) or out of bounds.
+    // `outName` receives the resolved city name (English key — caller can run
+    // it through Translator for the Chinese label, e.g. "Capital"->"首都").
+    bool buildCity(int x, int y, int playerId, std::string& outName);
+
+    // Same as above, but takes an explicit founding turn (mirrors GameData.
+    // TurnCount being captured into City record on creation). Defaults to 0.
+    bool buildCity(int x, int y, int playerId, int turn, std::string& outName);
+
+    // Map width/height bounds for the validator. Set from MiniWorld at wire-up
+    // time (so the headless tests can validate without a full map).
+    void setMapBounds(int w, int h) { mapW_ = w; mapH_ = h; }
+
+    // Terrain provider — MiniWorld plugs in its terrainAt(x,y) so buildCity
+    // can reject Water/Arctic (the C# build-site validity check). When unset,
+    // the validator only checks bounds (used by tests that don't care about
+    // terrain; the dedicated water-tile test installs a provider).
+    void setTerrainProvider(std::function<Terrain(int, int)> fn) {
+        terrainAt_ = std::move(fn);
+    }
+
+    // The chosen tribe index (0..13) into MainCode::tribes() that the first-
+    // city name resolver uses. -1 means "use the generic 'Capital' fallback".
+    void setChosenTribe(int tribeIndex) { chosenTribe_ = tribeIndex; }
+    int chosenTribe() const { return chosenTribe_; }
+
+    const std::vector<City>& cities() const { return cities_; }
+    std::vector<City>& citiesMut() { return cities_; } // CheckPlayerTurn uses this
+    std::size_t cityCount() const { return cities_.size(); }
+
+    // Total units produced across all cities (sum of City.units). Used by HUD
+    // and tests to verify the threshold-trigger unit production loop.
+    int totalUnitsProduced() const {
+        int n = 0;
+        for (const auto& c : cities_) n += c.units;
+        return n;
+    }
+
+    // The terrain provider plugged in by MiniWorld::attachGame. Exposed so
+    // CheckPlayerTurn can sample adjacent tiles for shield yield.
+    const std::function<Terrain(int, int)>& terrainProvider() const { return terrainAt_; }
+
+    // GameData.Year — Civ1 starts at -4000 (4000 BC) per StartGameMenu.cs.
+    // The end-of-turn pass mutates this via CheckPlayerTurn::advanceYear.
+    int year() const { return year_; }
+    void setYear(int y) { year_ = y; }
+
+    // The english key for the Nth city of this tribe (0 = capital). Falls back
+    // to "Capital" for the first city of an unknown tribe; subsequent unknown-
+    // tribe cities get "Capital 2", "Capital 3", etc.
+    static std::string nthCityNameKey(int tribeIndex, int nth);
+
+    // ---- AI / multi-civ slice ----
+    // setupCivs: human is civ 0 with tribe=humanTribe; AI civs are 1..numAi,
+    // each assigned a distinct tribe (rotated through MainCode::tribes()) and a
+    // distinct palette colour index. Clears any prior civs/units. A 1:1 with
+    // the START path in C# StartGameMenu.F5_0000_*_InitNewGameData where the
+    // Players[0..7] table is built (human at GameData.HumanPlayerID, AI at the
+    // others). The deeper Players[] init (Diplomacy/Treasury/Tech/ ...) stays
+    // a STUB — only the {tribeIdx, color, name, isHuman} subset is materialised.
+    void setupCivs(int humanTribe, int numAi);
+    const std::vector<CivState>& civs() const { return civs_; }
+    // Direct-write access used by GameLoadAndSave to restore civs from disk.
+    std::vector<CivState>& civsMut() { return civs_; }
+
+    // ---- Government (GOVERNMENT slice) ----
+    // Initiate a government change for civ `civId`. Faithful Civ1 rules:
+    //   - civId must be in range,
+    //   - the civ must KNOW the new government's tech prereq (consults the
+    //     host TechResearch; Anarchy/Despotism have Tech::None -> always),
+    //   - the civ must not already be mid-transition (anarchyTurnsLeft > 0
+    //     refuses; switch-during-Anarchy is OUT — matches the C# game-menu
+    //     greyout of the REVOLUTION button while still in Anarchy),
+    //   - switching to the SAME government you already run is a no-op
+    //     (returns false to signal nothing happened).
+    // On success: govt is left untouched (still the OLD government — but
+    // see effectiveGovernment() below), targetGovt is set to `newGovt`, and
+    // anarchyTurnsLeft is set to 3 (the canonical Civ1 transition length).
+    // CheckPlayerTurn::processEndOfTurn decrements the counter each turn
+    // and, on reaching 0, sets govt = targetGovt. While anarchyTurnsLeft
+    // > 0 the EFFECTIVE government is Anarchy (use effectiveGovernment()
+    // to read it).
+    static constexpr int kAnarchyTransitionTurns = 3;
+    bool changeGovernment(int civId, Government newGovt);
+
+    // Read the EFFECTIVE government for civ `civId` (Anarchy while
+    // anarchyTurnsLeft > 0, else the stored govt). Bounds-safe: returns
+    // Government::Despotism for an out-of-range civId.
+    Government effectiveGovernment(int civId) const;
+
+    // ---- Tax / Luxury / Science RATE SLIDER -----------------------------
+    // Per-government MAX single-rate cap (Civ1 manual values, in tenths):
+    //   Anarchy=0 (no changes allowed) / Despotism=6 / Monarchy=7 /
+    //   Republic=8 / Democracy=10 (no cap). Used by setCivRates() to refuse
+    //   allocations that exceed the cap on ANY single rate.
+    static int governmentMaxRate(Government g);
+
+    // Set civ `civId`'s tax/lux/sci rates. Returns false (no state change)
+    // when:
+    //   * civId out of range,
+    //   * any rate < 0,
+    //   * tax + lux + sci != 10,
+    //   * any single rate > governmentMaxRate(effectiveGovernment(civId))
+    //     (e.g. setting tax=7 under Despotism is refused: cap is 6),
+    //   * civ is mid-Anarchy (max=0 -> any non-zero rate refused;
+    //     functionally a slider lockout during the 3-turn transition).
+    // On success the three rate fields are written atomically.
+    bool setCivRates(int civId, int tax, int lux, int sci);
+
+    // ---- Settlers improvement actions (faithful subset of F0_1866_*) ----
+    // Work-target ids match the (Road/Irrigation) subset of the C#
+    // TerrainImprovementFlagsEnum order; the actual map-grid bitflag
+    // values live in MapManagement (kImprovementRoad / kImprovementIrrigation).
+    static constexpr uint8_t kWorkNone       = 0;
+    static constexpr uint8_t kWorkRoad       = 1;
+    static constexpr uint8_t kWorkIrrigation = 2;
+    // Per-improvement turn cost. Civ1 has terrain-dependent durations
+    // (e.g. road on Plains is 2 turns, Forest is 4); we use a flat value
+    // for now and note that as a TODO. Mirrors GameData.TerrainModifications
+    // RoadEffect / IrrigationEffect threshold logic at a simplified level.
+    static constexpr int kRoadTurns       = 2;
+    static constexpr int kIrrigationTurns = 4;
+
+    // Start a build-road action on `unitId` (Settlers only). Refuses
+    // (returns false) when the unit isn't a Settlers, is dead, is already
+    // working, is out of bounds, or stands on Water/Arctic. On success the
+    // unit's workTarget becomes kWorkRoad and workTurnsLeft = kRoadTurns;
+    // moveUnit/buildCity will refuse until the work completes (see the
+    // end-of-turn pass in CheckPlayerTurn::processEndOfTurn).
+    bool startBuildRoad(int unitId);
+    // Start a build-irrigation action on `unitId` (Settlers only). Refuses
+    // unless the terrain is Grassland/Plains/Desert (a simplified faithful
+    // subset of GameData.TerrainModifications[t].IrrigationEffect == -2 —
+    // the C# guard that gates the Build Irrigation menu entry).
+    bool startBuildIrrigation(int unitId);
+
+    // ---- units (multi-civ) ----
+    // Append a Unit owned by `owner` (civ index) at (x,y). Returns its index.
+    // The new unit's movePointsLeft is initialized to def.move * 3 (Civ1
+    // "thirds of move" so road steps can deduct 1 instead of 3).
+    int addUnit(int owner, UnitType type, int x, int y);
+
+    // ---- ROAD-MOVEMENT slice helpers ------------------------------------
+    // Per-turn max movement points for unit type t. Civ1 standard: each
+    // MoveCount = 3 movement points (so road steps cost 1 = 1/3 normal).
+    static int unitMovePointsMax(UnitType t) {
+        return unitDefOf(t).move * 3;
+    }
+    // Move cost from (sx,sy) to (dx,dy). Cost = 1 when BOTH endpoints have
+    // the ROAD improvement bit (Civ1 standard); cost = 3 otherwise. The
+    // map argument provides the improvements bitmask lookup. When `mm` is
+    // null the conservative answer is 3 (no road bonus inferred).
+    static constexpr int kMoveCostDefault = 3;
+    static constexpr int kMoveCostRoad    = 1;
+
+    const std::vector<Unit>& units() const { return units_; }
+    std::vector<Unit>& unitsMut() { return units_; }
+
+    // Set a city's current production type AND sync the cached `production`
+    // shield cost from the UnitDef table (so the end-of-turn threshold uses
+    // the freshly-picked unit's cost without the caller doing it manually).
+    // Mirrors the C# CityWorker.cs path that updates City.CurrentProductionID
+    // and re-reads Units[ID].Cost on the next end-of-turn pass.
+    //
+    // TECH-GATED: refuses (returns false, no state change) when the OWNER civ
+    // does not yet know the unit's techPrereq (mirrors the C# build menu's
+    // unbuildable-unit greyout). Settlers/Militia (Tech::None) always build;
+    // Phalanx needs BronzeWorking — see UnitDef table above. Bounds-invalid
+    // city ids also return false.
+    bool setCityProductionType(int cityId, UnitType t);
+
+    // Switch a city's production to a BUILDING. Refuses (returns false) when:
+    //   - cityId is out of range,
+    //   - the city already OWNS this building (Civ1 rule: no duplicates),
+    //   - the building is BuildingType::None.
+    // On success: sets productionKind=Building, productionBuildingType=b,
+    // and syncs `production` to buildingDefOf(b).cost.
+    bool setCityProductionBuilding(int cityId, BuildingType b);
+
+    // ---- Wonders (civ-wide) ---------------------------------------------
+    // Switch a city's production to a WONDER. Refuses (returns false) when:
+    //   - cityId is out of range,
+    //   - the wonder is WonderType::None,
+    //   - the owner civ does not yet know the wonder's techPrereq,
+    //   - the wonder is ALREADY owned by ANY civ in this game (Civ1 rule:
+    //     at most one civ owns each wonder).
+    // On success: productionKind=Wonder, productionWonderType=w, and
+    // `production` syncs to wonderDefOf(w).cost. Existing accumulated
+    // shields are preserved (faithful Civ1 carry-over on production switch).
+    bool setCityProductionWonder(int cityId, WonderType w);
+
+    // Return the civ id that owns wonder `w`, or -1 when unowned (any civ
+    // can still build it). Iterates civs() — O(numCivs * numWonders); cheap.
+    int wonderOwner(WonderType w) const;
+
+    // Return the cityId that BUILT wonder `w` for that civ (the "wonder home"
+    // city), or -1 when the wonder is unowned. Useful for CityView to mark
+    // the home city specially and for tests/UI to report provenance.
+    int wonderOwnerCity(WonderType w) const;
+
+    // Record a wonder completion: set civ.ownedWonders + the owner-city map.
+    // No-op when w == None or civId out of range. When the wonder is already
+    // owned by some civ, this is also a no-op (the completion path should
+    // have checked first; defensive).
+    void recordWonderCompletion(int civId, int cityId, WonderType w);
+
+    // Direct access for GameLoadAndSave to restore the owner-city map.
+    const int* wonderOwnerCityArray() const { return wonderOwnerCity_; }
+    void setWonderOwnerCity(WonderType w, int cityId) {
+        int i = int(w);
+        if (i > 0 && i < kWonderCount) wonderOwnerCity_[i] = cityId;
+    }
+
+    // Combat-modifier helper: returns true when the city at tile (x,y) owned
+    // by `owner` has BuildingType `b`. Used by resolveCombat to apply the
+    // Barracks (+50% attack) and Walls (defender x3) bonuses without leaking
+    // city/tile lookup details into the combat formula.
+    bool tileCityHasBuilding(int owner, int x, int y, BuildingType b) const;
+
+    // ---- COMBAT (faithful Civ1 formula) -----------------------------------
+    // The reference combat path in C# is buried in Segment_25fb (the AI unit
+    // dispatcher) and the per-unit move handler — too obfuscated for a 1:1
+    // port. We use the well-documented Civ1 roll formula (Sid Meier interview
+    // / Civ1 manual / community traces of the original asm):
+    //     attackerRoll = rng() % attackerDef.attack
+    //     defenderRoll = rng() % defenderDef.defense
+    //     if attackerRoll > defenderRoll: defender dies, attacker survives
+    //     else                          : attacker dies (defender wins ties)
+    // The roll inputs use the same MT19937 source the world generator uses
+    // (RandomMT19937 / IRB.RNG.RandomMT19937) so results are deterministic
+    // for a given seed. Returns true when the attacker survives (and should
+    // be moved into the defender's tile by the caller); false when defender
+    // wins (attacker.alive = false, attacker stays put). Both units' .alive
+    // flags are updated in place.
+    //
+    // Edge cases (faithful): attack==0 always loses (attackerRoll forced to
+    // 0, but defenderRoll >= 0 -> defender wins ties). defense==0 is treated
+    // as 1 to avoid div-by-zero (Civ1 has no 0-defense units; Settlers' 0
+    // attack is the only zero stat in this slice).
+    // `defenderInOwnCityWithGreatWall` adds the civ-wide Great Wall city
+    // defense bonus (defender.defense * 3/2) ON TOP of explicit Walls.
+    // It is computed by moveUnit (which knows whether the defender stands
+    // on a city tile owned by its own civ, and whether that civ owns the
+    // Great Wall). Pure-headless callers pass true when testing the bonus.
+    // `defenderTerrain` is the Terrain enum value of the DEFENDER's tile;
+    // resolveCombat looks up its multiplicative defense bonus via
+    // terrainDefenseBonusOf (Hills/Forest/Jungle/Swamp/River = 1.5x,
+    // Mountains = 3.0x, everything else 1.0x — faithful Civ1 manual). All
+    // bonuses stack multiplicatively: defense_eff = defense * veteran *
+    // walls * greatwall * terrain * fortified, then truncated to int for
+    // the standard rng()%def roll. Default int(-1) means "no terrain
+    // provider attached" -> skip the terrain bonus (back-compat for the
+    // pre-FORTIFY combattest/wondertest call sites that don't pass it).
+    static bool resolveCombat(Unit& attacker, Unit& defender,
+                              uint32_t& rngState,
+                              bool defenderHasWalls = false,
+                              bool defenderInOwnCityWithGreatWall = false,
+                              int defenderTerrain = -1);
+
+    // ---- Terrain defense bonus (Civ1 manual) ----------------------------
+    // Multiplicative defender bonus by terrain — faithful Civ1 manual
+    // values. Hills, Forest, Jungle, Swamp, River = 1.5x; Mountains = 3.0x;
+    // Grassland/Plains/Desert/Tundra/Arctic/Water = 1.0x. Used by
+    // resolveCombat and the HUD/CityView "Terrain bonus" line.
+    static float terrainDefenseBonusOf(int terrainEnum);
+
+    // ---- FORTIFY (Civ1 +50% defense, 1-turn engage cycle) ---------------
+    // Issue a Fortify command for unit `unitId`. Faithful Civ1 rules:
+    //   - unit must be alive,
+    //   - unit must not already be fortifying or fortified,
+    //   - unit must not be mid-improvement (workTurnsLeft > 0).
+    // On success: fortifying=true, movePointsLeft=0 (the act of digging in
+    // consumes this turn's movement; the unit can't also walk this turn).
+    // CheckPlayerTurn::processEndOfTurn promotes fortifying->fortified at
+    // the top of the NEXT turn. Returns true on success, false when the
+    // command was refused.
+    bool startFortify(int unitId);
+
+    // moveUnit: move a unit by (dx,dy) by ONE step. When the destination tile
+    // has an enemy alive unit, runs combat instead of moving (see resolveCombat).
+    // Returns the new alive state of the moving unit (true == survived). Out-of-
+    // bounds destinations are a no-op (returns true, unit not moved). Combat
+    // outcome side-effects:
+    //   - attacker wins -> defender.alive = false; attacker moves into the tile
+    //   - defender wins -> attacker.alive = false; attacker stays put
+    bool moveUnit(int unitId, int dx, int dy);
+
+    // ---- AI MOVEMENT (faithful greedy approximation) ---------------------
+    // findNearestEnemy: scans units_ for alive units owned by a different civ,
+    // and scans cities_ for cities owned by a different civ. Returns the
+    // Chebyshev-nearest target's tile in (tx,ty). Returns the unit id of the
+    // nearest enemy UNIT, or -2 if a city is the nearest target, or -1 when
+    // no target exists. Ties: cities are scanned after units, so unit targets
+    // win on equal distance (first-found wins within a category).
+    //
+    // The full Civ1 AI (Segment_25fb.F0_25fb_0c9d, ~359KB of x86) chooses
+    // targets using a weighted score over (distance, strength, terrain,
+    // diplomacy, ...). We use the well-documented "greedy Chebyshev nearest"
+    // heuristic as a faithful first-cut — this is the same shape every
+    // public Civ1 AI reverse-engineering write-up uses for the "advance on
+    // nearest threat" behaviour.
+    int findNearestEnemy(int unitId, int& tx, int& ty) const;
+
+    // aiStep: find nearest enemy and take ONE step toward it. Computes
+    // dx = sign(tx-ux), dy = sign(ty-uy) (each in {-1,0,1}) and calls
+    // moveUnit; if the step lands on an enemy tile, the existing combat
+    // resolution fires. Returns true when a step (or combat) occurred,
+    // false when no target exists or the unit is dead.
+    bool aiStep(int unitId);
+
+    // ---- AI EXPANSION (faithful greedy approximation) -------------------
+    // pickAiCityProduction: chooses what an AI city should next build.
+    // Faithful "expand vs. defend" heuristic — the C# Segment_25fb city
+    // picker is 359KB of x86 and OUT OF SCOPE; this is the documented
+    // simplification that lets AI civs ACTUALLY EXPAND past their capital
+    // (the gameplay goal). Rules (per AI city, per call):
+    //   * Prefer Settlers when: the owner civ has fewer than kAiSettlerMaxCities
+    //     (4), the city pop >= 2 (don't starve at pop=1 — Settlers cost 1
+    //     pop), AND no Settlers unit owned by this civ is currently alive
+    //     (i.e. no idle/in-motion expansion already underway).
+    //   * Otherwise pick the highest-attack tech-known combat unit
+    //     (Settlers excluded; ties broken in enum order; falls back to
+    //     Militia when nothing else qualifies).
+    static constexpr int kAiSettlerMaxCities = 4;
+    UnitType pickAiCityProduction(int civId, const City& c) const;
+
+    // findAiSettlerTarget: scan the map for a valid land tile at Chebyshev
+    // distance >= kAiSettlerMinSpacing (6) from ALL existing cities of any
+    // civ. Returns the Chebyshev-nearest such tile to the Settler at
+    // (sx, sy) in (tx, ty); returns false when no valid target exists.
+    // Land tiles considered valid: Grassland/Plains/Hills/Desert (matches
+    // the simplified "founding spot" filter; Mountains/Forest/Jungle/Swamp
+    // get a softer penalty but are also accepted as fallback).
+    static constexpr int kAiSettlerMinSpacing = 6;
+    bool findAiSettlerTarget(int sx, int sy, int& tx, int& ty) const;
+
+    // aiSettlerStep: drive ONE step of the AI Settlers' expansion behaviour.
+    //   * Out-of-range / dead / not-Settlers / working: returns false.
+    //   * If the Settler IS already standing on a valid founding tile
+    //     (distance >= kAiSettlerMinSpacing from ALL cities AND valid
+    //     terrain): call buildCity, mark unit dead, return true.
+    //   * Else find the nearest valid target and aiStep(dx,dy) toward it
+    //     via moveUnit. When no target exists, the Settler sits (returns
+    //     false; the AI doesn't move randomly).
+    bool aiSettlerStep(int unitId);
+
+    // The last combat outcome (English key for the HUD): "" / "Victory" /
+    // "Defeat" / "Battle" (in-progress). MiniWorld reads this for the HUD line.
+    const std::string& lastCombatKey() const { return lastCombatKey_; }
+    void setLastCombatKey(std::string k) { lastCombatKey_ = std::move(k); }
+
+    // ---- DIPLOMACY (faithful subset of GameData.Diplomacy[N,N]) ---------
+    // Pairwise relations matrix, sized NxN where N = civs_.size(). Initialised
+    // to NoContact off-diagonal, Peace on the diagonal (a civ is never at war
+    // with itself). setupCivs() reshapes this; helpers below maintain symmetry.
+    Relation getRelation(int civA, int civB) const;
+    // Symmetric write: sets both (A,B) and (B,A). Self-set (A==B) coerces to
+    // Peace (the diagonal invariant). Out-of-range civ ids are a no-op.
+    void setRelation(int civA, int civB, Relation r);
+    // Convenience: is the (civA, civB) pair at War? Bounds-safe (returns
+    // false for out-of-range ids — non-existent civ can't be a combatant).
+    bool isAtWar(int civA, int civB) const;
+    // meetCheck: scan every (civA, civB) pair where civA<civB; if any of
+    // civA's units OR cities is within Chebyshev distance <= kMeetRange of
+    // ANY of civB's units OR cities, upgrade NoContact -> Peace (symmetric).
+    // Returns the count of pairs whose relation was flipped this call (0
+    // means "no new contacts this turn"). Existing Peace/War are untouched.
+    // Idempotent across calls (re-running it after no movement returns 0).
+    // O((units+cities)^2) — fine for the 8-civ Civ1 cap.
+    static constexpr int kMeetRange = 2; // Chebyshev distance for "in sight"
+    int meetCheck();
+    // The "rival civ" the player most recently interacted with (used by the
+    // SDL W/P keys to know which civ to declare war on / make peace with).
+    // Defaults to 1 (civ 1) — the simplest UX choice for tests + first cut;
+    // setSelectedRivalCiv() lets a fuller HUD cycle through rivals.
+    int selectedRivalCiv() const { return selectedRivalCiv_; }
+    void setSelectedRivalCiv(int civId) { selectedRivalCiv_ = civId; }
+    // AI diplomacy decision (called at end-of-turn for each AI civ). If the
+    // AI is at Peace with the human AND humanUnits > 2*aiUnits, AI rolls a
+    // deterministic seeded RNG; on hit it sets the relation to War. Returns
+    // true when AI declared war this call. RNG is seeded from (turn, civId)
+    // so tests are reproducible.
+    bool aiDecideDeclareWar(int aiCivId, int humanCivId, int turn);
+
+    // Deterministic RNG state for combat rolls (seeded from the world seed in
+    // FrontEndFlow::enterPlaying; tests inject a known seed via setCombatRngSeed
+    // so the win-rate statistics are reproducible). Public so tests can read
+    // the post-roll state for assertions.
+    uint32_t combatRngState() const { return combatRng_; }
+    void setCombatRngSeed(uint32_t s) { combatRng_ = s ? s : 1u; }
+
+private:
+    OpenCiv1Game& p;
+    std::vector<City> cities_;
+    std::vector<Unit> units_;     // multi-civ units (Settlers for now)
+    std::vector<CivState> civs_;  // human is civs_[0], AI civs follow
+    int mapW_ = 80, mapH_ = 50;
+    int chosenTribe_ = -1;
+    std::function<Terrain(int, int)> terrainAt_;
+    int year_ = -4000; // StartGameMenu.cs line 124: GameData.Year = -4000
+    uint32_t combatRng_ = 0xCAFEBABEu; // tests override via setCombatRngSeed
+    std::string lastCombatKey_;        // "" / "Victory" / "Defeat"
+    // Per-wonder owner cityId. -1 means "unowned (any civ may build it)".
+    // Index 0 (WonderType::None) is unused but kept for indexing parity with
+    // the enum's numeric values.
+    int wonderOwnerCity_[kWonderCount] = { -1, -1, -1, -1, -1 };
+
+    // ---- DIPLOMACY ------------------------------------------------------
+    // Pairwise relations matrix (NxN where N = civs_.size()). Reshaped to
+    // match civs_ in setupCivs(); GameLoadAndSave restores it from disk
+    // (v8). All off-diagonal entries start at NoContact, diagonals at Peace.
+    // Maintained symmetric by setRelation().
+    std::vector<std::vector<Relation>> relations_;
+    // The civ id the player's UI currently targets for W/P (Declare War /
+    // Make Peace) keys. Default = 1 (first AI civ) so single-rival tests
+    // and small games "just work" without a rival-selection UI.
+    int selectedRivalCiv_ = 1;
+
+public:
+    // Direct write access used by GameLoadAndSave to restore the relations
+    // matrix from disk after civs_ has been restored. Resizes to NxN.
+    void resizeRelations(int n);
+    // Public read of the raw matrix for GameLoadAndSave.
+    const std::vector<std::vector<Relation>>& relationsRaw() const {
+        return relations_;
+    }
+};
+
+} // namespace oc1

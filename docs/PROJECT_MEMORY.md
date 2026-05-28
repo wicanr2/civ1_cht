@@ -208,3 +208,26 @@ otvdm v0.9.0 跟 1993 Civ for Windows 之間有確定 bug：
 - `docs/screenshots/03_intro_jeffery_briggs.png` / `04_intro_harry_teasley_after_phase2.png` — Phase 2 字幕對比
 - `docs/screenshots/05_intro_music_by_phase3.png` — Phase 3 build 跑 intro
 - `docs/screenshots/06_title_screen_phase3.png` — WSLg input 卡點
+
+---
+
+## Track B — C++/SDL2 原生重寫（openciv1pp/，2026-05-26~28）
+
+把 OpenCiv1（1991 DOS Civ 的 C#/Avalonia 重寫，MIT）改寫成 **C++17 + SDL2** 並原生中文化。原始碼 `openciv1pp/`。**注意**：與 Track A（1993 Win16 binary patch）是不同路線、不同 binary；共用的是翻譯內容（zh_TW.json 由 Track A 的 data/*.json 經 build_zh_table.py 產生）。
+
+### 已完成且驗證（ctest 16/16，-Wall -Wextra 零警告）
+- **引擎**：VCPU（全 x86 指令集+C/Z/S/D/O 旗標，方法名對齊 VCPU.cs）、GBitmap（palette framebuffer + 繪圖原語）、GDriver（多螢幕/字型/螢幕合成/F0_VGA_* 入口）、`.pic` codec（RLE+LZW+18bit palette，像素級 round-trip）、`.txt` section 載入、Translator+FreeType MONO CJK（DrawString chokepoint 注入）、SdlPresenter（視窗+鍵盤）。
+- **8 個 CodeObjects 移植**：DrawTools / ImageTools / LanguageTools / CommonTools / MenuBoxDialog(+nav) / TextBoxDialogs / GameMenus + FrontEndFlow 串接。
+- **可立即執行**：`./build/openciv1pp --menuflow` = 鍵盤導覽的全中文 主選單→難度→開始 流程。截圖在 openciv1pp/docs/screenshots/。
+
+### 關鍵技術雷區
+- CJK 必須用 FreeType **MONO**（hinted 1-bit）非灰階門檻——palette 無 alpha，門檻會把細筆畫砍成斜碎片。
+- UTF-8 三路徑 drawString：<0x80 ASCII 點陣字 / 0x80-0xFF 行內換色碼 / ≥0x100 CJK（FreeType）。
+- 翻譯在 GDriver.drawString / DrawTools 注入（非 GBitmap 層）——CodeObject 文字必須走這兩條才會中文化。
+- ctest cwd 是 build/：localization 測試靠 `set_tests_properties(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})` 才找得到 assets/zh_TW.json。
+
+### 移植模式（其餘 ~30 個 CodeObject 照做）
+讀 C# CodeObject → 在 src/game/ 開對應類別取 `OpenCiv1Game&` → 用 cpu/graphics/var_aa 照抄、保留 F0_* 名 → 加 `--xxxtest`（含 translate-on vs -off 像素差證明中文）→ 註冊進 CMake foreach + `--test` 聚合器。建議用 sub-agent 委派（避免主上下文 prompt too long）。
+
+### 剩餘（通往完整可玩）
+模擬主體 ~30+ CodeObjects（地圖/城市/單位/戰鬥/AI/回合，含 Segment_25fb 359KB、CityWorker 158KB 等）+ boot path（MainCode/StartGameMenu/MainIntro）+ 使用者自備正版 Civ1 DOS 資產（.pic/.pal/.txt）。多週長征。

@@ -37,6 +37,43 @@
 | **5** | Win10 portable SFX 嘗試 | ⚠️ **otvdm v0.9.0 + Civ1 SEGV bug 卡住**，已轉走 WSL+wine 路線（見下方說明） |
 | 6 | 256-color shim | ⏸ 預期不需要 |
 
+> **Track A（上表）= 1993 Win16 原版二進位 patch 路線。**
+> **Track B（下方新增）= 把 [OpenCiv1](https://codeberg.org/rhorvat/OpenCiv1)（1991 DOS 版的 C#/Avalonia 重寫）改寫成 C++ + SDL2 並原生中文化** — 見 [`openciv1pp/`](openciv1pp/) 子專案。
+
+---
+
+<a name="cpp-port"></a>
+## 🛠️ Track B — C++ / SDL2 原生重寫（`openciv1pp/`）
+
+把 OpenCiv1（MIT，1991 DOS Civ 的 C# 重寫）逐步改寫成 **C++17 + SDL2**，並把中文化做進引擎（palette 層合成 CJK 字模，與顯示後端無關）。原始碼在 [`openciv1pp/`](openciv1pp/)，詳見其 [README](openciv1pp/README.md)。
+
+### 已完成且驗證（`ctest` 16/16 全綠，`-Wall -Wextra` 零警告）
+
+| 層 | 內容 | 驗證 |
+|------|------|------|
+| **VCPU** | 16-bit x86 虛擬 CPU：全指令集 + C/Z/S/D/O 旗標，方法名對齊 OpenCiv1 `VCPU.cs`（移植近乎逐行）| `--selftest` |
+| **GBitmap** | palette framebuffer + 繪圖原語（line/fill/rect/replaceColor/drawBitmap 透明+裁切）| `--gfxtest` |
+| **GDriver** | 多螢幕 + 字型註冊 + 螢幕合成 + `F0_VGA_*` 入口 | `--gdtest` `--compositetest` |
+| **資源** | `.pic` codec（RLE+LZW+18bit palette，像素級 round-trip）、`.txt` section 讀取 | `--restest` `--txttest` |
+| **中文化** | `Translator`（zh_TW.json）+ FreeType MONO CJK 字模，於 `DrawString` chokepoint 注入 | 各 render 測試 |
+| **CodeObjects** | DrawTools / ImageTools / LanguageTools / CommonTools / MenuBoxDialog / TextBoxDialogs / GameMenus（8 個，1:1 移植）| `--drawtest` `--menutest` … |
+| **互動前端** | `FrontEndFlow`：主選單 → 難度 → 開始（Civ1 開場序列，鍵盤可操作、**全中文**）| `--flowtest` |
+
+### 立即可執行（不需版權資產）
+
+```bash
+sudo apt install build-essential cmake libsdl2-dev libfreetype-dev fonts-arphic-uming
+cd openciv1pp && cmake -S . -B build && cmake --build build
+./build/openciv1pp --menuflow   # 鍵盤導覽的全中文 主選單→難度→開始 流程
+ctest --test-dir build          # 16/16 自測
+```
+
+實機中文截圖：[`openciv1pp/docs/screenshots/`](openciv1pp/docs/screenshots/)（menubox / textbox / demo）。
+
+### 誠實的剩餘工作
+
+「完整可玩」還需移植**模擬主體 ~30+ 個 CodeObjects**（地圖/城市/單位/戰鬥/外交/回合迴圈/AI，含 `Segment_25fb` 359KB、`CityWorker` 158KB 等大檔）+ boot path（`MainCode`/`StartGameMenu`/`MainIntro`），且實際執行需使用者自備正版 Civ1 DOS 資產（`.pic/.pal/.txt`，著作權，不在 repo）。引擎 + UI 殼 + 中文化已是穩固地基；移植已機械化（VCPU API 對齊 C#、harness 與測試模式確立）。
+
 ---
 
 <a name="origin"></a>
