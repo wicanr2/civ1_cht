@@ -28,8 +28,10 @@
 //   - music / sound / timer      : InitSound/PlayTune/StopTimer are no-ops.
 //   - mouse show/hide hardware   : the CommonTools mouse cursor calls are no-ops
 //                                  (only the hide-count is tracked).
-//   - new-game / map internals   : GenerateMap, NewGameMenu, the game-type
-//                                  switch bodies (cases 0..4) are NOT ported.
+//   - new-game / map internals   : GenerateMap and the game-type switch bodies
+//                                  (cases 0..4) are NOT ported. NewGameMenu has
+//                                  its MENU-BUILDING parts (difficulty, tribe)
+//                                  ported below.
 #pragma once
 #include "OpenCiv1Game.h"
 #include <string>
@@ -60,6 +62,51 @@ public:
 
     // The authentic main-menu items (English keys; localized at draw time).
     static const std::vector<std::string>& mainMenuItems();
+
+    // The authentic difficulty-level items (English keys; localized at draw time)
+    // ported from the C# F5_0000_0000_InitNewGameData menu string:
+    //   "Difficulty Level...\n Chieftain (easiest)\n Warlord\n Prince\n King\n Emperor (toughest)\n"
+    static const std::vector<std::string>& difficultyItems();
+
+    // One Civ1 nation/leader pair. Mirrors NationDefinition (id, leader,
+    // nationality, nation): NationDefinition IDs 1..7 and 9..15 are the 14
+    // playable tribes (ID 0 = Barbarians, ID 8 = unused placeholder).
+    struct Nation {
+        int id;                  // NationDefinition.ID (1..7, 9..15)
+        std::string leader;      // e.g. "Caesar"
+        std::string nationality; // e.g. "Roman"
+        std::string nation;      // e.g. "Romans"
+    };
+
+    // The 14 playable Civ1 nations in the order the new-game tribe menu shows
+    // them (NationDefinition IDs 1..7, then 9..15 — exactly what the C# tribe
+    // list build loop in F5_0000_0000_InitNewGameData emits for the default 7
+    // AI opponents).
+    static const std::vector<Nation>& tribes();
+
+    // F0_11a8_087c_NewGameMenu — the new-game flow's MENU-BUILDING.
+    //
+    // Ported from MainCode.cs F0_11a8_087c_NewGameMenu + the menu-building
+    // halves of StartGameMenu.F5_0000_0000_InitNewGameData (the difficulty and
+    // tribe menu strings). The deep game-state setup (Players[]/Nations[]/
+    // GameSettingFlags/Cities[]/MapVisibility/Tech ...) and the cursor/sound/
+    // RNG bookkeeping are STUBs — see // TODO(port) markers below.
+    //
+    // Drives the menus through the (already-ported) MenuBoxDialog so every
+    // option draws in Chinese for free. The blocking input loops are replaced
+    // by `forcedDifficulty` / `forcedTribeIndex` (mirrors MenuBoxDialog::
+    // forcedSelection) so the flow is verifiable headlessly. `chosenName`, if
+    // empty, defaults to the leader name of the chosen tribe.
+    //
+    // Returns true on success (a difficulty + tribe were picked). Out-params:
+    //   *outDifficulty : 0..4 (Chieftain..Emperor)
+    //   *outTribeIndex : 0..13 (index into tribes())
+    //   *outName       : the captured name (defaulted to the tribe's leader)
+    bool F0_11a8_087c_NewGameMenu(int forcedDifficulty, int forcedTribeIndex,
+                                  const std::string& chosenName,
+                                  int* outDifficulty,
+                                  int* outTribeIndex,
+                                  std::string* outName);
 
     // Resolve the title logo path against the game's resourcePath(). Returns the
     // full path whether or not the file exists (caller checks existence).

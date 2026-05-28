@@ -49,7 +49,7 @@ target_compile_options(openciv1pp PRIVATE ${SDL2_CFLAGS_OTHER} ${FREETYPE_CFLAGS
 
 # Headless self-tests as CTest cases (run: ctest --test-dir build --output-on-failure)
 enable_testing()
-foreach(t selftest restest gfxtest gdtest compositetest paltest drawtest imgtest langtest txttest menutest navtest commontest textboxtest flowtest gamemenutest playtest maptest titletest)
+foreach(t selftest restest gfxtest gdtest compositetest paltest drawtest imgtest langtest txttest menutest navtest commontest textboxtest flowtest gamemenutest playtest maptest titletest newgametest)
   add_test(NAME ${t} COMMAND openciv1pp --${t})
   # tests load assets/zh_TW.json by relative path -> run them from the project root
   set_tests_properties(${t} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})

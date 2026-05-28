@@ -984,7 +984,7 @@ static int menuInteractive() {
 // ---------------- front-end start-sequence flow ----------------
 // FrontEndFlow composes MenuBoxDialog (Chinese menu + navStep) and
 // TextBoxDialogs into Civ1's start sequence:
-//   MAIN_MENU -> DIFFICULTY -> STARTING (message box) -> DONE.
+//   TITLE -> MAIN_MENU -> DIFFICULTY -> TRIBE -> NAME -> STARTING -> DONE.
 
 // Headless flow transition test. Drives the PURE FrontEndFlow::handleKey() and
 // asserts the state machine, the remembered difficulty, ESC-back, and that the
@@ -1005,14 +1005,20 @@ static int flowtest() {
         State s = flow.handleKey(MenuBoxDialog::KeyEnter);
         chk(s == State::DIFFICULTY, "ENTER on item 0 -> DIFFICULTY");
 
-        // DOWN x4, ENTER -> STARTING with chosenDifficulty == 4 (Emperor).
+        // DOWN x4, ENTER -> TRIBE with chosenDifficulty == 4 (Emperor).
         flow.handleKey(MenuBoxDialog::KeyDown);
         flow.handleKey(MenuBoxDialog::KeyDown);
         flow.handleKey(MenuBoxDialog::KeyDown);
         flow.handleKey(MenuBoxDialog::KeyDown);
         s = flow.handleKey(MenuBoxDialog::KeyEnter);
-        chk(s == State::STARTING, "DOWNx4 + ENTER -> STARTING");
+        chk(s == State::TRIBE, "DOWNx4 + ENTER -> TRIBE");
         chk(flow.chosenDifficulty() == 4, "chosenDifficulty == 4 (Emperor)");
+
+        // ENTER on tribe 0 -> NAME, then ENTER -> STARTING.
+        s = flow.handleKey(MenuBoxDialog::KeyEnter);
+        chk(s == State::NAME, "ENTER on a tribe -> NAME");
+        s = flow.handleKey(MenuBoxDialog::KeyEnter);
+        chk(s == State::STARTING, "ENTER on NAME -> STARTING");
 
         // Any key dismisses the STARTING message box -> DONE.
         s = flow.handleKey(MenuBoxDialog::KeyEnter);
@@ -1071,6 +1077,168 @@ static int flowtest() {
         std::printf("FLOWTEST: all pass (FrontEndFlow start-sequence state machine; "
                     "%zu localized pixels differ)\n", diffPixels);
     return fail ? 1 : 0;
+}
+
+// ---------------- new-game flow (title -> difficulty -> tribe -> name -> start) ----------------
+// Headless verification of the full ported new-game flow. Drives
+// FrontEndFlow::handleKey() from MAIN_MENU through DIFFICULTY -> TRIBE ->
+// NAME -> STARTING, asserts the captured chosenDifficulty / chosenTribe /
+// chosenName, ESC-back, and renders the DIFFICULTY menu twice (translate on
+// vs off) to prove the labels are Chinese (the localization pixel-diff).
+static int newgametest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    OpenCiv1Game g;
+    setupGame(g, 320, 200);
+
+    // 1) Full transition: MAIN_MENU -> DIFFICULTY (Prince) -> TRIBE (Romans) ->
+    //    NAME (default = "Caesar") -> STARTING -> DONE.
+    {
+        FrontEndFlow flow(g);
+        chk(flow.state() == State::MAIN_MENU, "starts in MAIN_MENU");
+        chk(flow.handleKey(MenuBoxDialog::KeyEnter) == State::DIFFICULTY,
+            "ENTER 'Start a New Game' -> DIFFICULTY");
+
+        // DOWNx2, ENTER picks Prince (index 2) and advances to TRIBE.
+        flow.handleKey(MenuBoxDialog::KeyDown);
+        flow.handleKey(MenuBoxDialog::KeyDown);
+        State s = flow.handleKey(MenuBoxDialog::KeyEnter);
+        chk(s == State::TRIBE, "ENTER on a difficulty -> TRIBE");
+        chk(flow.chosenDifficulty() == 2, "chosenDifficulty == 2 (Prince)");
+
+        // ENTER on tribe 0 (Romans) -> NAME.
+        s = flow.handleKey(MenuBoxDialog::KeyEnter);
+        chk(s == State::NAME, "ENTER on a tribe -> NAME");
+        chk(flow.chosenTribe() == 0, "chosenTribe == 0 (Romans)");
+
+        // ENTER on NAME -> STARTING with chosenName == "Caesar" (tribe leader).
+        s = flow.handleKey(MenuBoxDialog::KeyEnter);
+        chk(s == State::STARTING, "ENTER on NAME -> STARTING");
+        chk(flow.chosenName() == "Caesar",
+            "chosenName defaulted to the tribe's leader (Caesar)");
+
+        // Dismiss STARTING -> DONE.
+        s = flow.handleKey(MenuBoxDialog::KeyEnter);
+        chk(s == State::DONE, "key on STARTING -> DONE");
+    }
+
+    // 2) ESC backs up: TRIBE ESC -> DIFFICULTY; NAME ESC -> TRIBE.
+    {
+        FrontEndFlow flow(g);
+        flow.handleKey(MenuBoxDialog::KeyEnter);     // -> DIFFICULTY
+        flow.handleKey(MenuBoxDialog::KeyEnter);     // -> TRIBE
+        State s = flow.handleKey(MenuBoxDialog::KeyEsc);
+        chk(s == State::DIFFICULTY, "ESC in TRIBE -> DIFFICULTY");
+        flow.handleKey(MenuBoxDialog::KeyEnter);     // -> TRIBE again
+        flow.handleKey(MenuBoxDialog::KeyEnter);     // -> NAME
+        s = flow.handleKey(MenuBoxDialog::KeyEsc);
+        chk(s == State::TRIBE, "ESC in NAME -> TRIBE");
+    }
+
+    // 3) Localization proof: render the DIFFICULTY menu twice (Translator on
+    //    vs off); pixel buffers must differ (Chinese labels visibly change).
+    auto renderDifficulty = [&](bool translate) -> std::vector<uint8_t> {
+        OpenCiv1Game gg;
+        setupGame(gg, 320, 200);
+        Translator::instance().enabled = translate;
+        FrontEndFlow flow(gg);
+        flow.handleKey(MenuBoxDialog::KeyEnter);     // MAIN_MENU -> DIFFICULTY
+        flow.draw();
+        return gg.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> zh = renderDifficulty(true);
+    std::vector<uint8_t> en = renderDifficulty(false);
+    chk(zh.size() == en.size() && !zh.empty(), "both difficulty renders produced a buffer");
+    std::size_t diffPixels = 0;
+    for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+        if (zh[i] != en[i]) ++diffPixels;
+    chk(diffPixels > 0, "DIFFICULTY menu Chinese vs English pixels DIFFER");
+
+    // 4) MainCode::F0_11a8_087c_NewGameMenu: a direct call with forced choices
+    //    returns the captured difficulty/tribe/name (default = leader). This
+    //    exercises the ported menu-building code path end-to-end.
+    {
+        OpenCiv1Game gg; setupGame(gg, 320, 200);
+        Translator::instance().enabled = true;
+        int d = -1, t = -1; std::string n;
+        bool ok = gg.mainCode().F0_11a8_087c_NewGameMenu(
+            /*forcedDifficulty*/ 4, /*forcedTribeIndex*/ 13,
+            /*chosenName*/ "", &d, &t, &n);
+        chk(ok && d == 4 && t == 13 && n == "Genghis Khan",
+            "F0_11a8_087c_NewGameMenu captures forced choices + default name");
+    }
+
+    // 5) Dump the localized TRIBE menu for eyeballing.
+    {
+        OpenCiv1Game gg; setupGame(gg, 320, 200);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow(gg);
+        flow.handleKey(MenuBoxDialog::KeyEnter);  // -> DIFFICULTY
+        flow.handleKey(MenuBoxDialog::KeyEnter);  // -> TRIBE
+        flow.draw();
+        dumpPPM(gg.graphics.screen(0), "/tmp/newgame_tribe.ppm");
+    }
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail)
+        std::printf("NEWGAMETEST: %d failure(s)\n", fail);
+    else
+        std::printf("NEWGAMETEST: all pass (new-game flow TITLE/MAIN/DIFFICULTY/"
+                    "TRIBE/NAME/STARTING; %zu localized pixels differ)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
+// Interactive Chinese new-game flow (SDL). setupGame, translation ON, optional
+// LOGO.PIC via --assets <dir>; runs the full TITLE -> ... -> STARTING flow,
+// printing each state transition + the final chosen difficulty / tribe / name.
+static int newgameInteractive(const std::string& assetDir) {
+    OpenCiv1Game g;
+    setupGame(g, 320, 200);
+    Translator::instance().enabled = true;
+    if (!assetDir.empty()) g.setResourcePath(assetDir);
+
+    GBitmap& fb = g.graphics.screen(0);
+    SdlPresenter pres;
+    if (!pres.init("OpenCiv1++ New Game (zh-TW)", fb.width(), fb.height(), 3)) return 1;
+
+    FrontEndFlow flow(g);
+    flow.enterTitle();              // start at the logo+menu splash.
+    auto stateName = [](FrontEndFlow::State s) -> const char* {
+        switch (s) {
+            case FrontEndFlow::State::TITLE:      return "TITLE";
+            case FrontEndFlow::State::MAIN_MENU:  return "MAIN_MENU";
+            case FrontEndFlow::State::DIFFICULTY: return "DIFFICULTY";
+            case FrontEndFlow::State::TRIBE:      return "TRIBE";
+            case FrontEndFlow::State::NAME:       return "NAME";
+            case FrontEndFlow::State::STARTING:   return "STARTING";
+            case FrontEndFlow::State::DONE:       return "DONE";
+            case FrontEndFlow::State::QUIT:       return "QUIT";
+        }
+        return "?";
+    };
+    flow.draw();
+
+    while (true) {
+        if (!pres.present(fb)) break;
+        int key = pres.pollKey();
+        if (key == 0) continue;
+        FrontEndFlow::State prev = flow.state();
+        FrontEndFlow::State s = flow.handleKey(key);
+        if (s != prev) std::printf("[newgame] -> %s\n", stateName(s));
+        if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT) {
+            flow.draw(); pres.present(fb); break;
+        }
+        flow.draw();
+    }
+    pres.shutdown();
+    std::printf("[newgame] ended in %s; difficulty=%d tribe=%d name=\"%s\"\n",
+                stateName(flow.state()),
+                flow.chosenDifficulty(), flow.chosenTribe(),
+                flow.chosenName().c_str());
+    return 0;
 }
 
 // ---------------- GameMenus (in-game top-menu system CodeObject) ----------------
@@ -1208,8 +1376,11 @@ static int menuflowInteractive() {
     FrontEndFlow flow(g);
     auto stateName = [](FrontEndFlow::State s) -> const char* {
         switch (s) {
+            case FrontEndFlow::State::TITLE:      return "TITLE";
             case FrontEndFlow::State::MAIN_MENU:  return "MAIN_MENU";
             case FrontEndFlow::State::DIFFICULTY: return "DIFFICULTY";
+            case FrontEndFlow::State::TRIBE:      return "TRIBE";
+            case FrontEndFlow::State::NAME:       return "NAME";
             case FrontEndFlow::State::STARTING:   return "STARTING";
             case FrontEndFlow::State::DONE:       return "DONE";
             case FrontEndFlow::State::QUIT:       return "QUIT";
@@ -1730,7 +1901,7 @@ static void drawScene(OpenCiv1Game& g) {
 
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
-    bool play = false, title = false;
+    bool play = false, title = false, newgame = false;
     const char* dumpPath = nullptr;
     const char* picPath = nullptr;
     const char* gfxDumpPath = nullptr;
@@ -1740,6 +1911,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--assets") && i + 1 < argc) { assetsDir = argv[++i]; }
         else if (!std::strcmp(argv[i], "--play")) { play = true; }
         else if (!std::strcmp(argv[i], "--title")) { title = true; }
+        else if (!std::strcmp(argv[i], "--newgame")) { newgame = true; }
         else if (!std::strcmp(argv[i], "--pic") && i + 1 < argc) picPath = argv[++i];
         else if (!std::strcmp(argv[i], "--gfxdraw") && i + 1 < argc) gfxDumpPath = argv[++i];
         else if (!std::strcmp(argv[i], "--english")) english = true;
@@ -1762,6 +1934,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--playtest")) { return playtest(); }
         else if (!std::strcmp(argv[i], "--maptest")) { return maptest(); }
         else if (!std::strcmp(argv[i], "--titletest")) { return titletest(); }
+        else if (!std::strcmp(argv[i], "--newgametest")) { return newgametest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             const char* dir = argv[++i]; const char* out = argv[++i];
@@ -1796,11 +1969,19 @@ int main(int argc, char** argv) {
         return titleInteractive(resolveAssetDir(assetsDir));
     }
 
+    // --newgame: the full Chinese new-game flow in one SDL window — TITLE
+    // (LOGO.PIC when assets present, fallback otherwise) -> MAIN_MENU ->
+    // DIFFICULTY -> TRIBE -> NAME -> STARTING. Prints state transitions +
+    // the captured difficulty/tribe/name at the end.
+    if (newgame) {
+        return newgameInteractive(resolveAssetDir(assetsDir));
+    }
+
     // run the whole headless suite; nonzero if any fails (CI entry point)
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
