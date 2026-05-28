@@ -57,6 +57,13 @@ public:
 
     bool moveUnit(int dx, int dy);
 
+    // Place the unit at an explicit map cell. Clamps to [0,w)x[0,h). Used by
+    // the integrated --game flow to drop the Settlers on a chosen starting tile
+    // (selected by FrontEndFlow after useRealGenerator). Returns true if the
+    // coords were in bounds (i.e. the unit was placed exactly there); false if
+    // they had to be clamped.
+    bool setUnitPosition(int x, int y);
+
     // End-of-turn: increments the turn counter AND, when a host game is
     // attached, calls CheckPlayerTurn::processEndOfTurn() (per-civ city pass:
     // shield accumulation + threshold-triggered unit production, then advances

@@ -1190,9 +1190,11 @@ static int flowtest() {
         s = flow.handleKey(MenuBoxDialog::KeyEnter);
         chk(s == State::STARTING, "ENTER on NAME -> STARTING");
 
-        // Any key dismisses the STARTING message box -> DONE.
+        // Any key on STARTING transitions into the live PLAYING state (the
+        // integrated --game flow); the legacy DONE terminal is no longer
+        // reachable from here — PLAYING owns the live MiniWorld.
         s = flow.handleKey(MenuBoxDialog::KeyEnter);
-        chk(s == State::DONE, "key on STARTING -> DONE");
+        chk(s == State::PLAYING, "key on STARTING -> PLAYING");
     }
 
     // 2) Fresh flow + (in DIFFICULTY) ESC -> back to MAIN_MENU.
@@ -1289,9 +1291,10 @@ static int newgametest() {
         chk(flow.chosenName() == "Caesar",
             "chosenName defaulted to the tribe's leader (Caesar)");
 
-        // Dismiss STARTING -> DONE.
+        // Dismiss STARTING -> PLAYING (the integrated --game flow enters the
+        // live MiniWorld here; the legacy DONE terminal is no longer reachable).
         s = flow.handleKey(MenuBoxDialog::KeyEnter);
-        chk(s == State::DONE, "key on STARTING -> DONE");
+        chk(s == State::PLAYING, "key on STARTING -> PLAYING");
     }
 
     // 2) ESC backs up: TRIBE ESC -> DIFFICULTY; NAME ESC -> TRIBE.
@@ -1384,6 +1387,7 @@ static int newgameInteractive(const std::string& assetDir) {
             case FrontEndFlow::State::TRIBE:      return "TRIBE";
             case FrontEndFlow::State::NAME:       return "NAME";
             case FrontEndFlow::State::STARTING:   return "STARTING";
+            case FrontEndFlow::State::PLAYING:    return "PLAYING";
             case FrontEndFlow::State::DONE:       return "DONE";
             case FrontEndFlow::State::QUIT:       return "QUIT";
         }
@@ -1405,7 +1409,8 @@ static int newgameInteractive(const std::string& assetDir) {
                 FrontEndFlow::State s = flow.handleKey(navKey);
                 if (s != prev) std::printf("[newgame] -> %s\n", stateName(s));
                 consumedMouse = true;
-                if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT) {
+                if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT ||
+                    s == FrontEndFlow::State::PLAYING) {
                     flow.draw(); pres.present(fb); pres.shutdown();
                     std::printf("[newgame] ended in %s; difficulty=%d tribe=%d name=\"%s\"\n",
                                 stateName(flow.state()),
@@ -1421,7 +1426,8 @@ static int newgameInteractive(const std::string& assetDir) {
         if (key == 0) continue;
         FrontEndFlow::State s = flow.handleKey(key);
         if (s != prev) std::printf("[newgame] -> %s\n", stateName(s));
-        if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT) {
+        if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT ||
+            s == FrontEndFlow::State::PLAYING) {
             flow.draw(); pres.present(fb); break;
         }
         flow.draw();
@@ -1575,6 +1581,7 @@ static int menuflowInteractive() {
             case FrontEndFlow::State::TRIBE:      return "TRIBE";
             case FrontEndFlow::State::NAME:       return "NAME";
             case FrontEndFlow::State::STARTING:   return "STARTING";
+            case FrontEndFlow::State::PLAYING:    return "PLAYING";
             case FrontEndFlow::State::DONE:       return "DONE";
             case FrontEndFlow::State::QUIT:       return "QUIT";
         }
@@ -1600,7 +1607,8 @@ static int menuflowInteractive() {
                         std::printf("selected difficulty %d\n", flow.chosenDifficulty());
                 }
                 consumedMouse = true;
-                if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT) {
+                if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT ||
+                    s == FrontEndFlow::State::PLAYING) {
                     flow.draw(); pres.present(fb); pres.shutdown();
                     std::printf("[flow] ended in %s\n", stateName(flow.state()));
                     return 0;
@@ -1617,7 +1625,8 @@ static int menuflowInteractive() {
             if (s == FrontEndFlow::State::STARTING)
                 std::printf("selected difficulty %d\n", flow.chosenDifficulty());
         }
-        if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT) {
+        if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT ||
+            s == FrontEndFlow::State::PLAYING) {
             flow.draw();
             pres.present(fb);
             break;
@@ -2617,6 +2626,254 @@ static int playDump(const std::string& assetDir, const char* ppmPath, bool realg
     return 0;
 }
 
+// ---------------- integrated --game flow (TITLE..PLAYING) ----------------
+// Headless verification of the integrated FrontEndFlow PLAYING state. Walks
+// TITLE -> MAIN_MENU -> DIFFICULTY (Prince) -> TRIBE (Egyptians) -> NAME
+// -> STARTING -> PLAYING, then exercises the live MiniWorld inside PLAYING:
+// the unit is on land, B founds a city named "Thebes" (tribe 3's capital),
+// ENTER advances the turn (and the year), and the PLAYING render differs
+// translate-on vs -off (Chinese HUD).
+static int gameflowtest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    OpenCiv1Game g;
+    setupGame(g, 480, 300);
+    Translator::instance().enabled = true;
+
+    FrontEndFlow flow(g);
+    flow.enterTitle();
+    chk(flow.state() == State::TITLE, "starts in TITLE");
+
+    // TITLE -> MAIN_MENU on any key.
+    chk(flow.handleKey(MenuBoxDialog::KeyEnter) == State::MAIN_MENU,
+        "key on TITLE -> MAIN_MENU");
+
+    // ENTER on item 0 ("Start a New Game") -> DIFFICULTY.
+    chk(flow.handleKey(MenuBoxDialog::KeyEnter) == State::DIFFICULTY,
+        "ENTER 'Start a New Game' -> DIFFICULTY");
+
+    // DOWNx2 + ENTER -> TRIBE (chosenDifficulty == 2 = Prince).
+    flow.handleKey(MenuBoxDialog::KeyDown);
+    flow.handleKey(MenuBoxDialog::KeyDown);
+    chk(flow.handleKey(MenuBoxDialog::KeyEnter) == State::TRIBE,
+        "DOWNx2 + ENTER -> TRIBE");
+    chk(flow.chosenDifficulty() == 2, "chosenDifficulty == 2 (Prince)");
+
+    // DOWNx3 + ENTER -> NAME (chosenTribe == 3 = Egyptians).
+    flow.handleKey(MenuBoxDialog::KeyDown);
+    flow.handleKey(MenuBoxDialog::KeyDown);
+    flow.handleKey(MenuBoxDialog::KeyDown);
+    chk(flow.handleKey(MenuBoxDialog::KeyEnter) == State::NAME,
+        "DOWNx3 + ENTER -> NAME");
+    chk(flow.chosenTribe() == 3, "chosenTribe == 3 (Egyptians)");
+
+    // ENTER -> STARTING (default chosenName = tribe's leader = "Ramesses").
+    chk(flow.handleKey(MenuBoxDialog::KeyEnter) == State::STARTING,
+        "ENTER on NAME -> STARTING");
+    chk(flow.chosenName() == "Ramesses",
+        "chosenName defaulted to the tribe's leader (Ramesses)");
+
+    // ENTER on STARTING -> PLAYING (the integrated --game flow's live state).
+    chk(flow.handleKey(MenuBoxDialog::KeyEnter) == State::PLAYING,
+        "ENTER on STARTING -> PLAYING (integrated --game flow entered)");
+    chk(flow.inPlayingState(), "inPlayingState() reports true");
+
+    // The MiniWorld must be a real-generated 80x50 Civ1 world.
+    MiniWorld* w = flow.miniWorld();
+    chk(w != nullptr, "FrontEndFlow owns a MiniWorld");
+    if (w) {
+        chk(w->width() == 80 && w->height() == 50,
+            "MiniWorld is the full 80x50 Civ1 world");
+        chk(w->usesRealGenerator(),
+            "MiniWorld uses the faithful Civ1 world generator");
+        // The starting tile must be valid (not Water and not Arctic).
+        Terrain t = w->terrainAt(w->unitX(), w->unitY());
+        chk(t != Terrain::Water && t != Terrain::Arctic,
+            "starting tile is land (not Water/Arctic)");
+
+        // B founds a city named "Thebes" (tribe 3's capital).
+        std::string cname;
+        chk(w->buildCityAtUnit(cname, 0),
+            "buildCityAtUnit on starting tile founds a city");
+        chk(g.unitManagement().cityCount() == 1,
+            "city count == 1 after the first build");
+        chk(cname == "Thebes",
+            "first city's name is the chosen tribe's capital (Thebes for Egyptians)");
+
+        // ENTER several times via handleKey advances the turn and the year.
+        int t0 = w->turn();
+        int y0 = g.unitManagement().year();
+        for (int i = 0; i < 5; ++i) flow.handleKey(MenuBoxDialog::KeyEnter);
+        chk(w->turn() == t0 + 5, "5x ENTER in PLAYING -> turn advanced by 5");
+        chk(g.unitManagement().year() > y0,
+            "year advanced (Segment_1238 year-step ladder is live)");
+    }
+
+    // Render PLAYING translate-on vs translate-off; pixels MUST differ
+    // (the Chinese HUD: turn/年份/tribe-named city/Production).
+    auto renderPlaying = [&](bool translate) -> std::vector<uint8_t> {
+        OpenCiv1Game gg;
+        setupGame(gg, 480, 300);
+        Translator::instance().enabled = translate;
+        FrontEndFlow flow2(gg);
+        flow2.enterTitle();
+        flow2.handleKey(MenuBoxDialog::KeyEnter);   // TITLE -> MAIN_MENU
+        flow2.handleKey(MenuBoxDialog::KeyEnter);   // -> DIFFICULTY
+        flow2.handleKey(MenuBoxDialog::KeyDown);
+        flow2.handleKey(MenuBoxDialog::KeyDown);
+        flow2.handleKey(MenuBoxDialog::KeyEnter);   // -> TRIBE (Prince)
+        flow2.handleKey(MenuBoxDialog::KeyDown);
+        flow2.handleKey(MenuBoxDialog::KeyDown);
+        flow2.handleKey(MenuBoxDialog::KeyDown);
+        flow2.handleKey(MenuBoxDialog::KeyEnter);   // -> NAME (Egyptians)
+        flow2.handleKey(MenuBoxDialog::KeyEnter);   // -> STARTING
+        flow2.handleKey(MenuBoxDialog::KeyEnter);   // -> PLAYING
+        flow2.draw();
+        return gg.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> zh = renderPlaying(true);
+    std::vector<uint8_t> en = renderPlaying(false);
+    chk(zh.size() == en.size() && !zh.empty(), "both PLAYING renders produced a buffer");
+    std::size_t diffPixels = 0;
+    for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+        if (zh[i] != en[i]) ++diffPixels;
+    chk(diffPixels > 0,
+        "PLAYING Chinese vs English pixels DIFFER (HUD is localized)");
+
+    {
+        GBitmap fb(480, 300);
+        fb.pixelsMut() = zh;
+        dumpPPM(fb, "/tmp/gameflow_playing.ppm");
+    }
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail)
+        std::printf("GAMEFLOWTEST: %d failure(s)\n", fail);
+    else
+        std::printf("GAMEFLOWTEST: all pass (TITLE..PLAYING integrated flow; "
+                    "%zu localized PLAYING pixels differ)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
+// Interactive integrated --game flow: setupGame, Translator ON, optional DOS
+// assets (LOGO.PIC + DIFFS.PIC for the front-end menus; TER257.PIC for the
+// playable map). Runs FrontEndFlow from TITLE; in PLAYING wires the keyboard
+// (arrows/Enter/B/Esc) and the mouse (left-click on a tile -> move one step
+// toward it) directly to the live MiniWorld, so the whole Civ1 experience is
+// in one command.
+static int gameInteractive(const std::string& assetDir) {
+    OpenCiv1Game g;
+    setupGame(g, 480, 300);
+    Translator::instance().enabled = true;
+    if (!assetDir.empty()) g.setResourcePath(assetDir);
+
+    GBitmap& fb = g.graphics.screen(0);
+    SdlPresenter pres;
+    if (!pres.init("OpenCiv1++ Game (zh-TW)", fb.width(), fb.height(), g_winW, g_winH)) return 1;
+
+    FrontEndFlow flow(g);
+    if (!assetDir.empty()) flow.setAssetDir(assetDir);
+    flow.enterTitle();
+    flow.draw();
+
+    auto stateName = [](FrontEndFlow::State s) -> const char* {
+        switch (s) {
+            case FrontEndFlow::State::TITLE:      return "TITLE";
+            case FrontEndFlow::State::MAIN_MENU:  return "MAIN_MENU";
+            case FrontEndFlow::State::DIFFICULTY: return "DIFFICULTY";
+            case FrontEndFlow::State::TRIBE:      return "TRIBE";
+            case FrontEndFlow::State::NAME:       return "NAME";
+            case FrontEndFlow::State::STARTING:   return "STARTING";
+            case FrontEndFlow::State::PLAYING:    return "PLAYING";
+            case FrontEndFlow::State::DONE:       return "DONE";
+            case FrontEndFlow::State::QUIT:       return "QUIT";
+        }
+        return "?";
+    };
+
+    while (true) {
+        if (!pres.present(fb)) break;
+        FrontEndFlow::State prev = flow.state();
+
+        if (flow.state() == FrontEndFlow::State::PLAYING) {
+            // --- Live playable map. Drive MiniWorld directly. ---
+            MiniWorld* w = flow.miniWorld();
+            if (!w) break;
+            bool dirty = false;
+            // Mouse: left-click on a tile -> move one step toward it.
+            SdlPresenter::MouseEvent me;
+            while (pres.pollMouse(me)) {
+                if (!me.motion && me.down && me.button == 1) {
+                    if (w->handleMouseClick(me.x, me.y)) dirty = true;
+                }
+            }
+            int key = pres.pollKey();
+            switch (key) {
+                case SdlPresenter::KeyUp:    dirty = w->moveUnit(0, -1) || dirty; break;
+                case SdlPresenter::KeyDown:  dirty = w->moveUnit(0,  1) || dirty; break;
+                case SdlPresenter::KeyLeft:  dirty = w->moveUnit(-1, 0) || dirty; break;
+                case SdlPresenter::KeyRight: dirty = w->moveUnit( 1, 0) || dirty; break;
+                case SdlPresenter::KeyEnter: w->endTurn(); dirty = true; break;
+                case SdlPresenter::KeyB: {
+                    std::string nm;
+                    if (w->buildCityAtUnit(nm, 0)) {
+                        std::printf("[game] founded city: %s at (%d,%d)\n",
+                                    nm.c_str(), w->unitX(), w->unitY());
+                        dirty = true;
+                    }
+                    break;
+                }
+                case SdlPresenter::KeyEsc: {
+                    // ESC in PLAYING backs out to MAIN_MENU (a new game can be
+                    // started); does NOT quit the whole app — that's what ESC
+                    // at MAIN_MENU does.
+                    flow.handleKey(MenuBoxDialog::KeyEsc);
+                    std::printf("[game] -> %s\n", stateName(flow.state()));
+                    dirty = true;
+                    break;
+                }
+                default: break;
+            }
+            if (dirty) flow.draw();
+            continue;
+        }
+
+        // --- Front-end menus (TITLE..STARTING). ---
+        // Mouse routing into the active menu (click -> Enter; outside -> Esc).
+        SdlPresenter::MouseEvent me;
+        bool consumedMouse = false;
+        while (pres.pollMouse(me)) {
+            MenuBoxDialog::MouseEvent mm{me.x, me.y, me.button, me.down, me.motion};
+            int outSel = MenuBoxDialog::NavNone;
+            if (g.menuBoxDialog().handleMouse(mm, &outSel)) {
+                int navKey = (outSel < 0) ? MenuBoxDialog::KeyEsc : MenuBoxDialog::KeyEnter;
+                FrontEndFlow::State s = flow.handleKey(navKey);
+                if (s != prev) std::printf("[game] -> %s\n", stateName(s));
+                consumedMouse = true;
+                if (s == FrontEndFlow::State::QUIT) {
+                    pres.shutdown();
+                    std::printf("[game] ended in %s\n", stateName(flow.state()));
+                    return 0;
+                }
+                break;
+            }
+        }
+        if (consumedMouse) { flow.draw(); continue; }
+        int key = pres.pollKey();
+        if (key == 0) continue;
+        FrontEndFlow::State s = flow.handleKey(key);
+        if (s != prev) std::printf("[game] -> %s\n", stateName(s));
+        if (s == FrontEndFlow::State::QUIT) break;
+        flow.draw();
+    }
+    pres.shutdown();
+    std::printf("[game] ended in %s\n", stateName(flow.state()));
+    return 0;
+}
+
 static void drawScene(OpenCiv1Game& g) {
     GBitmap& s = g.graphics.screen(0);
     s.clear(1);
@@ -2633,7 +2890,7 @@ static void drawScene(OpenCiv1Game& g) {
 
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
-    bool play = false, title = false, newgame = false, intro = false;
+    bool play = false, title = false, newgame = false, intro = false, gameMode = false;
     bool realgen = false;
     const char* dumpPath = nullptr;
     const char* picPath = nullptr;
@@ -2647,6 +2904,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--title")) { title = true; }
         else if (!std::strcmp(argv[i], "--newgame")) { newgame = true; }
         else if (!std::strcmp(argv[i], "--intro")) { intro = true; }
+        else if (!std::strcmp(argv[i], "--game")) { gameMode = true; }
         else if (!std::strcmp(argv[i], "--window") && i + 1 < argc) {
             // --window WxH: override the default 640x480 SDL window size. The
             // renderer's logical size stays at the framebuffer (e.g. 320x200
@@ -2689,6 +2947,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--realgentest")) { return realgentest(); }
         else if (!std::strcmp(argv[i], "--citytest")) { return citytest(); }
         else if (!std::strcmp(argv[i], "--turntest")) { return turntest(); }
+        else if (!std::strcmp(argv[i], "--gameflowtest")) { return gameflowtest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -2735,6 +2994,14 @@ int main(int argc, char** argv) {
         return newgameInteractive(resolveAssetDir(assetsDir));
     }
 
+    // --game: the unified Civ1 experience in one command — TITLE -> MAIN_MENU
+    // -> DIFFICULTY -> TRIBE -> NAME -> STARTING -> PLAYING (real Civ1 80x50
+    // world via MapManagement, attached to MiniWorld, the chosen tribe drives
+    // the first city's capital name). All Chinese, mouse + keyboard.
+    if (gameMode) {
+        return gameInteractive(resolveAssetDir(assetsDir));
+    }
+
     // --intro: the authentic MainIntro slideshow (LOGO.PIC + PLANET1/2 + BIRTH0..8)
     // in a 640x480 SDL window (logical 320x200 letterboxed). With no DOS assets
     // the intro is skipped (fallback message). Advances on key/click/3s timer.
@@ -2746,7 +3013,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

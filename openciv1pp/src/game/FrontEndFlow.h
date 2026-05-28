@@ -19,6 +19,9 @@
 #pragma once
 #include "OpenCiv1Game.h"
 #include "MenuBoxDialog.h"
+#include "MiniWorld.h"
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -37,7 +40,7 @@ public:
     // the flow at MAIN_MENU directly (the legacy behaviour exercised by
     // flowtest), TITLE is simply skipped. Choosing "Start a New Game" advances
     // through DIFFICULTY -> TRIBE -> NAME -> STARTING -> DONE.
-    enum class State { TITLE, MAIN_MENU, DIFFICULTY, TRIBE, NAME, STARTING, DONE, QUIT };
+    enum class State { TITLE, MAIN_MENU, DIFFICULTY, TRIBE, NAME, STARTING, PLAYING, DONE, QUIT };
 
     // Main-menu item labels (English; rendered translated). Index 0 = "Start a
     // New Game" -> DIFFICULTY; last index = "Quit" -> QUIT.
@@ -82,8 +85,30 @@ public:
     void enterTitle();
 
     // Draw the current screen into the parent game's screen 0. Safe to call
-    // every frame.
+    // every frame. In PLAYING this delegates to the owned MiniWorld's draw().
     void draw();
+
+    // ---- integrated --game flow (PLAYING state) ----
+    // Returns true when the flow has entered the playable map (real Civ1 world
+    // generated via MapManagement, MiniWorld attached, Settlers placed).
+    bool inPlayingState() const { return state_ == State::PLAYING; }
+
+    // The MiniWorld that backs the PLAYING state. Created lazily on the first
+    // transition into PLAYING (so the headless flow tests can still exercise
+    // the TITLE..STARTING transitions without paying the 80x50 generation cost).
+    // nullptr until PLAYING has been entered at least once.
+    MiniWorld* miniWorld() { return miniWorld_.get(); }
+    const MiniWorld* miniWorld() const { return miniWorld_.get(); }
+
+    // Optional DOS-asset directory for the playable map's real tileset. When
+    // set BEFORE the first PLAYING transition, MiniWorld::loadTileset(dir) is
+    // called so the map draws with the faithful TER257.PIC tiles.
+    void setAssetDir(std::string dir) { assetDir_ = std::move(dir); }
+
+    // Optional seed override for the world generator. When 0 (default) the
+    // seed is derived deterministically from chosenDifficulty + chosenTribe +
+    // a base (so the same picks always produce the same map).
+    void setWorldSeed(uint32_t s) { worldSeedOverride_ = s; }
 
 private:
     // (Re)arm the menu's navStep state for the screen we just entered.
@@ -92,12 +117,26 @@ private:
     void enterTribe();
     void enterName();
 
+    // Build the playable world: generate via MapManagement, install on
+    // MiniWorld, attach the game, place the Settlers on a valid land tile
+    // near the centre, record the chosen tribe for the capital name. Idempotent
+    // — re-entering PLAYING (e.g. via ESC back to MAIN_MENU then re-start)
+    // rebuilds it with the (potentially new) chosen tribe/difficulty.
+    void enterPlaying();
+
     OpenCiv1Game& p;
     State state_ = State::MAIN_MENU;
     int chosenDifficulty_ = -1;
     int chosenTribe_      = -1;
     std::string chosenName_;
     std::string defaultName_;
+
+    // Lazily-built playable map. Owned by FrontEndFlow so its lifetime ties to
+    // the flow's PLAYING state. attachGame() is called on creation so the B-key
+    // BuildCity action and endTurn() per-turn pass are wired through.
+    std::unique_ptr<MiniWorld> miniWorld_;
+    std::string assetDir_;
+    uint32_t worldSeedOverride_ = 0;
 };
 
 } // namespace oc1

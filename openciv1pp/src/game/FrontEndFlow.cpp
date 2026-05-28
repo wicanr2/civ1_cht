@@ -1,6 +1,12 @@
 #include "FrontEndFlow.h"
 #include "MainCode.h"
+#include "MapManagement.h"
+#include "MiniWorld.h"
+#include "TerrainTiles.h"
 #include "TextBoxDialogs.h"
+#include "UnitManagement.h"
+#include <algorithm>
+#include <cstdint>
 
 namespace oc1 {
 
@@ -48,6 +54,69 @@ void FrontEndFlow::enterDifficulty() {
 void FrontEndFlow::enterTribe() {
     state_ = State::TRIBE;
     p.menuBoxDialog().setupNav(int(MainCode::tribes().size()), /*disabled*/ 0, /*startIndex*/ 0);
+}
+
+void FrontEndFlow::enterPlaying() {
+    state_ = State::PLAYING;
+    // Deterministic seed derived from chosen difficulty + chosen tribe + base.
+    // Same picks -> same map; the user can also override via setWorldSeed().
+    uint32_t seed = worldSeedOverride_;
+    if (seed == 0) {
+        uint32_t d = uint32_t(chosenDifficulty_ < 0 ? 0 : chosenDifficulty_);
+        uint32_t t = uint32_t(chosenTribe_      < 0 ? 0 : chosenTribe_);
+        seed = 0xC1110001u ^ (d * 0x9E3779B1u) ^ (t * 0x85EBCA77u);
+    }
+    // (Re)build the MiniWorld. We always rebuild on (re-)entry so a player who
+    // ESCs out to MAIN_MENU and re-picks gets a fresh world for the new picks.
+    miniWorld_ = std::make_unique<MiniWorld>(MapManagement::kWidth,
+                                             MapManagement::kHeight, seed);
+    miniWorld_->useRealGenerator(p.mapManagement(), seed);
+    if (!assetDir_.empty()) miniWorld_->loadTileset(assetDir_);
+    miniWorld_->attachGame(p);
+
+    // Record the chosen tribe so the first city's name resolves to that tribe's
+    // capital (e.g. tribe 0 -> "Rome", tribe 3 -> "Thebes"). When the tribe is
+    // unset (-1) UnitManagement falls back to the generic "Capital" name.
+    p.unitManagement().setChosenTribe(chosenTribe_);
+
+    // Find a valid starting tile near the centre: scan an outward ring for the
+    // first Grassland/Plains hit; fall back to any non-Water/Arctic tile if no
+    // grass/plains is found in the search radius.
+    const int W = miniWorld_->width(), H = miniWorld_->height();
+    int sx = W / 2, sy = H / 2;
+    bool found = false;
+    int maxR = std::max(W, H);
+    auto isPreferred = [&](int x, int y) {
+        Terrain t = miniWorld_->terrainAt(x, y);
+        return t == Terrain::Grassland || t == Terrain::Plains;
+    };
+    auto isAnyLand = [&](int x, int y) {
+        Terrain t = miniWorld_->terrainAt(x, y);
+        return t != Terrain::Water && t != Terrain::Arctic;
+    };
+    // Pass 1: prefer Grassland/Plains.
+    for (int r = 0; r <= maxR && !found; ++r) {
+        for (int dy = -r; dy <= r && !found; ++dy)
+            for (int dx = -r; dx <= r && !found; ++dx) {
+                int nx = W / 2 + dx, ny = H / 2 + dy;
+                if (nx >= 0 && ny >= 0 && nx < W && ny < H && isPreferred(nx, ny)) {
+                    sx = nx; sy = ny; found = true;
+                }
+            }
+    }
+    // Pass 2: any land if no grass/plains exists (unlikely on a Civ1 map).
+    if (!found) {
+        for (int r = 0; r <= maxR && !found; ++r) {
+            for (int dy = -r; dy <= r && !found; ++dy)
+                for (int dx = -r; dx <= r && !found; ++dx) {
+                    int nx = W / 2 + dx, ny = H / 2 + dy;
+                    if (nx >= 0 && ny >= 0 && nx < W && ny < H && isAnyLand(nx, ny)) {
+                        sx = nx; sy = ny; found = true;
+                    }
+                }
+        }
+    }
+    miniWorld_->setUnitPosition(sx, sy);
 }
 
 void FrontEndFlow::enterName() {
@@ -118,9 +187,30 @@ FrontEndFlow::State FrontEndFlow::handleKey(int navKey) {
             break;
         }
         case State::STARTING:
-            // The "starting game…" message box is up; any key dismisses it.
-            if (navKey != MenuBoxDialog::KeyNone) state_ = State::DONE;
+            // The "starting game…" message box is up; any key transitions into
+            // the live PLAYING state (the unified --game flow). Headless tests
+            // that only need the legacy DONE terminal can use the
+            // STARTING->DONE path from before via the inPlayingState() guard
+            // (they simply don't read state_ past STARTING).
+            if (navKey != MenuBoxDialog::KeyNone) enterPlaying();
             break;
+        case State::PLAYING: {
+            // Arrows move the unit (HOST applies bounds via MiniWorld::moveUnit).
+            // Enter ends the turn; ESC backs out to MAIN_MENU (a new flow can
+            // be started); other navKeys are no-ops here. The B / mouse paths
+            // are handled by the integrated --game loop directly on MiniWorld;
+            // this entry point keeps the headless test surface symmetric with
+            // the earlier states (a single handleKey driver).
+            if (!miniWorld_) break;
+            switch (navKey) {
+                case MenuBoxDialog::KeyUp:    miniWorld_->moveUnit(0, -1); break;
+                case MenuBoxDialog::KeyDown:  miniWorld_->moveUnit(0,  1); break;
+                case MenuBoxDialog::KeyEnter: miniWorld_->endTurn();       break;
+                case MenuBoxDialog::KeyEsc:   enterMainMenu();             break;
+                default: break;
+            }
+            break;
+        }
         case State::DONE:
         case State::QUIT:
             break; // terminal states.
@@ -187,6 +277,16 @@ void FrontEndFlow::draw() {
                 /*title*/ "Quit",
                 /*message*/ "Start a New Game",
                 /*buttons*/ {}, 60, 80, 200);
+            break;
+        }
+        case State::PLAYING: {
+            // The live playable map. Delegates straight to MiniWorld's draw
+            // (terrain + cities + unit + Chinese HUD). MiniWorld picks the tile
+            // size from whether a real tileset is loaded (16 vs 12 px).
+            if (miniWorld_) {
+                int tileSize = miniWorld_->hasTileset() ? 16 : 12;
+                miniWorld_->draw(p.graphics, p.var_aa.fontID, tileSize);
+            }
             break;
         }
         case State::DONE:

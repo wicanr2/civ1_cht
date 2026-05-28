@@ -242,6 +242,14 @@ void MiniWorld::endTurn() {
     if (game_) game_->checkPlayerTurn().processEndOfTurn();
 }
 
+bool MiniWorld::setUnitPosition(int x, int y) {
+    int cx = std::clamp(x, 0, w_ - 1);
+    int cy = std::clamp(y, 0, h_ - 1);
+    unitX_ = cx;
+    unitY_ = cy;
+    return (cx == x && cy == y);
+}
+
 bool MiniWorld::moveUnit(int dx, int dy) {
     int nx = std::clamp(unitX_ + dx, 0, w_ - 1);
     int ny = std::clamp(unitY_ + dy, 0, h_ - 1);
