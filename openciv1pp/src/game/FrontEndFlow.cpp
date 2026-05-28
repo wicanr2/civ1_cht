@@ -7,6 +7,8 @@
 #include "UnitManagement.h"
 #include <algorithm>
 #include <cstdint>
+#include <utility>
+#include <vector>
 
 namespace oc1 {
 
@@ -79,12 +81,32 @@ void FrontEndFlow::enterPlaying() {
     // unset (-1) UnitManagement falls back to the generic "Capital" name.
     p.unitManagement().setChosenTribe(chosenTribe_);
 
+    // ---- Multi-civ slice: spawn the human + 6 AI civs on distributed tiles.
+    // Mirrors Civ1's default of 7 civilizations (1 human + 6 AI). Each AI civ
+    // gets its own Settlers at a valid land tile with a min spacing of 10
+    // (the C# `distance < 10` reject before tryCount relaxation). The placement
+    // RNG is seeded from the same world seed (offset by a constant) so the
+    // layout is reproducible for a given (difficulty, tribe) pick.
+    constexpr int kNumAi = 6;
+    p.unitManagement().setupCivs(chosenTribe_, kNumAi);
+    std::vector<std::pair<int,int>> starts;
+    placeStartingPositions(p.mapManagement(), 1 + kNumAi,
+                           seed ^ 0xA17C1051u, starts, /*minDistance*/ 10);
+    // Populate units(): index 0 = human Settlers, 1..6 = AI Settlers.
+    p.unitManagement().unitsMut().clear();
+    for (std::size_t i = 0; i < starts.size(); ++i) {
+        p.unitManagement().addUnit(int(i), UnitType::Settlers,
+                                   starts[i].first, starts[i].second);
+    }
+
     // Find a valid starting tile near the centre: scan an outward ring for the
     // first Grassland/Plains hit; fall back to any non-Water/Arctic tile if no
-    // grass/plains is found in the search radius.
+    // grass/plains is found in the search radius. (Used when the multi-civ
+    // placer above didn't produce a starts[0] — e.g. degenerate maps.)
     const int W = miniWorld_->width(), H = miniWorld_->height();
     int sx = W / 2, sy = H / 2;
-    bool found = false;
+    bool found = !starts.empty();
+    if (found) { sx = starts[0].first; sy = starts[0].second; }
     int maxR = std::max(W, H);
     auto isPreferred = [&](int x, int y) {
         Terrain t = miniWorld_->terrainAt(x, y);

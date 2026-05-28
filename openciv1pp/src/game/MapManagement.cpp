@@ -1,5 +1,7 @@
 #include "MapManagement.h"
 #include <cstdlib>
+#include <utility>
+#include <vector>
 
 namespace oc1 {
 
@@ -399,6 +401,79 @@ void MapManagement::generate(const GenSettings& s) {
     // is not ported. The generator layer above (terrain types) is what
     // MiniWorld renders; the group bookkeeping is a deep dependency of the AI
     // city-placement / pathfinding code, none of which is ported yet.
+}
+
+// ---------------------------------------------------------------------------
+// placeStartingPositions — port of the C# starting-position picker in
+// StartGameMenu.F5_0000_*_InitNewGameData (L0a5e..L0b54). Faithful subset:
+//   * uniformly random (x in [8, W-8), y in [8, H-8)) via MT19937
+//   * reject Water/Arctic (matches the C# Water reject + the player can't
+//     start on the polar Arctic ring)
+//   * reject when within `minDistance` (default 10) of any prior chosen
+//     position (matches `distance < 10 - (tryCount / 64)` with tryCount=0)
+//   * up to 2000 tries per position (the C# `tryCount <= 2000` cap); on
+//     exhaustion the distance gate is relaxed to 1 so SOMETHING is placed.
+// The deeper rejects (GetPlayerLandOwnership, GetGroupID/BuildSiteCount,
+// MinorTribeHut) are STUBs — they depend on Stage 6 (continent groups) which
+// is not yet ported. The simpler land+distance reject still produces a
+// recognisably Civ1-ish layout (one civ per region).
+bool placeStartingPositions(const MapManagement& mm, int n, uint32_t seed,
+                            std::vector<std::pair<int, int>>& out,
+                            int minDistance) {
+    if (n <= 0) return true;
+    RandomMT19937 rng{int32_t(seed)};
+    const int W = mm.width(), H = mm.height();
+    // Inset margins match the C# RNG ranges: Next(W-16)+8 -> [8, W-8).
+    const int xLo = 8, xHi = W - 8;          // exclusive upper
+    const int yLo = 8, yHi = H - 8;          // exclusive upper
+    const int xRange = (xHi > xLo) ? (xHi - xLo) : 1;
+    const int yRange = (yHi > yLo) ? (yHi - yLo) : 1;
+    for (int i = 0; i < n; ++i) {
+        int picked = -1, py = -1, tries = 0;
+        int effectiveDist = minDistance;
+        while (tries < 4000) {
+            ++tries;
+            int x = xLo + rng.Next(xRange);
+            int y = yLo + rng.Next(yRange);
+            Terrain t = mm.terrainAt(x, y);
+            if (t == Terrain::Water || t == Terrain::Arctic) continue;
+            // Distance check: Chebyshev distance (Civ1's "king move" metric;
+            // same as max(|dx|,|dy|) used by F0_2dc4_0289_GetShortestDistance
+            // for the unobstructed case).
+            bool tooClose = false;
+            for (const auto& p : out) {
+                int dx = std::abs(p.first  - x);
+                int dy = std::abs(p.second - y);
+                int d = dx > dy ? dx : dy;
+                if (d < effectiveDist) { tooClose = true; break; }
+            }
+            if (tooClose) {
+                // Relax the gate gradually after the C# 2000-try cap.
+                if (tries == 2000) effectiveDist = (minDistance > 4) ? minDistance / 2 : 1;
+                if (tries == 3000) effectiveDist = 1;
+                continue;
+            }
+            picked = x; py = y;
+            break;
+        }
+        if (picked < 0) {
+            // Last-resort scan: linear walk over the inset rect, accept the
+            // first land tile. Guarantees we always return SOMETHING for n
+            // positions so the caller's units().size() invariant holds.
+            for (int yy = yLo; yy < yHi && picked < 0; ++yy)
+                for (int xx = xLo; xx < xHi && picked < 0; ++xx) {
+                    Terrain t = mm.terrainAt(xx, yy);
+                    if (t == Terrain::Water || t == Terrain::Arctic) continue;
+                    bool dup = false;
+                    for (const auto& p : out)
+                        if (p.first == xx && p.second == yy) { dup = true; break; }
+                    if (!dup) { picked = xx; py = yy; }
+                }
+        }
+        if (picked < 0) return false;
+        out.emplace_back(picked, py);
+    }
+    return true;
 }
 
 } // namespace oc1

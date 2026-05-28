@@ -101,6 +101,14 @@ public:
     // sprite when available, else a distinct colored rect with a "C" overlay.
     void renderCities(GBitmap& screen) const;
 
+    // Render all multi-civ units (the AI civs' Settlers + the human Settlers
+    // when the host game has been attached and setupCivs/addUnit have been
+    // called). Each unit is drawn at its tile with the OWNER civ's distinct
+    // palette colour (kCivMarkerIndex from UnitManagement.cpp). When no host
+    // game is attached, this is a no-op and the legacy single-unit draw path
+    // still renders the (unitX_, unitY_) marker by itself.
+    void renderUnits(GBitmap& screen) const;
+
     static uint8_t terrainColor(Terrain t);
 
     // ---- city management (host-game wire-up) ----

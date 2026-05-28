@@ -37,6 +37,8 @@
 #include "OpenCiv1Game.h"
 #include "TerrainTiles.h"
 #include <cstdint>
+#include <utility>
+#include <vector>
 
 namespace oc1 {
 
@@ -129,5 +131,19 @@ private:
 // 2-cell ring; 25..48 = the 3-cell ring.
 struct MoveDir { int x, y; };
 extern const MoveDir kMoveDirections[49];
+
+// Place N starting positions across `mm`'s generated map. Mirrors the C#
+// StartGameMenu.F5_0000_* placement loop (line 540-588 of StartGameMenu.cs):
+// uniformly random (x in [8, kWidth-8), y in [8, kHeight-8)) until a tile that
+// is (a) not Water/Arctic and (b) at least `minDistance` from every prior
+// chosen position. `minDistance` defaults to 10 (the C# `distance < 10` reject
+// threshold before the tryCount relaxation kicks in). Up to 2000 tries per
+// position (the same cap the C# uses); if the cap is hit the distance check is
+// relaxed to 1 so SOMETHING is placed. Deterministic for a given `seed` (uses
+// the faithful MT19937 RNG so the headless tests can reproduce the layout).
+// Appends to `out` (does not clear). Returns true if N positions were placed.
+bool placeStartingPositions(const MapManagement& mm, int n, uint32_t seed,
+                            std::vector<std::pair<int, int>>& out,
+                            int minDistance = 10);
 
 } // namespace oc1

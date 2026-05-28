@@ -235,6 +235,49 @@ void MiniWorld::renderCities(GBitmap& screen) const {
     }
 }
 
+void MiniWorld::renderUnits(GBitmap& screen) const {
+    if (!game_) return;
+    const auto& units = game_->unitManagement().units();
+    const auto& civs  = game_->unitManagement().civs();
+    if (units.empty()) return;
+
+    // Install the AI civ marker palette colours. These match the
+    // kCivMarkerIndex table in UnitManagement.cpp (209 = human red is set
+    // elsewhere in draw()). Distinct, bright, and far from terrain hues so
+    // they read on any tile.
+    screen.palette.set(220, 250, 220,  60); // civ 1 yellow
+    screen.palette.set(221,  60, 200, 250); // civ 2 cyan
+    screen.palette.set(222, 240, 130, 240); // civ 3 magenta
+    screen.palette.set(223, 250, 140,  40); // civ 4 orange
+    screen.palette.set(224, 120, 250, 120); // civ 5 light green
+    screen.palette.set(225, 200, 180, 255); // civ 6 lavender
+    screen.palette.set(226, 255, 255,  80); // civ 7 (reserved)
+    screen.palette.set(210,   0,   0,   0); // outline
+
+    const int tileSize = lastTileSize_;
+    const int camX = lastCamX_, camY = lastCamY_;
+    const int cols = (lastViewW_ + tileSize - 1) / tileSize;
+    const int rows = (lastViewH_ + tileSize - 1) / tileSize;
+
+    for (const auto& u : units) {
+        if (!u.alive) continue;
+        int rx = u.x - camX, ry = u.y - camY;
+        if (rx < 0 || ry < 0 || rx >= cols || ry >= rows) continue;
+        int px = rx * tileSize, py = ry * tileSize;
+        uint8_t color = 209; // fallback to the human red
+        if (u.owner >= 0 && u.owner < int(civs.size())) color = civs[u.owner].color;
+        // Skip drawing on the human's tile if the human's marker is already on
+        // it (avoids stacking two markers on the same cell). The legacy single-
+        // unit draw still paints the human marker at (unitX_, unitY_).
+        if (u.owner == 0 && u.x == unitX_ && u.y == unitY_) continue;
+        int inset = std::max(2, tileSize / 4);
+        screen.fillRect(Rect{px + inset, py + inset,
+                             tileSize - 2 * inset, tileSize - 2 * inset}, color);
+        screen.drawRect(Rect{px + inset, py + inset,
+                             tileSize - 2 * inset, tileSize - 2 * inset}, 210);
+    }
+}
+
 void MiniWorld::endTurn() {
     ++turn_;
     // When a host game is attached, run the per-turn housekeeping pass
@@ -340,6 +383,11 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
     // the Settlers is consumed when the city is founded).
     renderCities(fb);
 
+    // Multi-civ units pass: AI Settlers (and any other civ units) drawn with
+    // the owner civ's distinct palette colour. No-op when no host game (the
+    // legacy single-unit marker above still draws the human).
+    renderUnits(fb);
+
     // ---- bottom HUD bar (all Chinese, via the translating drawString) ----
     const int hudY = fb.height() - hudH;
     fb.fillRect(Rect{0, hudY, fb.width(), hudH}, 208);
@@ -390,6 +438,17 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
     char cnum[16];
     std::snprintf(cnum, sizeof(cnum), " %zu", nCities);
     penX3 = fb.drawString(font, penX3, line3Y, cnum, 207);
+    // Civilizations count: shown ALWAYS when a host game is attached (so the
+    // HUD reflects the multi-civ slice). Translates "Civilizations:" -> "文明: ".
+    if (game_) {
+        std::size_t nCivs = game_->unitManagement().civs().size();
+        penX3 = fb.drawString(font, penX3, line3Y, "  ", 207);
+        penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                              "Civilizations:", 207);
+        char vbuf[16];
+        std::snprintf(vbuf, sizeof(vbuf), " %zu", nCivs);
+        penX3 = fb.drawString(font, penX3, line3Y, vbuf, 207);
+    }
     if (!lastActionKey_.empty()) {
         penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
         penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,

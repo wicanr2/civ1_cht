@@ -34,6 +34,30 @@ namespace oc1 {
 
 class OpenCiv1Game;
 
+// ---- AI / multi-civ slice ----
+// A unit on the world map. Mirrors a SUBSET of GameData.Players[i].Units[j]
+// (Position + TypeID + alive flag). Only Settlers are modelled here — the
+// other unit types are part of the deeper UnitGoTo / combat port. AI behaviour
+// is stubbed (units don't move yet); the win is a populated world.
+enum class UnitType : uint8_t { Settlers = 0 };
+struct Unit {
+    int owner = 0;            // civ index into UnitManagement::civs()
+    int x = 0, y = 0;         // Position (matches C# GPoint)
+    UnitType type = UnitType::Settlers;
+    bool alive = true;
+};
+
+// Per-civilization state (a SUBSET of GameData.Players[i] + Nations[i]).
+// Enough for {tribeIdx -> name & first-city name, color -> map marker, isHuman
+// -> input routing}. The full Players[] record (Diplomacy, Treasury, Tech,
+// Government, ...) is OUT OF SCOPE here.
+struct CivState {
+    int tribeIdx = 0;         // index into MainCode::tribes() (0..13)
+    uint8_t color = 0;        // palette index for the AI unit marker
+    std::string name;         // resolved nation name (e.g. "Romans")
+    bool isHuman = false;
+};
+
 struct City {
     int id = -1;
     int owner = 0;            // PlayerID
@@ -110,9 +134,28 @@ public:
     // tribe cities get "Capital 2", "Capital 3", etc.
     static std::string nthCityNameKey(int tribeIndex, int nth);
 
+    // ---- AI / multi-civ slice ----
+    // setupCivs: human is civ 0 with tribe=humanTribe; AI civs are 1..numAi,
+    // each assigned a distinct tribe (rotated through MainCode::tribes()) and a
+    // distinct palette colour index. Clears any prior civs/units. A 1:1 with
+    // the START path in C# StartGameMenu.F5_0000_*_InitNewGameData where the
+    // Players[0..7] table is built (human at GameData.HumanPlayerID, AI at the
+    // others). The deeper Players[] init (Diplomacy/Treasury/Tech/ ...) stays
+    // a STUB — only the {tribeIdx, color, name, isHuman} subset is materialised.
+    void setupCivs(int humanTribe, int numAi);
+    const std::vector<CivState>& civs() const { return civs_; }
+
+    // ---- units (multi-civ) ----
+    // Append a Unit owned by `owner` (civ index) at (x,y). Returns its index.
+    int addUnit(int owner, UnitType type, int x, int y);
+    const std::vector<Unit>& units() const { return units_; }
+    std::vector<Unit>& unitsMut() { return units_; }
+
 private:
     OpenCiv1Game& p;
     std::vector<City> cities_;
+    std::vector<Unit> units_;     // multi-civ units (Settlers for now)
+    std::vector<CivState> civs_;  // human is civs_[0], AI civs follow
     int mapW_ = 80, mapH_ = 50;
     int chosenTribe_ = -1;
     std::function<Terrain(int, int)> terrainAt_;

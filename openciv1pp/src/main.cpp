@@ -2888,6 +2888,157 @@ static void drawScene(OpenCiv1Game& g) {
     dt.DrawTextBlock(10, 130, "The Senate has overruled your decision and the peace treaty is now signed.", 150, 11);
 }
 
+// ---------------- AI civilizations (multi-civ spawn) headless test ----------
+// Exercises the multi-civ slice end-to-end:
+//   (1) UnitManagement::setupCivs(humanTribe, 6) populates civs() == 7 with
+//       civs[0].isHuman == true and AI tribes distinct.
+//   (2) placeStartingPositions(7) is deterministic for a fixed seed, every
+//       chosen tile is land (not Water/Arctic), and pairwise Chebyshev
+//       distances are >= the requested minimum.
+//   (3) After FrontEndFlow drives the full TITLE..PLAYING sequence, the host
+//       game's units() contains >= 7 entries (human + 6 AI).
+//   (4) Render PLAYING with and without AI civs (clear units() for the
+//       baseline) and assert the AI-civ frame has visibly different pixels
+//       (AI markers contribute ink).
+static int aitest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // (1) setupCivs: human + 6 AI, all tribes distinct.
+    {
+        OpenCiv1Game g;
+        setupGame(g, 480, 300);
+        UnitManagement& um = g.unitManagement();
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 6);
+        chk(um.civs().size() == 7, "setupCivs(0, 6) -> civs().size() == 7");
+        chk(!um.civs().empty() && um.civs()[0].isHuman,
+            "civs[0].isHuman == true");
+        // AI tribes must all be distinct and different from the human's tribe.
+        bool seen[14] = {false};
+        bool tribesOk = true;
+        for (std::size_t i = 0; i < um.civs().size(); ++i) {
+            int t = um.civs()[i].tribeIdx;
+            if (t < 0 || t >= 14 || seen[t]) { tribesOk = false; break; }
+            seen[t] = true;
+        }
+        chk(tribesOk, "AI civ tribes are all distinct (no collisions)");
+        // Marker colours are also distinct.
+        bool colorsOk = true;
+        for (std::size_t i = 0; i < um.civs().size() && colorsOk; ++i)
+            for (std::size_t j = i + 1; j < um.civs().size(); ++j)
+                if (um.civs()[i].color == um.civs()[j].color) { colorsOk = false; break; }
+        chk(colorsOk, "AI civ marker colors are all distinct");
+    }
+
+    // (2) placeStartingPositions: deterministic, on-land, well-separated.
+    {
+        OpenCiv1Game g;
+        setupGame(g, 480, 300);
+        // Generate a real Civ1 80x50 world we can sample terrain from.
+        MapManagement& mm = g.mapManagement();
+        mm.generate(int32_t(0xC1110042u));
+        std::vector<std::pair<int,int>> a, b;
+        constexpr uint32_t seed = 0xDEADBEEFu;
+        bool oka = placeStartingPositions(mm, 7, seed, a, /*minDistance*/ 10);
+        bool okb = placeStartingPositions(mm, 7, seed, b, /*minDistance*/ 10);
+        chk(oka && okb, "placeStartingPositions returns true for n=7");
+        chk(a.size() == 7 && b.size() == 7, "got exactly 7 positions");
+        // Deterministic for a fixed seed.
+        bool det = (a.size() == b.size());
+        for (std::size_t i = 0; det && i < a.size(); ++i)
+            if (a[i] != b[i]) det = false;
+        chk(det, "same seed -> identical position list (deterministic)");
+        // All positions on valid land (not Water/Arctic).
+        bool allLand = true;
+        for (const auto& p : a) {
+            Terrain t = mm.terrainAt(p.first, p.second);
+            if (t == Terrain::Water || t == Terrain::Arctic) { allLand = false; break; }
+        }
+        chk(allLand, "every starting tile is on valid land (no Water/Arctic)");
+        // Pairwise Chebyshev distance >= 10 (the requested minimum).
+        bool spaced = true;
+        for (std::size_t i = 0; i < a.size() && spaced; ++i)
+            for (std::size_t j = i + 1; j < a.size(); ++j) {
+                int dx = std::abs(a[i].first  - a[j].first);
+                int dy = std::abs(a[i].second - a[j].second);
+                int d = dx > dy ? dx : dy;
+                if (d < 10) { spaced = false; break; }
+            }
+        chk(spaced, "pairwise Chebyshev distances all >= 10");
+    }
+
+    // (3) FrontEndFlow integration: after PLAYING, units().size() >= 7.
+    {
+        OpenCiv1Game g;
+        setupGame(g, 480, 300);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow(g);
+        flow.enterTitle();
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> MAIN_MENU
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> DIFFICULTY (item 0)
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> TRIBE (Chieftain)
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> NAME (tribe 0 = Romans)
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> STARTING
+        State s = flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+        chk(s == State::PLAYING, "integrated flow reached PLAYING");
+        chk(g.unitManagement().units().size() >= 7,
+            "PLAYING populated units() with >= 7 entries (1 human + 6 AI)");
+        chk(g.unitManagement().civs().size() == 7,
+            "PLAYING populated civs() with 7 (1 human + 6 AI)");
+    }
+
+    // (4) Render delta: PLAYING with AI civs vs PLAYING with the AI units
+    // cleared. The two pixel buffers MUST differ — AI markers contribute ink.
+    auto renderPlaying = [&](bool clearAi) -> std::vector<uint8_t> {
+        OpenCiv1Game g;
+        setupGame(g, 480, 300);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow(g);
+        flow.enterTitle();
+        flow.handleKey(MenuBoxDialog::KeyEnter);
+        flow.handleKey(MenuBoxDialog::KeyEnter);
+        flow.handleKey(MenuBoxDialog::KeyEnter);
+        flow.handleKey(MenuBoxDialog::KeyEnter);
+        flow.handleKey(MenuBoxDialog::KeyEnter);
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+        if (clearAi) {
+            // Drop only the AI units (owner != 0). Leaves the human marker in
+            // place so the delta isolates the AI contribution.
+            auto& u = g.unitManagement().unitsMut();
+            u.erase(std::remove_if(u.begin(), u.end(),
+                                   [](const Unit& x) { return x.owner != 0; }),
+                    u.end());
+        }
+        flow.draw();
+        return g.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> withAi  = renderPlaying(false);
+    std::vector<uint8_t> noAi    = renderPlaying(true);
+    chk(withAi.size() == noAi.size() && !withAi.empty(),
+        "both PLAYING renders produced a buffer");
+    std::size_t diffPixels = 0;
+    for (std::size_t i = 0; i < withAi.size() && i < noAi.size(); ++i)
+        if (withAi[i] != noAi[i]) ++diffPixels;
+    chk(diffPixels > 0,
+        "with-AI vs no-AI pixels DIFFER (AI markers contribute ink)");
+
+    {
+        GBitmap fb(480, 300);
+        fb.pixelsMut() = withAi;
+        dumpPPM(fb, "/tmp/aitest_playing.ppm");
+    }
+
+    Translator::instance().enabled = true;
+
+    if (fail)
+        std::printf("AITEST: %d failure(s)\n", fail);
+    else
+        std::printf("AITEST: all pass (multi-civ spawn + AI markers; "
+                    "%zu AI-marker pixels differ)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -2948,6 +3099,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--citytest")) { return citytest(); }
         else if (!std::strcmp(argv[i], "--turntest")) { return turntest(); }
         else if (!std::strcmp(argv[i], "--gameflowtest")) { return gameflowtest(); }
+        else if (!std::strcmp(argv[i], "--aitest")) { return aitest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -3013,7 +3165,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
