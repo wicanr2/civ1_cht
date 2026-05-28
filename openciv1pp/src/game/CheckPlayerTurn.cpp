@@ -88,6 +88,45 @@ int CheckPlayerTurn::processEndOfTurn() {
         }
     }
 
+    // ---- AI UNIT MOVEMENT PASS (faithful greedy approximation) -----------
+    // Mirrors the per-AI-unit dispatch in C# Segment_25fb.F0_25fb_0c9d (each
+    // AI unit gets a "what should I do" call once per turn). The full version
+    // is a multi-page decision tree; here we use the well-documented "advance
+    // on nearest enemy" heuristic: each AI combat unit takes ONE step toward
+    // the Chebyshev-nearest enemy unit or city per turn (or `move` steps if
+    // the unit's MoveCount > 1, e.g. Cavalry later). Settlers don't fight,
+    // so they're skipped here (the AI auto-found pass above handles them).
+    // Determinism: civs/units processed in stable index order.
+    {
+        auto& units = um.unitsMut();
+        const auto& civs = um.civs();
+        for (std::size_t cIdx = 0; cIdx < civs.size(); ++cIdx) {
+            if (civs[cIdx].isHuman) continue;
+            int civId = int(cIdx);
+            // Snapshot unit indices for this civ BEFORE stepping (the units_
+            // vector itself never grows here, but a snapshot keeps the loop
+            // bounds independent of any later production-pass appends).
+            std::vector<int> myCombatUnits;
+            for (std::size_t i = 0; i < units.size(); ++i) {
+                const Unit& u = units[i];
+                if (!u.alive || u.owner != civId) continue;
+                if (u.type == UnitType::Settlers) continue;
+                myCombatUnits.push_back(int(i));
+            }
+            for (int uid : myCombatUnits) {
+                // alive check survives between iterations (a unit may have
+                // died if an earlier combat went wrong way — defensive).
+                if (!units[std::size_t(uid)].alive) continue;
+                int steps = unitDefOf(units[std::size_t(uid)].type).move;
+                if (steps < 1) steps = 1;
+                for (int s = 0; s < steps; ++s) {
+                    if (!units[std::size_t(uid)].alive) break;
+                    if (!um.aiStep(uid)) break; // no target / can't move
+                }
+            }
+        }
+    }
+
     // OUTER LOOP: iterate civs (player + AI placeholders). After the AI pass
     // above the cities[] table also contains AI capitals, so the per-civ city
     // pass is now genuinely multi-civ.

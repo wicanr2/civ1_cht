@@ -185,6 +185,65 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
     return true;
 }
 
+// ---- AI MOVEMENT --------------------------------------------------------
+// Chebyshev (king-move) distance is the right metric for an 8-direction step
+// world — it equals the number of moveUnit() calls needed to reach a tile
+// when each step is in {-1,0,1} x {-1,0,1}.
+static inline int chebyshev(int ax, int ay, int bx, int by) {
+    int dx = ax > bx ? ax - bx : bx - ax;
+    int dy = ay > by ? ay - by : by - ay;
+    return dx > dy ? dx : dy;
+}
+
+int UnitManagement::findNearestEnemy(int unitId, int& tx, int& ty) const {
+    if (unitId < 0 || std::size_t(unitId) >= units_.size()) return -1;
+    const Unit& u = units_[std::size_t(unitId)];
+    if (!u.alive) return -1;
+    int bestId = -1;
+    int bestDist = 0x7fffffff;
+    int bestTx = u.x, bestTy = u.y;
+    // Scan units first (so unit targets win on ties; see header).
+    for (std::size_t i = 0; i < units_.size(); ++i) {
+        if (int(i) == unitId) continue;
+        const Unit& o = units_[i];
+        if (!o.alive) continue;
+        if (o.owner == u.owner) continue;
+        int d = chebyshev(u.x, u.y, o.x, o.y);
+        if (d < bestDist) {
+            bestDist = d;
+            bestId = int(i);
+            bestTx = o.x; bestTy = o.y;
+        }
+    }
+    // Then cities (city target id encoded as -2 per header contract).
+    for (const auto& c : cities_) {
+        if (c.owner == u.owner) continue;
+        int d = chebyshev(u.x, u.y, c.x, c.y);
+        if (d < bestDist) {
+            bestDist = d;
+            bestId = -2;
+            bestTx = c.x; bestTy = c.y;
+        }
+    }
+    if (bestDist == 0x7fffffff) return -1;
+    tx = bestTx; ty = bestTy;
+    return bestId;
+}
+
+bool UnitManagement::aiStep(int unitId) {
+    if (unitId < 0 || std::size_t(unitId) >= units_.size()) return false;
+    const Unit& u = units_[std::size_t(unitId)];
+    if (!u.alive) return false;
+    int tx = 0, ty = 0;
+    int target = findNearestEnemy(unitId, tx, ty);
+    if (target == -1) return false; // no enemy anywhere
+    int dx = (tx > u.x) ? 1 : (tx < u.x ? -1 : 0);
+    int dy = (ty > u.y) ? 1 : (ty < u.y ? -1 : 0);
+    if (dx == 0 && dy == 0) return false; // already on target tile
+    moveUnit(unitId, dx, dy);
+    return true;
+}
+
 bool UnitManagement::buildCity(int x, int y, int playerId, std::string& outName) {
     return buildCity(x, y, playerId, 0, outName);
 }

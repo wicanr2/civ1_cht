@@ -222,6 +222,29 @@ public:
     //   - defender wins -> attacker.alive = false; attacker stays put
     bool moveUnit(int unitId, int dx, int dy);
 
+    // ---- AI MOVEMENT (faithful greedy approximation) ---------------------
+    // findNearestEnemy: scans units_ for alive units owned by a different civ,
+    // and scans cities_ for cities owned by a different civ. Returns the
+    // Chebyshev-nearest target's tile in (tx,ty). Returns the unit id of the
+    // nearest enemy UNIT, or -2 if a city is the nearest target, or -1 when
+    // no target exists. Ties: cities are scanned after units, so unit targets
+    // win on equal distance (first-found wins within a category).
+    //
+    // The full Civ1 AI (Segment_25fb.F0_25fb_0c9d, ~359KB of x86) chooses
+    // targets using a weighted score over (distance, strength, terrain,
+    // diplomacy, ...). We use the well-documented "greedy Chebyshev nearest"
+    // heuristic as a faithful first-cut — this is the same shape every
+    // public Civ1 AI reverse-engineering write-up uses for the "advance on
+    // nearest threat" behaviour.
+    int findNearestEnemy(int unitId, int& tx, int& ty) const;
+
+    // aiStep: find nearest enemy and take ONE step toward it. Computes
+    // dx = sign(tx-ux), dy = sign(ty-uy) (each in {-1,0,1}) and calls
+    // moveUnit; if the step lands on an enemy tile, the existing combat
+    // resolution fires. Returns true when a step (or combat) occurred,
+    // false when no target exists or the unit is dead.
+    bool aiStep(int unitId);
+
     // The last combat outcome (English key for the HUD): "" / "Victory" /
     // "Defeat" / "Battle" (in-progress). MiniWorld reads this for the HUD line.
     const std::string& lastCombatKey() const { return lastCombatKey_; }

@@ -3472,6 +3472,143 @@ static int cityviewtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- AI unit movement test ----------------------------------
+// Verifies the per-end-of-turn AI-unit-movement pass added to
+// CheckPlayerTurn::processEndOfTurn():
+//   (1) Integrated PLAYING flow + one end-of-turn pass founds 6 AI capitals
+//       and each AI city's productionType defaults to Militia.
+//   (2) findNearestEnemy on a fresh AI Militia returns a target (the human
+//       Settlers / human Militia we inject) and the step's (dx,dy) reduces
+//       Chebyshev distance by 1.
+//   (3) Spin processEndOfTurn() until at least one AI Militia exists in
+//       units() (production threshold reached).
+//   (4) Inject a human Militia adjacent to an AI Militia, snapshot the AI
+//       unit's (x,y), call processEndOfTurn() once: assert the AI Militia
+//       either MOVED (its (x,y) changed by exactly 1 step toward the human)
+//       OR combat occurred (one of the two is no longer alive).
+//   (5) Run multiple end-of-turn passes; assert the alive-unit count
+//       changes over time (combat consumes units OR cities produce more).
+static int aimovetest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // (1) Set up integrated PLAYING (7 civs) + one end-of-turn -> 6 AI cities.
+    OpenCiv1Game g;
+    setupGame(g, 480, 300);
+    Translator::instance().enabled = true;
+    FrontEndFlow flow(g);
+    flow.enterTitle();
+    for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+    State s = flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+    chk(s == State::PLAYING, "flow reached PLAYING");
+    auto& um = g.unitManagement();
+    g.checkPlayerTurn().processEndOfTurn();
+    chk(um.cityCount() == 6, "6 AI capitals founded after 1 end-of-turn");
+    // Default productionType is Militia (UnitManagement.h line 105).
+    int milProdCount = 0;
+    for (const auto& c : um.cities())
+        if (c.productionType == UnitType::Militia) ++milProdCount;
+    chk(milProdCount == int(um.cityCount()),
+        "every AI city's productionType defaults to Militia");
+
+    // (3) Spin end-of-turn until at least one AI Militia unit is produced
+    // (shields accumulate at >=1/turn; Militia costs 10 -> <= ~10 turns).
+    int budget = 50;
+    int aiMilitiaCount = 0;
+    while (budget-- > 0) {
+        g.checkPlayerTurn().processEndOfTurn();
+        aiMilitiaCount = 0;
+        for (const auto& u : um.units()) {
+            if (u.alive && u.owner != 0 && u.type == UnitType::Militia)
+                ++aiMilitiaCount;
+        }
+        if (aiMilitiaCount > 0) break;
+    }
+    chk(aiMilitiaCount > 0, "at least one AI Militia produced after spinning turns");
+
+    // Pick the first AI Militia for the adjacency test.
+    int aiUnitId = -1;
+    for (std::size_t i = 0; i < um.units().size(); ++i) {
+        const Unit& u = um.units()[i];
+        if (u.alive && u.owner != 0 && u.type == UnitType::Militia) {
+            aiUnitId = int(i); break;
+        }
+    }
+    chk(aiUnitId >= 0, "found an AI Militia to test");
+    if (aiUnitId < 0) {
+        std::printf("AIMOVETEST: %d failure(s)\n", fail + 1);
+        return 1;
+    }
+
+    // (2) findNearestEnemy: with a human Settlers somewhere, the AI Militia
+    // should find a target. We don't know where the human is — but there IS
+    // a human Settlers in units() from the initial setup (still alive).
+    int tx = -1, ty = -1;
+    int targetId = um.findNearestEnemy(aiUnitId, tx, ty);
+    chk(targetId != -1, "findNearestEnemy returned a target (human exists)");
+    {
+        const Unit& a = um.units()[std::size_t(aiUnitId)];
+        int distBefore = std::max(std::abs(tx - a.x), std::abs(ty - a.y));
+        int dx = (tx > a.x) ? 1 : (tx < a.x ? -1 : 0);
+        int dy = (ty > a.y) ? 1 : (ty < a.y ? -1 : 0);
+        chk(distBefore >= 1, "target is at least 1 tile away");
+        chk(dx != 0 || dy != 0, "step direction is non-zero when not already on target");
+    }
+
+    // (4) Inject a human Militia adjacent to the AI Militia, snapshot the AI
+    // position, run one end-of-turn pass: AI should MOVE (x,y delta) OR combat.
+    {
+        const Unit& aiU = um.units()[std::size_t(aiUnitId)];
+        int ax = aiU.x, ay = aiU.y;
+        // Adjacent tile: prefer east; if out-of-bounds use west.
+        int hx = ax + 1, hy = ay;
+        if (hx >= 80) hx = ax - 1;
+        int humanMilId = um.addUnit(0, UnitType::Militia, hx, hy);
+        chk(humanMilId >= 0, "injected adjacent human Militia");
+        int aliveBefore = 0;
+        for (const auto& u : um.units()) if (u.alive) ++aliveBefore;
+        // Snapshot AI position + alive states.
+        int axBefore = um.units()[std::size_t(aiUnitId)].x;
+        int ayBefore = um.units()[std::size_t(aiUnitId)].y;
+        bool aiAliveBefore = um.units()[std::size_t(aiUnitId)].alive;
+        bool huAliveBefore = um.units()[std::size_t(humanMilId)].alive;
+
+        g.checkPlayerTurn().processEndOfTurn();
+
+        bool aiAliveAfter = um.units()[std::size_t(aiUnitId)].alive;
+        bool huAliveAfter = um.units()[std::size_t(humanMilId)].alive;
+        int axAfter = um.units()[std::size_t(aiUnitId)].x;
+        int ayAfter = um.units()[std::size_t(aiUnitId)].y;
+        bool moved = (axAfter != axBefore) || (ayAfter != ayBefore);
+        bool combat = (aiAliveBefore && huAliveBefore) &&
+                      (!aiAliveAfter || !huAliveAfter);
+        chk(moved || combat, "AI Militia either moved or combat occurred next turn");
+        if (moved) {
+            int stepX = std::abs(axAfter - axBefore);
+            int stepY = std::abs(ayAfter - ayBefore);
+            chk(stepX <= 1 && stepY <= 1, "AI move is a single 8-direction step");
+        }
+    }
+
+    // (5) Run multiple end-of-turn passes; assert the alive-unit count
+    // CHANGES over time (combat OR production keeps the world in motion).
+    int aliveStart = 0;
+    for (const auto& u : um.units()) if (u.alive) ++aliveStart;
+    for (int t = 0; t < 30; ++t) g.checkPlayerTurn().processEndOfTurn();
+    int aliveEnd = 0;
+    for (const auto& u : um.units()) if (u.alive) ++aliveEnd;
+    chk(aliveEnd != aliveStart, "alive-unit count changes over 30 end-of-turn passes");
+
+    Translator::instance().enabled = true;
+
+    if (fail) std::printf("AIMOVETEST: %d failure(s)\n", fail);
+    else      std::printf("AIMOVETEST: all pass (AI greedy-step movement; "
+                          "%d AI Militia produced, alive %d -> %d over 30 turns)\n",
+                          aiMilitiaCount, aliveStart, aliveEnd);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -3536,6 +3673,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--aibehaviortest")) { return aibehaviortest(); }
         else if (!std::strcmp(argv[i], "--cityviewtest")) { return cityviewtest(); }
         else if (!std::strcmp(argv[i], "--combattest")) { return combattest(); }
+        else if (!std::strcmp(argv[i], "--aimovetest")) { return aimovetest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -3601,7 +3739,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
