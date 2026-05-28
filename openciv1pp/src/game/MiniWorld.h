@@ -132,6 +132,24 @@ public:
 
     static uint8_t terrainColor(Terrain t);
 
+    // ---- minimap overlay (Civ1's signature top-right minimap) -----------
+    // Toggled with the 'M' key by the interactive --play / --game loops.
+    // Default ON: the small (80*kMinimapPxPerTile x 50*kMinimapPxPerTile)
+    // overview is drawn in the top-right corner of the framebuffer by draw().
+    // renderMinimap() paints:
+    //   * a 1-px black border + dark fill bg,
+    //   * 1 pixel per terrain tile (using the same minimap palette below,
+    //     which is bright/distinct to read at the 1px scale),
+    //   * a 1-px (or 2x2 when room) dot per city in the owner civ's color,
+    //   * a 1-px dot per alive unit in the owner civ's color,
+    //   * a 1-px outline showing the current main-view camera viewport.
+    void toggleMinimap() { minimapEnabled_ = !minimapEnabled_; }
+    bool minimapEnabled() const { return minimapEnabled_; }
+    void setMinimapEnabled(bool e) { minimapEnabled_ = e; }
+    void renderMinimap(GBitmap& screen) const;
+    // 1 pixel per tile (Civ1's signature density). Width=80, height=50.
+    static constexpr int kMinimapPxPerTile = 1;
+
     // ---- city management (host-game wire-up) ----
     // Attach the OpenCiv1Game host so MiniWorld can call its UnitManagement
     // (e.g. for the B-key build-city action). Also installs a terrain provider
@@ -165,6 +183,7 @@ private:
     std::string lastCityName_;            // last founded city's resolved name
 
     bool usesRealGenerator_ = false;
+    bool minimapEnabled_ = true;
 
     // Cached viewport math from the last draw() — used by screenToTile() to
     // invert the same camera/tile-size mapping. mutable so the const draw()

@@ -328,6 +328,136 @@ void MiniWorld::renderUnits(GBitmap& screen) const {
     }
 }
 
+// ---- minimap overlay ----------------------------------------------------
+// A small (80*1 x 50*1 = 80x50) Civ1 minimap pinned to the top-right corner
+// of the framebuffer. 1 pixel per tile (Civ1's signature density). Uses a
+// dedicated palette block (230..245) so the indices never collide with the
+// main map's terrain colors (200..217), the HUD/marker colors (207..212),
+// or the multi-civ unit colors (220..226). The viewport rectangle (last
+// camera in main-view tile coords) is drawn as a 1-px outline so the player
+// always sees what the main viewport is showing on the overview.
+void MiniWorld::renderMinimap(GBitmap& screen) const {
+    if (!minimapEnabled_) return;
+    const int mmW = w_ * kMinimapPxPerTile;
+    const int mmH = h_ * kMinimapPxPerTile;
+    // Top-right corner with a 4-px margin (Civ1 convention).
+    const int mx = screen.width()  - mmW - 4;
+    const int my = 4;
+    if (mx < 0 || my < 0) return; // framebuffer too small; bail safely.
+
+    // Install minimap palette block (230..245). Bright, distinct hues so the
+    // 1-px terrain dots read at any zoom. Indices match the case() below.
+    screen.palette.set(230,   0,   0,   0);   // border / outline
+    screen.palette.set(231,  20,  20,  20);   // background fill (slightly off-black)
+    screen.palette.set(232,   0,   0, 200);   // Water (deep blue)
+    screen.palette.set(233,  90, 220,  90);   // Grassland (bright green)
+    screen.palette.set(234, 240, 240,  90);   // Plains (yellow)
+    screen.palette.set(235,   0, 130,   0);   // Forest (dark green)
+    screen.palette.set(236, 170, 170, 170);   // Hills (light grey)
+    screen.palette.set(237,  90,  90,  90);   // Mountains (dark grey)
+    screen.palette.set(238, 200, 130,  30);   // Desert (brown/orange)
+    screen.palette.set(239, 210, 210, 210);   // Tundra (very light grey)
+    screen.palette.set(240, 255, 255, 255);   // Arctic (white)
+    screen.palette.set(241,   0, 130, 130);   // Swamp (dark cyan)
+    screen.palette.set(242,   0,  90,   0);   // Jungle (deeper green)
+    screen.palette.set(243,  90, 220, 220);   // River (bright cyan)
+    screen.palette.set(244, 255, 255,  60);   // viewport outline (bright yellow)
+    screen.palette.set(245, 240,  40,  40);   // fallback marker (human red)
+
+    auto miniColor = [](Terrain t) -> uint8_t {
+        switch (t) {
+            case Terrain::Water:     return 232;
+            case Terrain::Grassland: return 233;
+            case Terrain::Plains:    return 234;
+            case Terrain::Forest:    return 235;
+            case Terrain::Hills:     return 236;
+            case Terrain::Mountains: return 237;
+            case Terrain::Desert:    return 238;
+            case Terrain::Tundra:    return 239;
+            case Terrain::Arctic:    return 240;
+            case Terrain::Swamp:     return 241;
+            case Terrain::Jungle:    return 242;
+            case Terrain::River:     return 243;
+            default:                 return 232;
+        }
+    };
+
+    // 1-px black border + dark bg fill.
+    screen.fillRect(Rect{mx - 1, my - 1, mmW + 2, mmH + 2}, 230);
+    screen.fillRect(Rect{mx, my, mmW, mmH}, 231);
+
+    // 1-px-per-tile terrain pass.
+    for (int ty = 0; ty < h_; ++ty) {
+        for (int tx = 0; tx < w_; ++tx) {
+            screen.setPixel(mx + tx * kMinimapPxPerTile,
+                            my + ty * kMinimapPxPerTile,
+                            miniColor(terrainAt(tx, ty)));
+        }
+    }
+
+    // The legacy single-unit cursor marker (human Settlers at unitX_/unitY_)
+    // — drawn FIRST so the cities/units passes can overpaint it (faithful
+    // Civ1 behaviour: when a city is founded on the Settlers' tile, the city
+    // marker replaces the Settlers on the overview).
+    if (unitX_ >= 0 && unitX_ < w_ && unitY_ >= 0 && unitY_ < h_) {
+        screen.setPixel(mx + unitX_ * kMinimapPxPerTile,
+                        my + unitY_ * kMinimapPxPerTile, 245);
+    }
+    if (game_) {
+        const auto& cities = game_->unitManagement().cities();
+        const auto& civs   = game_->unitManagement().civs();
+        // Units pass FIRST (so cities overpaint a stacked unit on the same
+        // tile — the Civ1 minimap shows the city dot when both coexist).
+        const auto& units = game_->unitManagement().units();
+        for (const auto& u : units) {
+            if (!u.alive) continue;
+            if (u.x < 0 || u.y < 0 || u.x >= w_ || u.y >= h_) continue;
+            uint8_t color = 245;
+            if (u.owner >= 0 && u.owner < int(civs.size()))
+                color = civs[u.owner].color;
+            screen.setPixel(mx + u.x * kMinimapPxPerTile,
+                            my + u.y * kMinimapPxPerTile, color);
+        }
+        // Cities pass LAST among the dot passes: city dot wins over a unit
+        // on the same tile. 2x2 block when there is room, else 1px.
+        for (const auto& c : cities) {
+            if (c.x < 0 || c.y < 0 || c.x >= w_ || c.y >= h_) continue;
+            uint8_t color = 245;
+            if (c.owner >= 0 && c.owner < int(civs.size()))
+                color = civs[c.owner].color;
+            int cx = mx + c.x * kMinimapPxPerTile;
+            int cy = my + c.y * kMinimapPxPerTile;
+            screen.setPixel(cx, cy, color);
+            if (kMinimapPxPerTile >= 2) {
+                screen.setPixel(cx + 1, cy, color);
+                screen.setPixel(cx, cy + 1, color);
+                screen.setPixel(cx + 1, cy + 1, color);
+            }
+        }
+    }
+
+    // Viewport rectangle: 1-px outline of the main-view's visible tile
+    // window, computed from the cached camera + viewport size from the last
+    // draw() pass. Clamp to the minimap bounds so partially-off-map cameras
+    // still show a clean rectangle on the edge.
+    if (lastTileSize_ > 0) {
+        int vcols = (lastViewW_ + lastTileSize_ - 1) / lastTileSize_;
+        int vrows = (lastViewH_ + lastTileSize_ - 1) / lastTileSize_;
+        int vx0 = mx + lastCamX_ * kMinimapPxPerTile;
+        int vy0 = my + lastCamY_ * kMinimapPxPerTile;
+        int vx1 = vx0 + vcols * kMinimapPxPerTile - 1;
+        int vy1 = vy0 + vrows * kMinimapPxPerTile - 1;
+        // Clamp.
+        if (vx0 < mx) vx0 = mx;
+        if (vy0 < my) vy0 = my;
+        if (vx1 > mx + mmW - 1) vx1 = mx + mmW - 1;
+        if (vy1 > my + mmH - 1) vy1 = my + mmH - 1;
+        if (vx0 <= vx1 && vy0 <= vy1) {
+            screen.drawRect(Rect{vx0, vy0, vx1 - vx0 + 1, vy1 - vy0 + 1}, 244);
+        }
+    }
+}
+
 void MiniWorld::endTurn() {
     ++turn_;
     // When a host game is attached, run the per-turn housekeeping pass
@@ -486,6 +616,13 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
     // the owner civ's distinct palette colour. No-op when no host game (the
     // legacy single-unit marker above still draws the human).
     renderUnits(fb);
+
+    // Minimap overlay (Civ1's signature top-right miniature world map). Drawn
+    // AFTER terrain + cities + units so the overview reflects the current
+    // game state, BEFORE the HUD bar so the bottom strip is unaffected. The
+    // 'M' key toggles minimapEnabled_ — when off, this is a no-op and the
+    // top-right corner shows the map view underneath.
+    renderMinimap(fb);
 
     // ---- bottom HUD bar (all Chinese, via the translating drawString) ----
     const int hudY = fb.height() - hudH;

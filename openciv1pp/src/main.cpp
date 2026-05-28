@@ -2304,6 +2304,135 @@ static int playtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- minimap overlay (Civ1's signature top-right overview) -----
+// Asserts:
+//   (1) PLAYING: with the minimap ON (default), the minimap pixel area has
+//       non-zero ink (terrain colors 232..243 are drawn into the top-right).
+//   (2) toggleMinimap() OFF: the minimap pixel area renders identically to a
+//       freshly-built world with minimapEnabled = false (i.e. the overlay
+//       leaves no residue when disabled).
+//   (3) Founding a city at the unit's tile makes the minimap pixel at that
+//       (mx + ux, my + uy) cell change to the human civ marker color (not a
+//       terrain color), proving city dots make it onto the overview.
+static int minimaptest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // Helper: build a PLAYING-style game with assets-optional fallback and
+    // return the rendered framebuffer pixels. Drives the same FrontEndFlow
+    // path the integrated --game uses (so the minimap sees real cities/units).
+    auto buildPlaying = [&](OpenCiv1Game& g, FrontEndFlow& flow) {
+        setupGame(g, 480, 300);
+        Translator::instance().enabled = true;
+        flow.enterTitle();
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> MAIN_MENU
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> DIFFICULTY (item 0)
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> TRIBE
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> NAME
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> STARTING
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+    };
+
+    // (1) Minimap ON: top-right has minimap-palette ink (indices 230..245).
+    OpenCiv1Game g1; FrontEndFlow flow1(g1); buildPlaying(g1, flow1);
+    MiniWorld* w1 = flow1.miniWorld();
+    chk(w1 != nullptr && w1->minimapEnabled(),
+        "PLAYING attaches a MiniWorld with minimap ON by default");
+    flow1.draw();
+    GBitmap& fb1 = g1.graphics.screen(0);
+    const int mmW = 80 * MiniWorld::kMinimapPxPerTile;
+    const int mmH = 50 * MiniWorld::kMinimapPxPerTile;
+    const int mx  = fb1.width()  - mmW - 4;
+    const int my  = 4;
+    // Count minimap-palette pixels inside the minimap rect (incl. border).
+    auto countMinimapInk = [&](const GBitmap& fb) {
+        std::size_t n = 0;
+        for (int yy = my - 1; yy <= my + mmH; ++yy)
+            for (int xx = mx - 1; xx <= mx + mmW; ++xx) {
+                uint8_t p = fb.getPixel(xx, yy);
+                if (p >= 230 && p <= 245) ++n;
+            }
+        return n;
+    };
+    std::size_t onInk = countMinimapInk(fb1);
+    chk(onInk > 0, "minimap area has minimap-palette ink when ON");
+    // At least one terrain color (232..243) was drawn — terrain pixel pass ran.
+    bool hasTerrain = false;
+    for (int yy = my; yy < my + mmH && !hasTerrain; ++yy)
+        for (int xx = mx; xx < mx + mmW; ++xx) {
+            uint8_t p = fb1.getPixel(xx, yy);
+            if (p >= 232 && p <= 243) { hasTerrain = true; break; }
+        }
+    chk(hasTerrain, "minimap renders terrain colors (1 px per tile)");
+    dumpPPM(fb1, "/tmp/minimap_on.ppm");
+
+    // (2) toggleMinimap() OFF: re-render and assert the minimap area pixel
+    // buffer matches a freshly-built world that NEVER turned the minimap on.
+    w1->toggleMinimap();
+    chk(!w1->minimapEnabled(), "toggleMinimap flips enabled flag OFF");
+    flow1.draw();
+    // Build a SECOND PLAYING with minimap explicitly disabled from the start.
+    OpenCiv1Game g2; FrontEndFlow flow2(g2); buildPlaying(g2, flow2);
+    MiniWorld* w2 = flow2.miniWorld();
+    chk(w2 != nullptr, "second PLAYING has a MiniWorld");
+    w2->setMinimapEnabled(false);
+    flow2.draw();
+    GBitmap& fb2 = g2.graphics.screen(0);
+    bool sameOff = true;
+    for (int yy = my - 1; yy <= my + mmH && sameOff; ++yy)
+        for (int xx = mx - 1; xx <= mx + mmW; ++xx) {
+            if (fb1.getPixel(xx, yy) != fb2.getPixel(xx, yy)) { sameOff = false; break; }
+        }
+    chk(sameOff,
+        "minimap area pixel-equal to a never-minimap render when toggled OFF");
+    // Also: with the minimap OFF, the area must contain NO minimap-palette ink.
+    chk(countMinimapInk(fb1) == 0,
+        "minimap-palette ink count == 0 when toggled OFF");
+
+    // (3) Found a city: the minimap pixel at the unit's tile becomes the
+    // human civ's marker color. To prove the CITY pass (not the unit pass)
+    // wrote the dot, we first kill any human unit on that tile so the
+    // "before" pixel is a terrain color, then found the city.
+    w1->setMinimapEnabled(true);
+    int ux = w1->unitX(), uy = w1->unitY();
+    // Kill the human's Settlers unit on this tile so the unit pass leaves
+    // the minimap pixel as a pure terrain color before the city is founded.
+    for (auto& u : g1.unitManagement().unitsMut()) {
+        if (u.owner == 0 && u.x == ux && u.y == uy) u.alive = false;
+    }
+    flow1.draw();
+    uint8_t beforeCity = fb1.getPixel(mx + ux * MiniWorld::kMinimapPxPerTile,
+                                      my + uy * MiniWorld::kMinimapPxPerTile);
+    // Pre-condition for the test to be MEANINGFUL: "before" must be a
+    // minimap terrain color (232..243) or the cursor 245 — NOT already the
+    // human civ marker color (which would make the comparison vacuous).
+    uint8_t humanColor = g1.unitManagement().civs().empty()
+                            ? 245
+                            : g1.unitManagement().civs()[0].color;
+    chk(beforeCity != humanColor,
+        "pre-build: minimap pixel at unit tile is NOT yet the civ marker color");
+    std::string cname;
+    chk(w1->buildCityAtUnit(cname, 0),
+        "buildCityAtUnit succeeds on the starting tile");
+    flow1.draw();
+    uint8_t afterCity  = fb1.getPixel(mx + ux * MiniWorld::kMinimapPxPerTile,
+                                      my + uy * MiniWorld::kMinimapPxPerTile);
+    chk(afterCity != beforeCity,
+        "founding a city changes the minimap pixel at the city tile");
+    chk(afterCity == humanColor,
+        "minimap city dot uses the owner civ's marker color");
+    dumpPPM(fb1, "/tmp/minimap_city.ppm");
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail)
+        std::printf("MINIMAPTEST: %d failure(s)\n", fail);
+    else
+        std::printf("MINIMAPTEST: all pass (Civ1 minimap overlay; "
+                    "%zu minimap-palette pixels with ON)\n", onInk);
+    return fail ? 1 : 0;
+}
+
 // Headless verification of the faithful TER257.PIC (col,row) mapping in
 // TerrainTiles.h/.cpp. Three checks:
 //   (1) terrainToTileXY returns Civ1's documented (col=0, row=terrainID) for
@@ -2600,6 +2729,7 @@ static int playInteractive(const std::string& assetDir, bool realgen = false) {
                 }
                 break;
             }
+            case SdlPresenter::KeyM: world.toggleMinimap(); dirty = true; break;
             case SdlPresenter::KeyEsc:   pres.shutdown(); return 0;
             default: break;
         }
@@ -2863,6 +2993,7 @@ static int gameInteractive(const std::string& assetDir) {
                     }
                     break;
                 }
+                case SdlPresenter::KeyM: w->toggleMinimap(); dirty = true; break;
                 case SdlPresenter::KeyEsc: {
                     // ESC in PLAYING backs out to MAIN_MENU (a new game can be
                     // started); does NOT quit the whole app — that's what ESC
@@ -3979,6 +4110,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--aimovetest")) { return aimovetest(); }
         else if (!std::strcmp(argv[i], "--savetest")) { return savetest(); }
         else if (!std::strcmp(argv[i], "--techtest")) { return techtest(); }
+        else if (!std::strcmp(argv[i], "--minimaptest")) { return minimaptest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -4044,7 +4176,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
