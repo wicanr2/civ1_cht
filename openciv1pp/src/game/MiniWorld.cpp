@@ -121,6 +121,27 @@ bool MiniWorld::loadTileset(const std::string& dosAssetDir) {
     return true;
 }
 
+bool MiniWorld::screenToTile(int fbX, int fbY, int& tileX, int& tileY) const {
+    // Inverse of the draw() viewport: top-left of the visible map area is (0,0)
+    // in framebuffer coords; HUD bar sits BELOW the map (y >= lastViewH_).
+    if (lastTileSize_ <= 0) return false;
+    if (fbX < 0 || fbY < 0 || fbX >= lastViewW_ || fbY >= lastViewH_) return false;
+    int tx = lastCamX_ + fbX / lastTileSize_;
+    int ty = lastCamY_ + fbY / lastTileSize_;
+    if (tx < 0 || ty < 0 || tx >= w_ || ty >= h_) return false;
+    tileX = tx; tileY = ty;
+    return true;
+}
+
+bool MiniWorld::handleMouseClick(int fbX, int fbY) {
+    int tx = 0, ty = 0;
+    if (!screenToTile(fbX, fbY, tx, ty)) return false; // HUD / off-map: no move
+    int dx = (tx > unitX_) - (tx < unitX_); // sign in {-1,0,+1}
+    int dy = (ty > unitY_) - (ty < unitY_);
+    if (dx == 0 && dy == 0) return false; // click on the unit itself
+    return moveUnit(dx, dy);
+}
+
 bool MiniWorld::moveUnit(int dx, int dy) {
     int nx = std::clamp(unitX_ + dx, 0, w_ - 1);
     int ny = std::clamp(unitY_ + dy, 0, h_ - 1);
@@ -166,6 +187,12 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
     int camY = unitY_ - rows / 2;
     camX = std::clamp(camX, 0, std::max(0, w_ - cols));
     camY = std::clamp(camY, 0, std::max(0, h_ - rows));
+
+    // Cache the viewport math so screenToTile() / handleMouseClick() invert
+    // exactly this mapping.
+    lastTileSize_ = tileSize;
+    lastCamX_ = camX; lastCamY_ = camY;
+    lastViewW_ = viewW; lastViewH_ = viewH;
 
     fb.clear(208);
 

@@ -936,6 +936,152 @@ static int textboxtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- mouse hit-test / dispatch (headless) ----------------
+// Drives the PURE mouse paths (MenuBoxDialog::itemAt/handleMouse and
+// MiniWorld::screenToTile/handleMouseClick) without opening an SDL window.
+// Exercises a real menu render (so the cached rects are populated by the
+// same code path the interactive loop hits) and a real MiniWorld draw.
+static int mousetest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // ---- MenuBoxDialog: itemAt + handleMouse ----
+    {
+        OpenCiv1Game g;
+        setupGame(g, 320, 200);
+        Translator::instance().enabled = true;
+        g.graphics.screen(0).clear(1);
+        MenuBoxDialog& mb = g.menuBoxDialog();
+        mb.setupNav(int(mainMenuItems().size()), /*disabled*/ 0, /*startIndex*/ 0);
+        // Same setup the menutest uses (mx=30, my=20, windowFrame on).
+        mb.F0_2d05_0031_ShowMenuBox(mainMenuItems(), 30, 20, /*windowFrame*/ true, /*helpOption*/ false);
+
+        // Cached rects: one per option, in option order.
+        const auto& rects = mb.lastItemRects();
+        chk(rects.size() == mainMenuItems().size(),
+            "lastItemRects size == option count after ShowMenuBox");
+
+        // itemAt at the centre of each rect returns the right option index.
+        bool allHit = true;
+        for (std::size_t i = 0; i < rects.size(); ++i) {
+            int cx = rects[i].x + rects[i].w / 2;
+            int cy = rects[i].y + rects[i].h / 2;
+            if (mb.itemAt(cx, cy) != int(i)) { allHit = false; break; }
+        }
+        chk(allHit, "itemAt(centre of each item rect) returns the option index");
+
+        // itemAt far outside the box returns -1.
+        chk(mb.itemAt(5, 5) == -1, "itemAt(5,5) outside the box -> -1");
+        chk(mb.itemAt(319, 199) == -1, "itemAt(bottom-right corner) outside -> -1");
+
+        // Left-click on option 2 sets highlight + writes outSelection=2.
+        int sel = -42;
+        int cx2 = rects[2].x + rects[2].w / 2;
+        int cy2 = rects[2].y + rects[2].h / 2;
+        MenuBoxDialog::MouseEvent click{cx2, cy2, 1, true, false};
+        bool consumed = mb.handleMouse(click, &sel);
+        chk(consumed && sel == 2, "left-click on item 2 returns selection 2");
+        chk(mb.highlight == 2, "left-click sets highlight to clicked item");
+
+        // Hover (motion) on option 4 moves the highlight without selecting.
+        sel = -42;
+        int cx4 = rects[4].x + rects[4].w / 2;
+        int cy4 = rects[4].y + rects[4].h / 2;
+        MenuBoxDialog::MouseEvent hover{cx4, cy4, 0, false, true};
+        chk(!mb.handleMouse(hover, &sel), "hover does not return a selection");
+        chk(sel == -42, "hover does not write outSelection");
+        chk(mb.highlight == 4, "hover moves the highlight");
+
+        // Click OUTSIDE the box -> cancel (-1).
+        sel = -42;
+        MenuBoxDialog::MouseEvent outside{5, 5, 1, true, false};
+        chk(mb.handleMouse(outside, &sel) && sel == -1,
+            "left-click outside the box cancels (-1)");
+
+        // Right-click anywhere -> cancel (-1).
+        sel = -42;
+        MenuBoxDialog::MouseEvent rclick{cx2, cy2, 3, true, false};
+        chk(mb.handleMouse(rclick, &sel) && sel == -1,
+            "right-click cancels (-1)");
+    }
+
+    // ---- MiniWorld: screenToTile round-trip + handleMouseClick ----
+    {
+        const int W = 40, H = 30;
+        OpenCiv1Game g;
+        setupGame(g, 480, 300);
+        Translator::instance().enabled = true;
+        MiniWorld world(W, H, 12345u);
+        world.draw(g.graphics, 1, 12); // populates the cached viewport math.
+
+        // Round-trip: pick a couple of known framebuffer pixels and assert the
+        // resulting tile maps back to the same pixel band.
+        int tx = -1, ty = -1;
+        chk(world.screenToTile(0, 0, tx, ty), "screenToTile(0,0) is inside the viewport");
+        chk(tx >= 0 && ty >= 0, "screenToTile(0,0) returns sensible tile coords");
+        int tx2 = -1, ty2 = -1;
+        chk(world.screenToTile(13, 25, tx2, ty2),
+            "screenToTile(13,25) is inside the viewport");
+        // (13,25) at tileSize=12 -> tile delta (1,2) from the top-left visible.
+        chk(tx2 == tx + 1 && ty2 == ty + 2,
+            "screenToTile advances by 1 tile per tileSize pixels");
+        int dummy = 0;
+        chk(!world.screenToTile(-1, 0, dummy, dummy),
+            "screenToTile rejects negative x (off-map)");
+        chk(!world.screenToTile(0, 299, dummy, dummy),
+            "screenToTile rejects HUD-bar y (below the viewport)");
+
+        // Click east of the unit -> moves (+1, 0).
+        int ux = world.unitX(), uy = world.unitY();
+        // Build a pixel coord clearly east of the unit, inside the viewport.
+        // Camera centres on the unit so unit-pixel ~= (cols/2 * tileSize, rows/2 * tileSize).
+        int unitPxX = (ux - 0) * 0 + ((/*viewW*/ 480) / 12 / 2) * 12 + 6;
+        int unitPxY = (uy - 0) * 0 + ((/*viewH*/ (300 - 36)) / 12 / 2) * 12 + 6;
+        // Actual unit pixel is camCentre*tileSize + tileSize/2; cheat by going
+        // via screenToTile from the unit's known map coords. Use the unit-pixel
+        // estimate above + a deliberate offset of (+24, 0) -> two tiles east.
+        // Reset the world (clean clone with fresh moves).
+        MiniWorld w2(W, H, 12345u);
+        w2.draw(g.graphics, 1, 12);
+        int beforeX = w2.unitX(), beforeY = w2.unitY();
+        chk(w2.handleMouseClick(unitPxX + 24, unitPxY),
+            "handleMouseClick east of the unit moves the unit");
+        chk(w2.unitX() == beforeX + 1 && w2.unitY() == beforeY,
+            "click east of unit -> moveUnit(+1, 0)");
+
+        // Click south-west of the unit -> moves (-1, +1).
+        MiniWorld w3(W, H, 12345u);
+        w3.draw(g.graphics, 1, 12);
+        int bx3 = w3.unitX(), by3 = w3.unitY();
+        chk(w3.handleMouseClick(unitPxX - 24, unitPxY + 24),
+            "handleMouseClick south-west of the unit moves the unit");
+        chk(w3.unitX() == bx3 - 1 && w3.unitY() == by3 + 1,
+            "click south-west of unit -> moveUnit(-1, +1)");
+
+        // Click on the unit's own pixel: no movement.
+        MiniWorld w4(W, H, 12345u);
+        w4.draw(g.graphics, 1, 12);
+        int bx4 = w4.unitX(), by4 = w4.unitY();
+        chk(!w4.handleMouseClick(unitPxX, unitPxY),
+            "handleMouseClick on the unit's own tile returns false");
+        chk(w4.unitX() == bx4 && w4.unitY() == by4,
+            "click on the unit's tile does not move the unit");
+
+        // Click on the HUD bar (below the map): no movement.
+        MiniWorld w5(W, H, 12345u);
+        w5.draw(g.graphics, 1, 12);
+        int bx5 = w5.unitX(), by5 = w5.unitY();
+        chk(!w5.handleMouseClick(100, 290),
+            "handleMouseClick on the HUD (y>=viewH) returns false");
+        chk(w5.unitX() == bx5 && w5.unitY() == by5,
+            "HUD click does not move the unit");
+    }
+
+    if (fail) std::printf("MOUSETEST: %d failure(s)\n", fail);
+    else      std::printf("MOUSETEST: all pass (mouse hit-test/dispatch)\n");
+    return fail ? 1 : 0;
+}
+
 // ---------------- interactive Chinese main menu (SDL) ----------------
 // Same setup as menutest (translation ON), but opens the real SDL window and
 // loops draw -> present -> pollKey -> navStep until ENTER (>=0) or ESC (-1).
@@ -966,10 +1112,20 @@ static int menuInteractive() {
     int result = MenuBoxDialog::NavNone;
     while (result == MenuBoxDialog::NavNone) {
         if (!pres.present(fb)) { result = MenuBoxDialog::NavCancel; break; }
-        int key = pres.pollKey();
-        if (key == 0) continue; // present() vsyncs, so the loop won't busy-spin hard
         int prev = mb.highlight;
-        result = mb.navStep(key);
+        // Mouse: hover moves highlight; click selects (caller treats outSel as ENTER).
+        SdlPresenter::MouseEvent me;
+        while (pres.pollMouse(me)) {
+            MenuBoxDialog::MouseEvent mm{me.x, me.y, me.button, me.down, me.motion};
+            int outSel = MenuBoxDialog::NavNone;
+            if (mb.handleMouse(mm, &outSel)) {
+                result = (outSel < 0) ? MenuBoxDialog::NavCancel : outSel;
+                break;
+            }
+        }
+        if (result != MenuBoxDialog::NavNone) break;
+        int key = pres.pollKey();
+        if (key != 0) result = mb.navStep(key);
         if (result == MenuBoxDialog::NavNone && mb.highlight != prev) redraw();
     }
     pres.shutdown();
@@ -1223,9 +1379,32 @@ static int newgameInteractive(const std::string& assetDir) {
 
     while (true) {
         if (!pres.present(fb)) break;
+        FrontEndFlow::State prev = flow.state();
+        // Mouse: dispatch into the current menu (if any) as a click==Enter.
+        SdlPresenter::MouseEvent me;
+        bool consumedMouse = false;
+        while (pres.pollMouse(me)) {
+            MenuBoxDialog::MouseEvent mm{me.x, me.y, me.button, me.down, me.motion};
+            int outSel = MenuBoxDialog::NavNone;
+            if (g.menuBoxDialog().handleMouse(mm, &outSel)) {
+                int navKey = (outSel < 0) ? MenuBoxDialog::KeyEsc : MenuBoxDialog::KeyEnter;
+                FrontEndFlow::State s = flow.handleKey(navKey);
+                if (s != prev) std::printf("[newgame] -> %s\n", stateName(s));
+                consumedMouse = true;
+                if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT) {
+                    flow.draw(); pres.present(fb); pres.shutdown();
+                    std::printf("[newgame] ended in %s; difficulty=%d tribe=%d name=\"%s\"\n",
+                                stateName(flow.state()),
+                                flow.chosenDifficulty(), flow.chosenTribe(),
+                                flow.chosenName().c_str());
+                    return 0;
+                }
+                break;
+            }
+        }
+        if (consumedMouse) { flow.draw(); continue; }
         int key = pres.pollKey();
         if (key == 0) continue;
-        FrontEndFlow::State prev = flow.state();
         FrontEndFlow::State s = flow.handleKey(key);
         if (s != prev) std::printf("[newgame] -> %s\n", stateName(s));
         if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT) {
@@ -1391,9 +1570,33 @@ static int menuflowInteractive() {
 
     while (true) {
         if (!pres.present(fb)) break;          // window closed
+        FrontEndFlow::State prevState = flow.state();
+        // Mouse: route the active menu's click as Enter (or cancel as Esc).
+        SdlPresenter::MouseEvent me;
+        bool consumedMouse = false;
+        while (pres.pollMouse(me)) {
+            MenuBoxDialog::MouseEvent mm{me.x, me.y, me.button, me.down, me.motion};
+            int outSel = MenuBoxDialog::NavNone;
+            if (g.menuBoxDialog().handleMouse(mm, &outSel)) {
+                int navKey = (outSel < 0) ? MenuBoxDialog::KeyEsc : MenuBoxDialog::KeyEnter;
+                FrontEndFlow::State s = flow.handleKey(navKey);
+                if (s != prevState) {
+                    std::printf("[flow] -> %s\n", stateName(s));
+                    if (s == FrontEndFlow::State::STARTING)
+                        std::printf("selected difficulty %d\n", flow.chosenDifficulty());
+                }
+                consumedMouse = true;
+                if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT) {
+                    flow.draw(); pres.present(fb); pres.shutdown();
+                    std::printf("[flow] ended in %s\n", stateName(flow.state()));
+                    return 0;
+                }
+                break;
+            }
+        }
+        if (consumedMouse) { flow.draw(); continue; }
         int key = pres.pollKey();
         if (key == 0) continue;                // present() vsyncs the loop
-        FrontEndFlow::State prevState = flow.state();
         FrontEndFlow::State s = flow.handleKey(key);
         if (s != prevState) {
             std::printf("[flow] -> %s\n", stateName(s));
@@ -1557,10 +1760,20 @@ static int titleInteractive(const std::string& assetDir) {
     int result = MenuBoxDialog::NavNone;
     while (result == MenuBoxDialog::NavNone) {
         if (!pres.present(fb)) { result = MenuBoxDialog::NavCancel; break; }
-        int key = pres.pollKey();
-        if (key == 0) continue;
         int prev = mb.highlight;
-        result = mb.navStep(key);
+        // Mouse: hover moves highlight; click selects (matches menuInteractive).
+        SdlPresenter::MouseEvent me;
+        while (pres.pollMouse(me)) {
+            MenuBoxDialog::MouseEvent mm{me.x, me.y, me.button, me.down, me.motion};
+            int outSel = MenuBoxDialog::NavNone;
+            if (mb.handleMouse(mm, &outSel)) {
+                result = (outSel < 0) ? MenuBoxDialog::NavCancel : outSel;
+                break;
+            }
+        }
+        if (result != MenuBoxDialog::NavNone) break;
+        int key = pres.pollKey();
+        if (key != 0) result = mb.navStep(key);
         if (result == MenuBoxDialog::NavNone && mb.highlight != prev) redraw();
     }
     pres.shutdown();
@@ -1848,14 +2061,24 @@ static int playInteractive(const std::string& assetDir) {
     world.draw(g.graphics, 1, world.hasTileset() ? 16 : 12);
     while (true) {
         if (!pres.present(fb)) break;           // window closed
-        int key = pres.pollKey();
-        if (key == 0) continue;                 // present() vsyncs the loop
         bool dirty = false;
+        // Mouse: left-click on a tile moves the unit ONE step toward it.
+        SdlPresenter::MouseEvent me;
+        while (pres.pollMouse(me)) {
+            if (!me.motion && me.down && me.button == 1) {
+                if (world.handleMouseClick(me.x, me.y)) dirty = true;
+            }
+        }
+        int key = pres.pollKey();
+        if (key == 0) {
+            if (dirty) world.draw(g.graphics, 1, world.hasTileset() ? 16 : 12);
+            continue;
+        }
         switch (key) {
-            case SdlPresenter::KeyUp:    dirty = world.moveUnit(0, -1); break;
-            case SdlPresenter::KeyDown:  dirty = world.moveUnit(0,  1); break;
-            case SdlPresenter::KeyLeft:  dirty = world.moveUnit(-1, 0); break;
-            case SdlPresenter::KeyRight: dirty = world.moveUnit( 1, 0); break;
+            case SdlPresenter::KeyUp:    dirty = world.moveUnit(0, -1) || dirty; break;
+            case SdlPresenter::KeyDown:  dirty = world.moveUnit(0,  1) || dirty; break;
+            case SdlPresenter::KeyLeft:  dirty = world.moveUnit(-1, 0) || dirty; break;
+            case SdlPresenter::KeyRight: dirty = world.moveUnit( 1, 0) || dirty; break;
             case SdlPresenter::KeyEnter: world.endTurn(); dirty = true; break;
             case SdlPresenter::KeyEsc:   pres.shutdown(); return 0;
             default: break;
@@ -1935,6 +2158,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--maptest")) { return maptest(); }
         else if (!std::strcmp(argv[i], "--titletest")) { return titletest(); }
         else if (!std::strcmp(argv[i], "--newgametest")) { return newgametest(); }
+        else if (!std::strcmp(argv[i], "--mousetest")) { return mousetest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             const char* dir = argv[++i]; const char* out = argv[++i];
@@ -1981,7 +2205,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

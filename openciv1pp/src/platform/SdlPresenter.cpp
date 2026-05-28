@@ -48,6 +48,40 @@ bool SdlPresenter::pumpEvents() {
     return !quit_;
 }
 
+bool SdlPresenter::pollMouse(MouseEvent& out) {
+    // Drain non-mouse events without losing them: peek the queue, and only
+    // consume the next mouse event. To keep the implementation simple (and
+    // because the only other consumer is pollKey()) we use SDL_PeepEvents to
+    // pick the next mouse event in queue order.
+    SDL_PumpEvents();
+    SDL_Event ev;
+    while (true) {
+        int got = SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_MOUSEMOTION, SDL_MOUSEBUTTONUP);
+        if (got <= 0) return false;
+        if (ev.type == SDL_QUIT) { quit_ = true; return false; }
+        // Map the SDL window coords back through the renderer's logical-size
+        // mapping so callers always see framebuffer (logical) coords.
+        SDL_Renderer* ren = static_cast<SDL_Renderer*>(renderer_);
+        float lx = 0.f, ly = 0.f;
+        if (ev.type == SDL_MOUSEMOTION) {
+            SDL_RenderWindowToLogical(ren, ev.motion.x, ev.motion.y, &lx, &ly);
+            out.x = int(lx); out.y = int(ly);
+            out.button = 0;
+            out.down = (ev.motion.state != 0);
+            out.motion = true;
+            return true;
+        }
+        if (ev.type == SDL_MOUSEBUTTONDOWN || ev.type == SDL_MOUSEBUTTONUP) {
+            SDL_RenderWindowToLogical(ren, ev.button.x, ev.button.y, &lx, &ly);
+            out.x = int(lx); out.y = int(ly);
+            out.button = ev.button.button; // 1=left, 2=middle, 3=right
+            out.down = (ev.type == SDL_MOUSEBUTTONDOWN);
+            out.motion = false;
+            return true;
+        }
+    }
+}
+
 int SdlPresenter::pollKey() {
     // Mapped codes mirror MenuBoxDialog::NavKey (kept as literals so this SDL
     // layer stays free of any game-header dependency): 1=Up,2=Down,3=Enter,4=Esc;

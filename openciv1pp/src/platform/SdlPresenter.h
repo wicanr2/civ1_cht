@@ -32,6 +32,18 @@ public:
                          KeyLeft = 5, KeyRight = 6;
     int pollKey();
 
+    // ---- mouse input ----
+    // Framebuffer-space (logical) coordinates. button: 1=left, 2=middle, 3=right
+    // (matches SDL's button numbering). For motion events button is 0 and down
+    // reflects the current button mask (true if any button held).
+    struct MouseEvent { int x = 0, y = 0, button = 0; bool down = false; bool motion = false; };
+
+    // Pulls one pending mouse event (button down/up/motion). Returns true on
+    // success; out is populated. Coordinates are mapped back from the window's
+    // SDL coords to the logical framebuffer coords (SetLogicalSize is set in
+    // init), so x/y are always inside [0,fbW) x [0,fbH).
+    bool pollMouse(MouseEvent& out);
+
     // True once the user asked to quit (SDL_QUIT or pressed ESC).
     bool quit() const { return quit_; }
 

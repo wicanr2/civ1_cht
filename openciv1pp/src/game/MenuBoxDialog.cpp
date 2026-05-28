@@ -183,6 +183,19 @@ int MenuBoxDialog::F0_2d05_0031_ShowMenuBox(const std::string& menuString, int x
         }
     }
 
+    // Cache the box geometry + per-option rects for hit-test (itemAt / handleMouse).
+    // Rect math mirrors the highlight bar drawn below: same x/y/w/h formula.
+    lastBoxX_ = x;            lastBoxY_ = y;
+    lastBoxW_ = windowWidth;  lastBoxH_ = windowHeight;
+    lastItemRects_.clear();
+    lastItemRects_.reserve(optionIndexes.size());
+    for (std::size_t oi = 0; oi < optionIndexes.size(); ++oi) {
+        int li = optionIndexes[oi];
+        lastItemRects_.push_back(ItemRect{
+            contentLeft, contentTop + li * lineHeight - 1,
+            maxLineWidth, lineHeight, int(oi)});
+    }
+
     // ---- INPUT LOOP STUB ----------------------------------------------------
     // The C# blocking poll loop (mouse + kbhit/getch navigation) is skipped.
     // We honour `defaultOptionIndex` then override with `forcedSelection` so a
@@ -275,6 +288,62 @@ int MenuBoxDialog::setupNav(int optionCount, uint32_t disabledMask, int startInd
     if ((navDisabled_ & (uint32_t(1) << idx)) != 0) idx = navMove(idx, +1);
     highlight = idx;
     return highlight;
+}
+
+// ---- mouse hit-test / dispatch ---------------------------------------------
+// Uses the rects cached by F0_2d05_0031_ShowMenuBox. itemAt returns the option
+// index whose rect contains (fbX,fbY), or -1 outside the box / on a non-option
+// (header) line. handleMouse turns motion into a hover-highlight, left-click
+// into a selection, and right-click / click-outside into a cancel (-1).
+
+int MenuBoxDialog::itemAt(int fbX, int fbY) const {
+    for (const ItemRect& r : lastItemRects_) {
+        if (fbX >= r.x && fbX < r.x + r.w &&
+            fbY >= r.y && fbY < r.y + r.h)
+            return r.optionIndex;
+    }
+    return -1;
+}
+
+bool MenuBoxDialog::handleMouse(const MouseEvent& ev, int* outSelection) {
+    // Inside-the-box test for cancel-on-outside-click (uses the cached box
+    // geometry rather than the per-option rects so clicks on the box border
+    // are not treated as cancel).
+    auto insideBox = [&](int x, int y) {
+        return x >= lastBoxX_ && x < lastBoxX_ + lastBoxW_ &&
+               y >= lastBoxY_ && y < lastBoxY_ + lastBoxH_;
+    };
+
+    int idx = itemAt(ev.x, ev.y);
+
+    // Hover (motion or any non-down event): just move the highlight.
+    if (ev.motion || !ev.down) {
+        if (idx >= 0) highlight = idx;
+        return false;
+    }
+
+    // Button-down dispatch.
+    if (ev.button == 1) {                       // left
+        if (idx >= 0) {
+            // Respect the disabled mask exactly like navStep(KeyEnter).
+            if ((navDisabled_ & (uint32_t(1) << idx)) != 0) return false;
+            highlight = idx;
+            if (outSelection) *outSelection = idx;
+            return true;
+        }
+        if (!insideBox(ev.x, ev.y)) {
+            highlight = -1;
+            if (outSelection) *outSelection = -1; // outside = cancel
+            return true;
+        }
+        return false; // inside the box but not on an option: no-op
+    }
+    if (ev.button == 3) {                       // right = cancel
+        highlight = -1;
+        if (outSelection) *outSelection = -1;
+        return true;
+    }
+    return false;
 }
 
 int MenuBoxDialog::navStep(int keycode) {

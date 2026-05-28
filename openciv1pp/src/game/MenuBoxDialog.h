@@ -101,6 +101,34 @@ public:
     // Get navigation key. STUB: no real SDL input; returns 0 ("no key").
     int F0_2d05_0ac9_GetNavigationKey();
 
+    // ---- mouse hit-test / dispatch (headless-testable) -----------------------
+    // The last drawn box's geometry is remembered after F0_2d05_0031_ShowMenuBox
+    // so itemAt()/handleMouse() can be called without re-running the renderer.
+    // Each "item rect" covers a single option line (matches the C# highlight bar
+    // the input loop draws and the screen area you'd click to pick it).
+    struct ItemRect { int x, y, w, h; int optionIndex; };
+
+    // Returns the option index whose rect contains (fbX,fbY), or -1 if outside
+    // the box or on a non-option (header) line.
+    int itemAt(int fbX, int fbY) const;
+
+    // Mouse event for dispatch. Mirrors SdlPresenter::MouseEvent but kept
+    // independent so the game header has no SDL dep.
+    struct MouseEvent { int x, y, button; bool down; bool motion; };
+
+    // Hovering moves the highlight to the option under the cursor (motion or
+    // any-button event). Left-click (button==1, down) on an option both sets
+    // the highlight AND writes that index to *outSelection (caller treats it
+    // as ENTER). Right-click (button==3, down) or any click OUTSIDE the box
+    // writes -1 to *outSelection (caller treats it as ESC/cancel). Returns
+    // true if outSelection was written (a selection or cancel happened); false
+    // for plain hover/motion or button-up events.
+    bool handleMouse(const MouseEvent& ev, int* outSelection);
+
+    // The cached item rects from the last draw (one entry per selectable
+    // option; rect is the highlight-bar area). Exposed for tests.
+    const std::vector<ItemRect>& lastItemRects() const { return lastItemRects_; }
+
 private:
     // navStep state (populated by setupNav).
     int navOptionCount_ = 0;
@@ -112,6 +140,10 @@ private:
 
     OpenCiv1Game& p;
     VCPU& cpu;
+
+    // Cached layout from the last F0_2d05_0031_ShowMenuBox call (for hit-test).
+    std::vector<ItemRect> lastItemRects_;
+    int lastBoxX_ = 0, lastBoxY_ = 0, lastBoxW_ = 0, lastBoxH_ = 0;
 };
 
 } // namespace oc1

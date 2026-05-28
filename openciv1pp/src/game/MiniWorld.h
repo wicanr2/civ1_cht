@@ -49,6 +49,21 @@ public:
     bool moveUnit(int dx, int dy);
     void endTurn() { ++turn_; }
 
+    // ---- mouse input (hit-test + dispatch) ----
+    // Inverse of the draw() viewport math: convert framebuffer pixel coords to
+    // map tile coords. Uses the same camera/tile-size used by the last draw()
+    // (cached so the inverse is consistent regardless of how it was called).
+    // Returns false (and leaves tileX/tileY at whatever was passed in) for
+    // clicks that fall outside the map viewport (e.g. on the HUD bar).
+    bool screenToTile(int fbX, int fbY, int& tileX, int& tileY) const;
+
+    // Move the unit ONE step toward the clicked tile. Delta sign of
+    // tileX-unitX / tileY-unitY, clamped to {-1,0,1} on each axis (so this
+    // composes with the existing moveUnit(dx,dy) step model). Returns true if
+    // the unit actually moved. Clicks on the HUD or on the unit's own tile
+    // return false (no movement).
+    bool handleMouseClick(int fbX, int fbY);
+
     // ---- real-asset tileset (optional) ----
     bool loadTileset(const std::string& dosAssetDir);
     bool hasTileset() const { return tileset_ != nullptr; }
@@ -69,6 +84,14 @@ private:
 
     std::unique_ptr<GBitmap> tileset_;
     std::unique_ptr<GBitmap> sprites_;
+
+    // Cached viewport math from the last draw() — used by screenToTile() to
+    // invert the same camera/tile-size mapping. mutable so the const draw()
+    // can update it. Default values match the headless "draw never called"
+    // case: tileSize=16, camX/camY = top-left, viewW/H = full screen.
+    mutable int lastTileSize_ = 16;
+    mutable int lastCamX_ = 0, lastCamY_ = 0;
+    mutable int lastViewW_ = 320, lastViewH_ = 200 - 36;
 
     Terrain& at(int x, int y) { return tiles_[std::size_t(y) * w_ + x]; }
     void placeUnitNearCenter();
