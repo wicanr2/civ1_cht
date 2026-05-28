@@ -123,6 +123,72 @@ inline const BuildingDef& buildingDefOf(BuildingType t) {
     return kDefs[i];
 }
 
+// ---- Wonders of the World -----------------------------------------------
+// A faithful subset of Civ1's 28 wonders. We ship 4 iconic early-era wonders;
+// the full 28-wonder roster + senate/spaceship-tier wonders are // TODO(port).
+// Numeric ids are stable so v7 saves stay readable when more wonders ship.
+//
+// Wonder rules (faithful Civ1):
+//   - Each wonder can be owned by AT MOST ONE civ for the whole game.
+//   - Tech-gated: civ must know the WonderDef's techPrereq to start it.
+//   - Built like a building: a city accumulates shields to the cost.
+//   - When two civs simultaneously target the same wonder, the one that
+//     completes first wins (the second's production switches off and
+//     shields stay reserved — we don't model the "convert to gold" payoff).
+//
+// Effects (simplified — documented in WonderDef.effect_description):
+//   - Pyramids        : civ-wide +1 food per city (foodGross bump).
+//                       Civ1: any government works without Senate. We collapse
+//                       to +1 food/city (food is modeled; senate isn't).
+//   - HangingGardens  : civ-wide +1 science per city.
+//                       Civ1: +1 happy citizen everywhere. Happiness isn't
+//                       modeled, so we apply +1 science as a proxy effect.
+//   - GreatWall       : civ-wide defender on city tile +50% defense.
+//                       Civ1: Walls everywhere. We don't auto-grant Walls;
+//                       instead resolveCombat multiplies defender's defense
+//                       by 3/2 in cities owned by the Great Wall owner.
+//                       Stacks with explicit city Walls (a Walled city of
+//                       the Great Wall owner gets x3 * 3/2 = x4.5 → floor).
+//   - Colossus        : civ-wide +1 science per city.
+//                       Civ1: +1 trade per ocean tile. Trade isn't modeled
+//                       per-tile, so we apply +1 science as a proxy effect.
+enum class WonderType : uint8_t {
+    None           = 0,
+    Pyramids       = 1,
+    HangingGardens = 2,
+    GreatWall      = 3,
+    Colossus       = 4,
+};
+static constexpr int kWonderCount = 5; // includes None at index 0
+
+struct WonderDef {
+    const char* name;            // English key (Translator -> Chinese)
+    int         cost;            // shield cost (Civ1 wonders are 200; Great
+                                 // Wall is 300 in some Civ1 revisions — we
+                                 // use 200 across the board for parity).
+    Tech        techPrereq;      // required tech
+    const char* effect_description;
+};
+
+// Faithful WonderDef table. effect_description carries the simplification
+// note so HUD/translation can show a faithful summary.
+inline const WonderDef& wonderDefOf(WonderType w) {
+    static const WonderDef kDefs[kWonderCount] = {
+        {"None",            0,   Tech::None,          ""},
+        {"Pyramids",        200, Tech::Masonry,
+         "+1 food per city (Civ1: any govt w/o senate; simplified)"},
+        {"Hanging Gardens", 200, Tech::Pottery,
+         "+1 science per city (Civ1: +1 happy citizen; simplified)"},
+        {"Great Wall",      200, Tech::Construction,
+         "Defender +50% in own cities (stacks with Walls)"},
+        {"Colossus",        200, Tech::BronzeWorking,
+         "+1 science per city (Civ1: +1 trade per ocean tile; simplified)"},
+    };
+    int i = int(w);
+    if (i < 0 || i >= kWonderCount) i = 0;
+    return kDefs[i];
+}
+
 struct Unit {
     int owner = 0;            // civ index into UnitManagement::civs()
     int x = 0, y = 0;         // Position (matches C# GPoint)
@@ -170,6 +236,16 @@ struct CivState {
     Government govt = Government::Despotism;
     Government targetGovt = Government::Despotism;
     int anarchyTurnsLeft = 0;
+
+    // ---- Wonders (civ-wide) ----------------------------------------------
+    // The set of Wonders this civ owns. Wonders are CIV-WIDE (not per-city)
+    // because their effects (Pyramids food, Great Wall combat, etc.) apply
+    // to every city of the owning civ. Single-ownership across the game is
+    // enforced by UnitManagement::wonderOwner(w) returning -1 when unowned.
+    std::set<WonderType> ownedWonders;
+    bool hasWonder(WonderType w) const {
+        return ownedWonders.find(w) != ownedWonders.end();
+    }
 };
 
 struct City {
@@ -197,9 +273,15 @@ struct City {
     // end-of-turn threshold pass stays a single comparison.
     // `ownedBuildings` is the set of buildings this city has already built;
     // it can't build the same improvement twice (faithful Civ1 rule).
-    enum class ProductionKind : uint8_t { Unit = 0, Building = 1 };
+    // ProductionKind expanded for the Wonders slice (v7): Wonder is the
+    // third producible category. Numeric values are stable so v7 saves stay
+    // readable. When productionKind == Wonder, productionWonderType names
+    // the target and `production` caches wonderDefOf().cost. Building/Unit
+    // branches stay 1:1 with the v4 path.
+    enum class ProductionKind : uint8_t { Unit = 0, Building = 1, Wonder = 2 };
     ProductionKind productionKind = ProductionKind::Unit;
     BuildingType   productionBuildingType = BuildingType::None;
+    WonderType     productionWonderType   = WonderType::None;
     std::set<BuildingType> ownedBuildings;
 
     // Convenience: does this city own `b`?
@@ -375,6 +457,40 @@ public:
     // and syncs `production` to buildingDefOf(b).cost.
     bool setCityProductionBuilding(int cityId, BuildingType b);
 
+    // ---- Wonders (civ-wide) ---------------------------------------------
+    // Switch a city's production to a WONDER. Refuses (returns false) when:
+    //   - cityId is out of range,
+    //   - the wonder is WonderType::None,
+    //   - the owner civ does not yet know the wonder's techPrereq,
+    //   - the wonder is ALREADY owned by ANY civ in this game (Civ1 rule:
+    //     at most one civ owns each wonder).
+    // On success: productionKind=Wonder, productionWonderType=w, and
+    // `production` syncs to wonderDefOf(w).cost. Existing accumulated
+    // shields are preserved (faithful Civ1 carry-over on production switch).
+    bool setCityProductionWonder(int cityId, WonderType w);
+
+    // Return the civ id that owns wonder `w`, or -1 when unowned (any civ
+    // can still build it). Iterates civs() — O(numCivs * numWonders); cheap.
+    int wonderOwner(WonderType w) const;
+
+    // Return the cityId that BUILT wonder `w` for that civ (the "wonder home"
+    // city), or -1 when the wonder is unowned. Useful for CityView to mark
+    // the home city specially and for tests/UI to report provenance.
+    int wonderOwnerCity(WonderType w) const;
+
+    // Record a wonder completion: set civ.ownedWonders + the owner-city map.
+    // No-op when w == None or civId out of range. When the wonder is already
+    // owned by some civ, this is also a no-op (the completion path should
+    // have checked first; defensive).
+    void recordWonderCompletion(int civId, int cityId, WonderType w);
+
+    // Direct access for GameLoadAndSave to restore the owner-city map.
+    const int* wonderOwnerCityArray() const { return wonderOwnerCity_; }
+    void setWonderOwnerCity(WonderType w, int cityId) {
+        int i = int(w);
+        if (i > 0 && i < kWonderCount) wonderOwnerCity_[i] = cityId;
+    }
+
     // Combat-modifier helper: returns true when the city at tile (x,y) owned
     // by `owner` has BuildingType `b`. Used by resolveCombat to apply the
     // Barracks (+50% attack) and Walls (defender x3) bonuses without leaking
@@ -401,9 +517,15 @@ public:
     // 0, but defenderRoll >= 0 -> defender wins ties). defense==0 is treated
     // as 1 to avoid div-by-zero (Civ1 has no 0-defense units; Settlers' 0
     // attack is the only zero stat in this slice).
+    // `defenderInOwnCityWithGreatWall` adds the civ-wide Great Wall city
+    // defense bonus (defender.defense * 3/2) ON TOP of explicit Walls.
+    // It is computed by moveUnit (which knows whether the defender stands
+    // on a city tile owned by its own civ, and whether that civ owns the
+    // Great Wall). Pure-headless callers pass true when testing the bonus.
     static bool resolveCombat(Unit& attacker, Unit& defender,
                               uint32_t& rngState,
-                              bool defenderHasWalls = false);
+                              bool defenderHasWalls = false,
+                              bool defenderInOwnCityWithGreatWall = false);
 
     // moveUnit: move a unit by (dx,dy) by ONE step. When the destination tile
     // has an enemy alive unit, runs combat instead of moving (see resolveCombat).
@@ -460,6 +582,10 @@ private:
     int year_ = -4000; // StartGameMenu.cs line 124: GameData.Year = -4000
     uint32_t combatRng_ = 0xCAFEBABEu; // tests override via setCombatRngSeed
     std::string lastCombatKey_;        // "" / "Victory" / "Defeat"
+    // Per-wonder owner cityId. -1 means "unowned (any civ may build it)".
+    // Index 0 (WonderType::None) is unused but kept for indexing parity with
+    // the enum's numeric values.
+    int wonderOwnerCity_[kWonderCount] = { -1, -1, -1, -1, -1 };
 };
 
 } // namespace oc1

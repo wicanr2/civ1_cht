@@ -61,6 +61,12 @@ enum class Tech : int8_t {
     None          = -1,
     Alphabet      = 0,
     Currency      = 2,
+    // Construction = 5 (faithful to C# TechnologyAdvanceEnum.Construction);
+    // Civ1 prereq is Masonry + CurrencyAlternate, we collapse to a single
+    // Masonry prereq for the early-era subset (mirrors the same single-
+    // prereq simplification used by Monarchy/CodeOfLaws above).
+    // Added for the Wonders slice: Great Wall requires Construction.
+    Construction  = 5,
     Masonry       = 16,
     BronzeWorking = 17,
     IronWorking   = 18,

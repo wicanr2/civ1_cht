@@ -5018,6 +5018,317 @@ static int governmenttest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Wonders of the World (--wondertest) -------------------
+// Verifies the WonderType slice end-to-end:
+//   (1) Tech gate: setCityProductionWonder(Pyramids) refused until the
+//       civ knows Masonry. After unlocking Masonry it succeeds.
+//   (2) Production cycle: end-of-turn loop accumulates shields to the
+//       Pyramids cost (200); on completion the civ's ownedWonders set
+//       contains Pyramids, wonderOwnerCity points at the building city,
+//       productionKind falls back to Unit (Militia).
+//   (3) Single-ownership: a SECOND civ with Masonry cannot start the
+//       same Pyramids (setCityProductionWonder refuses).
+//   (4) Great Wall combat: a defender on a city tile whose civ owns the
+//       Great Wall wins MORE often than the baseline (no Great Wall).
+//   (5) Pyramids food bonus: a city with Pyramids has a higher foodGross
+//       than the same city without Pyramids (delta == +1).
+//   (6) Save/load v7 round-trip: per-civ ownedWonders + per-city
+//       productionWonderType + global owner-city map all preserved.
+//   (7) CityView render: translate-on vs translate-off pixels differ
+//       (Chinese 奇蹟/金字塔/長城 vs the English originals).
+static int wondertest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // ---- (1)+(2): tech gate + production cycle ---------------------------
+    {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        Translator::instance().enabled = true;
+        MiniWorld w(20, 20, 4242u);
+        w.attachGame(g);
+        auto& um = g.unitManagement();
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 1);
+        g.techResearch().initCivs(2);
+
+        int gx = -1, gy = -1;
+        for (int y = 0; y < 20 && gx < 0; ++y)
+            for (int x = 0; x < 20 && gx < 0; ++x) {
+                Terrain t = w.terrainAt(x, y);
+                if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+            }
+        chk(gx >= 0, "(1) found a land tile for the city");
+        std::string nm;
+        chk(um.buildCity(gx, gy, 0, nm), "(1) city founded");
+        const int cityId = 0;
+
+        // Tech gate: without Masonry, Pyramids is refused.
+        chk(!um.setCityProductionWonder(cityId, WonderType::Pyramids),
+            "(1) Pyramids refused without Masonry");
+        // Unlock Masonry for civ 0.
+        g.techResearch().setCivKnows(0, Tech::Masonry, true);
+        chk(um.setCityProductionWonder(cityId, WonderType::Pyramids),
+            "(1) Pyramids accepted after Masonry unlocked");
+        chk(um.cities()[cityId].productionKind == City::ProductionKind::Wonder,
+            "(1) productionKind switched to Wonder");
+        chk(um.cities()[cityId].productionWonderType == WonderType::Pyramids,
+            "(1) productionWonderType == Pyramids");
+        chk(um.cities()[cityId].production ==
+            wonderDefOf(WonderType::Pyramids).cost,
+            "(1) production cost synced to Pyramids cost (200)");
+
+        // Spin EOTs until the wonder completes. Cost 200, shields ~5/turn
+        // -> ~40 turns; budget 400 for safety.
+        int budget = 400;
+        bool built = false;
+        while (budget-- > 0) {
+            g.checkPlayerTurn().processEndOfTurn();
+            if (um.civs()[0].hasWonder(WonderType::Pyramids)) { built = true; break; }
+        }
+        chk(built, "(2) Pyramids added to civ 0's ownedWonders after EOTs");
+        chk(um.wonderOwner(WonderType::Pyramids) == 0,
+            "(2) wonderOwner(Pyramids) == 0 (civ 0)");
+        chk(um.wonderOwnerCity(WonderType::Pyramids) == cityId,
+            "(2) wonderOwnerCity == cityId (home city tracked)");
+        chk(um.cities()[cityId].productionKind == City::ProductionKind::Unit,
+            "(2) productionKind reverts to Unit after completion");
+        chk(um.cities()[cityId].productionType == UnitType::Militia,
+            "(2) productionType falls back to Militia (default)");
+        chk(um.cities()[cityId].shields <
+            wonderDefOf(WonderType::Pyramids).cost,
+            "(2) shields reset (below wonder cost)");
+    }
+
+    // ---- (3): single-ownership across civs --------------------------------
+    {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        Translator::instance().enabled = true;
+        auto& um = g.unitManagement();
+        um.setMapBounds(20, 20);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 1);
+        g.techResearch().initCivs(2);
+        g.techResearch().setCivKnows(0, Tech::Masonry, true);
+        g.techResearch().setCivKnows(1, Tech::Masonry, true);
+
+        std::string nm;
+        chk(um.buildCity(5, 5, 0, nm), "(3) civ 0 city founded");
+        chk(um.buildCity(15, 15, 1, nm), "(3) civ 1 city founded");
+        chk(um.setCityProductionWonder(0, WonderType::Pyramids),
+            "(3) civ 0 starts Pyramids");
+        // Force-complete by recording the wonder directly.
+        um.recordWonderCompletion(0, 0, WonderType::Pyramids);
+        chk(um.wonderOwner(WonderType::Pyramids) == 0,
+            "(3) civ 0 owns Pyramids");
+        // Civ 1 must now be refused.
+        chk(!um.setCityProductionWonder(1, WonderType::Pyramids),
+            "(3) civ 1 REFUSED to start Pyramids (already owned by civ 0)");
+    }
+
+    // ---- (4): Great Wall combat statistics --------------------------------
+    {
+        const int trials = 4000;
+        // Baseline: Cavalry (a=2) vs Phalanx (d=2), defender wins ~75% (per
+        // the buildingtest analysis). With Great Wall bonus (def x3/2 -> 3),
+        // attacker wins iff atkRoll(0..1)=1 AND defRoll(0..2)<1 -> 1/2 * 1/3
+        // ~= 17% -> defender wins ~83%. Assert > baseline by at least 5pp.
+        auto runTrials = [&](bool greatWall) -> int {
+            int defWins = 0;
+            uint32_t rng = 0x12345678u;
+            for (int i = 0; i < trials; ++i) {
+                Unit atk; atk.owner = 0; atk.type = UnitType::Cavalry;
+                atk.x = 0; atk.y = 0; atk.alive = true;
+                Unit def; def.owner = 1; def.type = UnitType::Phalanx;
+                def.x = 1; def.y = 0; def.alive = true;
+                bool atkSurvived = UnitManagement::resolveCombat(
+                    atk, def, rng, /*walls*/ false,
+                    /*greatWallInOwnCity*/ greatWall);
+                if (!atkSurvived) ++defWins;
+            }
+            return defWins;
+        };
+        int wbPlain = runTrials(false);
+        int wbWall  = runTrials(true);
+        double plainRate = double(wbPlain) / double(trials);
+        double wallRate  = double(wbWall)  / double(trials);
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "(4) Great Wall raises defender win rate (plain=%.2f%% "
+                      "vs greatwall=%.2f%%)", plainRate * 100.0, wallRate * 100.0);
+        chk(wallRate > plainRate + 0.04, buf);
+
+        // Integrated test: enemy attacks a city of a Great-Wall-owning civ
+        // via moveUnit. Defender wins MORE often than against a non-owner.
+        auto integrated = [&](bool ownerHasWall) -> double {
+            OpenCiv1Game g;
+            setupGame(g, 640, 480);
+            auto& um = g.unitManagement();
+            um.setMapBounds(20, 20);
+            um.setupCivs(0, 1);
+            std::string nm;
+            um.buildCity(10, 10, 1, nm);
+            if (ownerHasWall)
+                um.civsMut()[1].ownedWonders.insert(WonderType::GreatWall);
+            // Use a large trial count so the GW signal exceeds RNG-sample
+            // variance (the per-trial seed schedule (0xBEEF0000+i) is
+            // identical across the two integrated runs, so the difference
+            // is the GW formula, not the seeds; smaller N can lose the
+            // signal in 400-trial variance).
+            int N = 4000, defenders = 0;
+            for (int i = 0; i < N; ++i) {
+                int atkId = um.addUnit(0, UnitType::Cavalry, 9, 10);
+                int defId = um.addUnit(1, UnitType::Phalanx, 10, 10);
+                um.setCombatRngSeed(uint32_t(0xBEEF0000u + i));
+                um.moveUnit(atkId, 1, 0);
+                if (um.units()[std::size_t(defId)].alive) ++defenders;
+                um.unitsMut()[std::size_t(atkId)].alive = false;
+                um.unitsMut()[std::size_t(defId)].alive = false;
+            }
+            return double(defenders) / double(N);
+        };
+        double baseRate = integrated(false);
+        double gwRate   = integrated(true);
+        std::snprintf(buf, sizeof(buf),
+                      "(4) integrated GreatWall raises defender win rate "
+                      "(base=%.2f%% vs GW=%.2f%%)",
+                      baseRate * 100.0, gwRate * 100.0);
+        chk(gwRate > baseRate, buf);
+    }
+
+    // ---- (5): Pyramids food bonus -----------------------------------------
+    {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        MiniWorld w(20, 20, 4242u);
+        w.attachGame(g);
+        auto& um = g.unitManagement();
+        um.setupCivs(0, 0);
+        // Paint a Grassland patch + found a city.
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx)
+                w.setTerrainAt(10 + dx, 10 + dy, Terrain::Grassland);
+        std::string nm;
+        um.buildCity(10, 10, 0, nm);
+        int grossBefore = g.checkPlayerTurn().cityFoodGross(10, 10);
+        // Award Pyramids to civ 0.
+        um.civsMut()[0].ownedWonders.insert(WonderType::Pyramids);
+        int grossAfter = g.checkPlayerTurn().cityFoodGross(10, 10);
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "(5) Pyramids raises foodGross (before=%d after=%d, "
+                      "delta=%d > 0)", grossBefore, grossAfter,
+                      grossAfter - grossBefore);
+        chk(grossAfter - grossBefore == 1, buf);
+    }
+
+    // ---- (6): Save/load v7 round-trip ------------------------------------
+    {
+        const char* savePath = "/tmp/openciv1pp_wondertest.sav";
+        OpenCiv1Game g1;
+        setupGame(g1, 640, 480);
+        Translator::instance().enabled = true;
+        MiniWorld w(20, 20, 9999u);
+        w.attachGame(g1);
+        auto& um1 = g1.unitManagement();
+        um1.setupCivs(0, 1);
+        g1.techResearch().initCivs(2);
+        int gx = -1, gy = -1;
+        for (int y = 0; y < 20 && gx < 0; ++y)
+            for (int x = 0; x < 20 && gx < 0; ++x) {
+                Terrain t = w.terrainAt(x, y);
+                if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+            }
+        std::string nm;
+        um1.buildCity(gx, gy, 0, nm);
+        // Award Pyramids + Great Wall to civ 0.
+        um1.civsMut()[0].ownedWonders.insert(WonderType::Pyramids);
+        um1.civsMut()[0].ownedWonders.insert(WonderType::GreatWall);
+        um1.setWonderOwnerCity(WonderType::Pyramids,  0);
+        um1.setWonderOwnerCity(WonderType::GreatWall, 0);
+        // Mid-production of Colossus (need BronzeWorking).
+        g1.techResearch().setCivKnows(0, Tech::BronzeWorking, true);
+        chk(um1.setCityProductionWonder(0, WonderType::Colossus),
+            "(6) start Colossus mid-build");
+        um1.citiesMut()[0].shields = 73;
+
+        bool sok = g1.gameLoadAndSave().saveToFile(savePath, nullptr);
+        chk(sok, "(6) saveToFile (v7) succeeded");
+
+        OpenCiv1Game g2;
+        setupGame(g2, 640, 480);
+        bool lok = g2.gameLoadAndSave().loadFromFile(savePath, nullptr);
+        chk(lok, "(6) loadFromFile (v7) succeeded");
+        const auto& cvs = g2.unitManagement().civs();
+        chk(cvs.size() == 2, "(6) civ count preserved");
+        if (cvs.size() >= 1) {
+            chk(cvs[0].hasWonder(WonderType::Pyramids),
+                "(6) civ 0 ownedWonders preserved (Pyramids)");
+            chk(cvs[0].hasWonder(WonderType::GreatWall),
+                "(6) civ 0 ownedWonders preserved (Great Wall)");
+        }
+        chk(g2.unitManagement().wonderOwnerCity(WonderType::Pyramids) == 0,
+            "(6) wonderOwnerCity[Pyramids] preserved");
+        chk(g2.unitManagement().wonderOwnerCity(WonderType::GreatWall) == 0,
+            "(6) wonderOwnerCity[GreatWall] preserved");
+        const auto& cv = g2.unitManagement().cities();
+        if (!cv.empty()) {
+            chk(cv[0].productionKind == City::ProductionKind::Wonder,
+                "(6) productionKind preserved (Wonder)");
+            chk(cv[0].productionWonderType == WonderType::Colossus,
+                "(6) productionWonderType preserved (Colossus)");
+            chk(cv[0].shields == 73, "(6) shields preserved");
+        }
+    }
+
+    // ---- (7): CityView render translate-on vs -off diffs ------------------
+    std::size_t i18nDiff = 0;
+    {
+        auto render = [&](bool translate) -> std::vector<uint8_t> {
+            OpenCiv1Game g;
+            setupGame(g, 640, 480);
+            Translator::instance().enabled = translate;
+            MiniWorld ww(40, 30, 1111u);
+            ww.attachGame(g);
+            auto& um = g.unitManagement();
+            um.setupCivs(0, 0);
+            int gx = -1, gy = -1;
+            for (int y = 0; y < 30 && gx < 0; ++y)
+                for (int x = 0; x < 40 && gx < 0; ++x) {
+                    Terrain t = ww.terrainAt(x, y);
+                    if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+                }
+            std::string nm;
+            um.buildCity(gx, gy, 0, nm);
+            um.civsMut()[0].ownedWonders.insert(WonderType::Pyramids);
+            um.civsMut()[0].ownedWonders.insert(WonderType::GreatWall);
+            um.setWonderOwnerCity(WonderType::Pyramids,  0);
+            um.setWonderOwnerCity(WonderType::GreatWall, 0);
+            g.cityView().open(0);
+            g.cityView().draw(g.graphics.screen(0), 1);
+            return g.graphics.screen(0).pixels();
+        };
+        std::vector<uint8_t> zh = render(true);
+        std::vector<uint8_t> en = render(false);
+        chk(zh.size() == en.size() && !zh.empty(),
+            "(7) both CityView renders produced a buffer");
+        for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+            if (zh[i] != en[i]) ++i18nDiff;
+        chk(i18nDiff > 0,
+            "(7) Chinese vs English CityView pixels DIFFER (wonder names)");
+    }
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail) std::printf("WONDERTEST: %d failure(s)\n", fail);
+    else      std::printf("WONDERTEST: all pass (Pyramids/Hanging Gardens/"
+                          "Great Wall/Colossus + tech gate + single-owner + "
+                          "Great Wall combat + Pyramids food bonus + v7 "
+                          "round-trip; %zu i18n pixels differ)\n", i18nDiff);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -5090,6 +5401,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--buildingtest")) { return buildingtest(); }
         else if (!std::strcmp(argv[i], "--foodtest")) { return foodtest(); }
         else if (!std::strcmp(argv[i], "--governmenttest")) { return governmenttest(); }
+        else if (!std::strcmp(argv[i], "--wondertest")) { return wondertest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -5155,7 +5467,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest(); f += wondertest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

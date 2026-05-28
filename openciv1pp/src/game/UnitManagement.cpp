@@ -235,6 +235,50 @@ bool UnitManagement::setCityProductionBuilding(int cityId, BuildingType b) {
     return true;
 }
 
+// ---- Wonders (civ-wide) -------------------------------------------------
+int UnitManagement::wonderOwner(WonderType w) const {
+    if (w == WonderType::None) return -1;
+    for (std::size_t i = 0; i < civs_.size(); ++i) {
+        if (civs_[i].hasWonder(w)) return int(i);
+    }
+    return -1;
+}
+
+int UnitManagement::wonderOwnerCity(WonderType w) const {
+    int i = int(w);
+    if (i <= 0 || i >= kWonderCount) return -1;
+    if (wonderOwner(w) < 0) return -1;
+    return wonderOwnerCity_[i];
+}
+
+bool UnitManagement::setCityProductionWonder(int cityId, WonderType w) {
+    if (cityId < 0 || std::size_t(cityId) >= cities_.size()) return false;
+    if (w == WonderType::None) return false;
+    // Single-ownership: refuse when any civ already owns this wonder.
+    if (wonderOwner(w) >= 0) return false;
+    City& c = cities_[std::size_t(cityId)];
+    // Tech gate: refuse when the owner civ doesn't yet know the prereq.
+    const WonderDef& wd = wonderDefOf(w);
+    if (wd.techPrereq != Tech::None && !civs_.empty() &&
+        c.owner >= 0 && std::size_t(c.owner) < civs_.size()) {
+        if (!p.techResearch().civKnows(c.owner, wd.techPrereq)) return false;
+    }
+    c.productionKind = City::ProductionKind::Wonder;
+    c.productionWonderType = w;
+    c.productionBuildingType = BuildingType::None;
+    c.production = wd.cost;
+    return true;
+}
+
+void UnitManagement::recordWonderCompletion(int civId, int cityId, WonderType w) {
+    if (w == WonderType::None) return;
+    if (civId < 0 || std::size_t(civId) >= civs_.size()) return;
+    if (wonderOwner(w) >= 0) return; // someone else already claimed it
+    civs_[std::size_t(civId)].ownedWonders.insert(w);
+    int i = int(w);
+    if (i > 0 && i < kWonderCount) wonderOwnerCity_[i] = cityId;
+}
+
 bool UnitManagement::tileCityHasBuilding(int owner, int x, int y,
                                          BuildingType b) const {
     for (const auto& c : cities_) {
@@ -260,7 +304,8 @@ static inline uint32_t xorshift32(uint32_t& s) {
 
 bool UnitManagement::resolveCombat(Unit& attacker, Unit& defender,
                                    uint32_t& rngState,
-                                   bool defenderHasWalls) {
+                                   bool defenderHasWalls,
+                                   bool defenderInOwnCityWithGreatWall) {
     const UnitDef& aDef = unitDefOf(attacker.type);
     const UnitDef& dDef = unitDefOf(defender.type);
     int atk = aDef.attack;     if (atk < 0) atk = 0;
@@ -278,6 +323,13 @@ bool UnitManagement::resolveCombat(Unit& attacker, Unit& defender,
     // AFTER the veteran bump so a Veteran Phalanx in a Walled city defends
     // at floor(2 * 3/2) * 3 = 3 * 3 = 9 (matches the C# wall+veteran stack).
     if (defenderHasWalls) def = def * 3;
+    // ---- GREAT WALL civ-wide defense bonus -----------------------------
+    // Civ1: Great Wall acts like Walls in every city the owning civ holds.
+    // We apply it as a +50% defender bonus on the city tile when the
+    // defender's civ owns the Great Wall — this stacks with explicit Walls
+    // (so a Walled city of a Great-Wall-owning civ is x3 * 3/2 = x4.5 ->
+    // integer floor). Off-city defenders and other civs don't get the bonus.
+    if (defenderInOwnCityWithGreatWall) def = (def * 3) / 2;
     if (def <= 0) def = 1;
     if (atk < 0) atk = 0;
     int attackerRoll = (atk > 0) ? int(xorshift32(rngState) % uint32_t(atk)) : 0;
@@ -318,7 +370,20 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
         // triple-defense bonus (faithful Civ1 +200%).
         bool defWalls = tileCityHasBuilding(enemy.owner, enemy.x, enemy.y,
                                             BuildingType::Walls);
-        bool survived = resolveCombat(u, enemy, combatRng_, defWalls);
+        // Great Wall: defender is on a city tile of its OWN civ and that
+        // civ owns the Great Wall. We check by scanning cities at the
+        // defender's tile; if any belongs to enemy.owner and that civ
+        // owns the Great Wall, the bonus applies.
+        bool defGreatWall = false;
+        if (enemy.owner >= 0 && std::size_t(enemy.owner) < civs_.size() &&
+            civs_[std::size_t(enemy.owner)].hasWonder(WonderType::GreatWall)) {
+            for (const auto& cc : cities_) {
+                if (cc.x == enemy.x && cc.y == enemy.y &&
+                    cc.owner == enemy.owner) { defGreatWall = true; break; }
+            }
+        }
+        bool survived = resolveCombat(u, enemy, combatRng_, defWalls,
+                                      defGreatWall);
         if (survived) {
             // attacker wins -> move into the (now-empty) tile
             u.x = nx; u.y = ny;

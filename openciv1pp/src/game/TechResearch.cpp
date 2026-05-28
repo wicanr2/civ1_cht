@@ -33,6 +33,9 @@ const TechDef kTechs[] = {
     {Tech::Monarchy,      "Monarchy",       50, Tech::None},
     {Tech::CodeOfLaws,    "Code of Laws",   50, Tech::Alphabet},
     {Tech::Democracy,     "Democracy",      60, Tech::CodeOfLaws},
+    // Wonders-slice gate. Construction prereq = Masonry (Civ1 has Masonry +
+    // CurrencyAlternate; collapsed to single Masonry like the gov-tier techs).
+    {Tech::Construction,  "Construction",   40, Tech::Masonry},
 };
 constexpr int kTechN = int(sizeof(kTechs) / sizeof(kTechs[0]));
 } // namespace

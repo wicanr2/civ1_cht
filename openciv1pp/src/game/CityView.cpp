@@ -309,7 +309,10 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         // built (unit type name OR building name, translated via Translator).
         char buf[64];
         const char* what = nullptr;
-        if (city.productionKind == City::ProductionKind::Building &&
+        if (city.productionKind == City::ProductionKind::Wonder &&
+            city.productionWonderType != WonderType::None) {
+            what = wonderDefOf(city.productionWonderType).name;
+        } else if (city.productionKind == City::ProductionKind::Building &&
             city.productionBuildingType != BuildingType::None) {
             what = buildingDefOf(city.productionBuildingType).name;
         } else {
@@ -362,13 +365,34 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         if (val.empty()) val = "-";
         drawLabelValue(infoY + lineH * 8, "Buildings:", val);
     }
+    {
+        // Wonders line ("奇蹟: 金字塔, 長城" / "Wonders: Pyramids, Great Wall"),
+        // localized via the Translator. Shows the OWNER civ's full set of
+        // owned wonders (not just the ones this city built) so the player
+        // sees the civ-wide picture. The home-city of each wonder is
+        // tracked separately in UnitManagement::wonderOwnerCity.
+        std::string val;
+        const auto& cvs = p.unitManagement().civs();
+        if (city.owner >= 0 && std::size_t(city.owner) < cvs.size()) {
+            const auto& civ = cvs[std::size_t(city.owner)];
+            bool first = true;
+            for (WonderType w : civ.ownedWonders) {
+                const WonderDef& wd = wonderDefOf(w);
+                if (!first) val += ", ";
+                val += Translator::instance().translate(wd.name);
+                first = false;
+            }
+        }
+        if (val.empty()) val = "-";
+        drawLabelValue(infoY + lineH * 9, "Wonders:", val);
+    }
 
     // 5) Population dots — one warm yellow dot per population point, drawn in
     //    a horizontal row below the info block (mirrors the C# pop-sprite row
     //    drawn at (24, 140) in F19_0000_111f_DrawCityPopulation; we use small
     //    coloured dots instead of POP.PIC sprites — see header for the stub).
     {
-        int popY = infoY + lineH * 9 + 2;
+        int popY = infoY + lineH * 10 + 2;
         int popX = infoX;
         for (int i = 0; i < population && i < 24; ++i) {
             screen.fillRect(Rect{popX, popY, 6, 8}, 166);

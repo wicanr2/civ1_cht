@@ -83,14 +83,33 @@ bool CheckPlayerTurn::irrigationApplies(int terrainEnum) {
 // stand-in for the full 21-tile "fat-cross" worker assignment, see
 // // TODO(port) below). Adds +1 food per irrigated, irrigation-compatible
 // tile (mirrors C# TerrainModifications.IrrigationEffect).
+//
+// PYRAMIDS bonus (wonder slice): when the city's OWNER civ owns the
+// Pyramids wonder, this function adds +1 to the gross. Civ1 Pyramids =
+// "any government works without senate"; we collapse to +1 food/city as
+// the documented simplification (see WonderDef.effect_description).
 int CheckPlayerTurn::cityFoodGross(int cx, int cy) const {
     int gross = 0;
     const auto& tprov = p.unitManagement().terrainProvider();
+    // Look up the city at (cx,cy) so we can apply the Pyramids bonus.
+    int ownerCiv = -1;
+    {
+        const auto& cs = p.unitManagement().cities();
+        for (const auto& cc : cs) {
+            if (cc.x == cx && cc.y == cy) { ownerCiv = cc.owner; break; }
+        }
+    }
+    auto pyramidsBonus = [&]() -> int {
+        if (ownerCiv < 0) return 0;
+        const auto& civs = p.unitManagement().civs();
+        if (std::size_t(ownerCiv) >= civs.size()) return 0;
+        return civs[std::size_t(ownerCiv)].hasWonder(WonderType::Pyramids) ? 1 : 0;
+    };
     if (!tprov) {
         // No terrain provider wired (rare headless path) — assume the city
         // is on a Grassland tile (yield 2) with 4 Grassland neighbors. Same
         // 10-food/turn baseline used by the foodtest scaffolding.
-        return 10;
+        return 10 + pyramidsBonus();
     }
     const auto& mm = p.mapManagement();
     static const int kDx[5] = { 0,  0, 0, -1, 1 };
@@ -107,6 +126,7 @@ int CheckPlayerTurn::cityFoodGross(int cx, int cy) const {
         }
         gross += y;
     }
+    gross += pyramidsBonus();
     return gross;
 }
 
@@ -328,6 +348,38 @@ int CheckPlayerTurn::processEndOfTurn() {
             //    safe fallback identical to the C# CityWorker behaviour when
             //    a queued building completes with no next item picked.
             int needed = 0;
+            // ---- WONDER branch (civ-wide, single-ownership) ----------
+            // Mirrors the Building branch shape: accumulate shields until
+            // wonderDefOf(w).cost is met, then record the completion
+            // (UnitManagement::recordWonderCompletion adds to the civ's
+            // ownedWonders set + updates the owner-city map), reset shields,
+            // and fall back to producing Militia (documented default — same
+            // as the Building branch fall-back).
+            // GUARD: if another civ snuck in and won the wonder mid-build,
+            // abort and fall back to Militia without recording anything.
+            if (c.productionKind == City::ProductionKind::Wonder) {
+                WonderType wt = c.productionWonderType;
+                if (wt == WonderType::None ||
+                    um.wonderOwner(wt) >= 0) {
+                    // Someone else completed it (or it's None): cancel.
+                    c.productionKind = City::ProductionKind::Unit;
+                    c.productionWonderType = WonderType::None;
+                    c.productionType = UnitType::Militia;
+                    c.production = unitDefOf(UnitType::Militia).cost;
+                    continue;
+                }
+                needed = wonderDefOf(wt).cost;
+                if (c.production != needed) c.production = needed;
+                if (needed > 0 && c.shields >= needed) {
+                    c.shields -= needed;
+                    um.recordWonderCompletion(c.owner, c.id, wt);
+                    c.productionKind = City::ProductionKind::Unit;
+                    c.productionWonderType = WonderType::None;
+                    c.productionType = UnitType::Militia;
+                    c.production = unitDefOf(UnitType::Militia).cost;
+                }
+                continue;
+            }
             if (c.productionKind == City::ProductionKind::Building) {
                 needed = buildingDefOf(c.productionBuildingType).cost;
                 if (c.production != needed) c.production = needed;
@@ -393,6 +445,15 @@ int CheckPlayerTurn::processEndOfTurn() {
                     sciMul = governmentDefOf(eg).scienceMul;
                 }
                 int pts = int(std::ceil(float(cityCount) * sciMul));
+                // Wonder bonuses (simplified): Hanging Gardens and Colossus
+                // each grant +1 science per city (Civ1: +1 happy citizen
+                // and +1 trade-per-ocean-tile respectively; both proxied
+                // to flat per-city science here — see WonderDef notes).
+                if (std::size_t(civId) < um.civs().size()) {
+                    const auto& cv = um.civs()[std::size_t(civId)];
+                    if (cv.hasWonder(WonderType::HangingGardens)) pts += cityCount;
+                    if (cv.hasWonder(WonderType::Colossus))       pts += cityCount;
+                }
                 if (pts > 0) tr.addPoints(civId, pts);
             }
         }

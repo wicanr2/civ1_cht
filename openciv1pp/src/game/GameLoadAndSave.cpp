@@ -95,13 +95,17 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     std::ofstream os(path, std::ios::binary);
     if (!os) return false;
 
-    // Header. v5 adds per-city {population, food, foodPerTurn} for the
+    // Header. v7 adds per-civ ownedWonders csv + per-city
+    // productionWonderType + the global owner-city map for the Wonders
+    // slice. v1..v6 readers ignore the v7 keys (default: no wonders owned).
+    // v6 added per-civ government state for the Government slice.
+    // v5 added per-city {population, food, foodPerTurn} for the
     // food + population growth slice (closes the Granary loop).
     // v4 added per-city {productionKind, productionBuildingType,
     // ownedBuildings list} + per-unit veteran flag for the buildings slice.
     // v3 added the improvements grid + per-unit work state.
     // v2 added per-civ tech-tree state; v1 was the pre-tech baseline.
-    os << "OpenCiv1pp savegame v6\n";
+    os << "OpenCiv1pp savegame v7\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -151,6 +155,21 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
         os << "civgovt " << i << " " << int(c.govt) << " "
            << int(c.targetGovt) << " " << c.anarchyTurnsLeft << "\n";
     }
+    // v7: per-civ ownedWonders, one line per civ. CSV of WonderType integer
+    // ids (1..N); "-" sentinel for "no wonders owned". v1..v6 readers skip
+    // the 'civwonders' key.
+    for (std::size_t i = 0; i < civs.size(); ++i) {
+        const auto& c = civs[i];
+        os << "civwonders " << i << " ";
+        bool first = true;
+        for (WonderType w : c.ownedWonders) {
+            if (!first) os << ",";
+            os << int(w);
+            first = false;
+        }
+        if (first) os << "-";
+        os << "\n";
+    }
 
     // Units. v3: per-unit work state (workTurnsLeft, workTarget) appended.
     // v4: per-unit veteran flag appended after workTarget (0/1). Older
@@ -196,6 +215,20 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     for (const auto& c : cities) {
         os << "cityfood " << c.id << " " << c.population << " "
            << c.food << " " << c.foodPerTurn << "\n";
+    }
+    // v7: per-city productionWonderType, one line per city. v1..v6 readers
+    // skip the 'citywonder' key entirely.
+    for (const auto& c : cities) {
+        os << "citywonder " << c.id << " " << int(c.productionWonderType) << "\n";
+    }
+    // v7: global per-wonder owner-city map. One line per wonder index
+    // (1..kWonderCount-1). -1 means "wonder not yet built". v1..v6 readers
+    // skip the 'wonderowner' key; v7 readers restore the array.
+    {
+        const int* arr = p.unitManagement().wonderOwnerCityArray();
+        for (int w = 1; w < kWonderCount; ++w) {
+            os << "wonderowner " << w << " " << arr[w] << "\n";
+        }
     }
 
     // Terrain bytes (80*50 = 4000 bytes -> 8000 hex chars on one line).
@@ -264,7 +297,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         header != "OpenCiv1pp savegame v3" &&
         header != "OpenCiv1pp savegame v4" &&
         header != "OpenCiv1pp savegame v5" &&
-        header != "OpenCiv1pp savegame v6") return false;
+        header != "OpenCiv1pp savegame v6" &&
+        header != "OpenCiv1pp savegame v7") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -295,6 +329,14 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     // anarchyTurnsLeft=0 from CivState's struct defaults).
     struct CivGovtRow { int civId; int govt; int targetGovt; int anarchyTurnsLeft; };
     std::vector<CivGovtRow> civGovtRows;
+    // v7: per-civ ownedWonders + per-city productionWonderType + global
+    // per-wonder owner-city map. Applied after the main vectors are built.
+    struct CivWondersRow { int civId; std::vector<int> wonders; };
+    std::vector<CivWondersRow> civWondersRows;
+    struct CityWonderRow  { int cityId; int prodWonderType; };
+    std::vector<CityWonderRow> cityWonderRows;
+    struct WonderOwnerRow { int wonderId; int cityId; };
+    std::vector<WonderOwnerRow> wonderOwnerRows;
 
     std::string line;
     while (std::getline(is, line)) {
@@ -372,6 +414,36 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             CivGovtRow r{};
             iss >> r.civId >> r.govt >> r.targetGovt >> r.anarchyTurnsLeft;
             civGovtRows.push_back(r);
+        }
+        else if (key == "civwonders") {
+            CivWondersRow r;
+            std::string csv;
+            iss >> r.civId >> csv;
+            if (csv != "-" && !csv.empty()) {
+                std::size_t start = 0;
+                while (start <= csv.size()) {
+                    std::size_t comma = csv.find(',', start);
+                    std::string tok = csv.substr(start,
+                        (comma == std::string::npos ? csv.size() : comma) - start);
+                    if (!tok.empty()) {
+                        try { r.wonders.push_back(std::stoi(tok)); }
+                        catch (...) { /* skip malformed */ }
+                    }
+                    if (comma == std::string::npos) break;
+                    start = comma + 1;
+                }
+            }
+            civWondersRows.push_back(std::move(r));
+        }
+        else if (key == "citywonder") {
+            CityWonderRow r{};
+            iss >> r.cityId >> r.prodWonderType;
+            cityWonderRows.push_back(r);
+        }
+        else if (key == "wonderowner") {
+            WonderOwnerRow r{};
+            iss >> r.wonderId >> r.cityId;
+            wonderOwnerRows.push_back(r);
         }
         else if (key == "citybld") {
             CityBldRow r;
@@ -487,6 +559,34 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             c.population  = (r.population >= 1) ? r.population : 1;
             c.food        = r.food;
             c.foodPerTurn = r.foodPerTurn;
+        }
+        // v7: apply per-city productionWonderType. Absent in v1..v6 saves ->
+        // default (WonderType::None) holds.
+        for (const auto& r : cityWonderRows) {
+            if (r.cityId < 0 || std::size_t(r.cityId) >= cv.size()) continue;
+            City& c = cv[std::size_t(r.cityId)];
+            int wi = r.prodWonderType;
+            if (wi < 0 || wi >= kWonderCount) wi = 0;
+            c.productionWonderType = WonderType(wi);
+        }
+    }
+    // v7: apply per-civ ownedWonders + global owner-city map. Done OUTSIDE
+    // the cities block (the wonder rows live on the civs, not the cities).
+    {
+        auto& cvs = p.unitManagement().civsMut();
+        for (const auto& r : civWondersRows) {
+            if (r.civId < 0 || std::size_t(r.civId) >= cvs.size()) continue;
+            CivState& c = cvs[std::size_t(r.civId)];
+            c.ownedWonders.clear();
+            for (int wi : r.wonders) {
+                if (wi > 0 && wi < kWonderCount)
+                    c.ownedWonders.insert(WonderType(wi));
+            }
+        }
+        // Owner-city map: restore the per-wonder city id.
+        for (const auto& r : wonderOwnerRows) {
+            if (r.wonderId <= 0 || r.wonderId >= kWonderCount) continue;
+            p.unitManagement().setWonderOwnerCity(WonderType(r.wonderId), r.cityId);
         }
     }
 
