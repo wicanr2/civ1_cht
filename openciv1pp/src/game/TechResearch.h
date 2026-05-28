@@ -67,6 +67,11 @@ enum class Tech : int8_t {
     // prereq simplification used by Monarchy/CodeOfLaws above).
     // Added for the Wonders slice: Great Wall requires Construction.
     Construction  = 5,
+    // Mathematics = 9 (faithful TechnologyAdvanceEnum.Mathematics). Civ1
+    // prereq is Alphabet + Masonry; the C++ single-prereq table uses
+    // Alphabet here (Alphabet is the earlier-era prereq) — Catapult unit
+    // ships behind this gate.
+    Mathematics   = 9,
     Masonry       = 16,
     BronzeWorking = 17,
     IronWorking   = 18,
@@ -74,8 +79,22 @@ enum class Tech : int8_t {
     Monarchy      = 24,
     CodeOfLaws    = 25,
     Democracy     = 27,
+    // Feudalism = 32 (faithful TechnologyAdvanceEnum.Feudalism). Civ1
+    // prereq is Masonry + Monarchy; the C++ single-prereq table uses
+    // Monarchy (the gov-tier prereq) — Knight unit ships behind this gate.
+    Feudalism     = 32,
     TheWheel      = 33,
+    // Gunpowder = 34 (faithful TechnologyAdvanceEnum.Gunpowder). Civ1
+    // prereq is Invention + IronWorking. Invention is NOT in the early-era
+    // subset, so we substitute IronWorking as the single prereq (documented
+    // simplification — Musketeers ships behind this gate).
+    Gunpowder     = 34,
     Pottery       = 42,
+    // Metallurgy = 48 (faithful TechnologyAdvanceEnum.Metallurgy). Civ1
+    // prereq is Gunpowder + University. University is NOT in the early-era
+    // subset, so we substitute Gunpowder as the single prereq (documented
+    // simplification — Cannon ships behind this gate).
+    Metallurgy    = 48,
 };
 
 // One row of the (early-era subset of the) C# technologyAdvanceTypes table.

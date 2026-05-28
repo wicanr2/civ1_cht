@@ -36,6 +36,21 @@ const TechDef kTechs[] = {
     // Wonders-slice gate. Construction prereq = Masonry (Civ1 has Masonry +
     // CurrencyAlternate; collapsed to single Masonry like the gov-tier techs).
     {Tech::Construction,  "Construction",   40, Tech::Masonry},
+    // MORE-UNITS slice (Legion/Knight/Catapult/Musketeers/Cannon gating).
+    // Faithful Civ1 prereq chains (see GameData.cs lines 275/298/300/+) —
+    // each Civ1 tech has TWO prereqs and we keep ONE (the early-era one):
+    //   Mathematics : Alphabet + Masonry        -> kept Alphabet (era-1)
+    //   Feudalism   : Monarchy + Masonry        -> kept Monarchy (gov-tier)
+    //   Gunpowder   : Invention + IronWorking   -> kept IronWorking
+    //                 (Invention not in early subset; documented sub.)
+    //   Metallurgy  : Gunpowder + University    -> kept Gunpowder
+    //                 (University not in early subset; documented sub.)
+    // Cost ladder continues the "early=10/20/30/40, mid=50/60, late=70/80"
+    // shape so the addPoints picker keeps a stable order.
+    {Tech::Mathematics,   "Mathematics",    40, Tech::Alphabet},
+    {Tech::Feudalism,     "Feudalism",      60, Tech::Monarchy},
+    {Tech::Gunpowder,     "Gunpowder",      70, Tech::IronWorking},
+    {Tech::Metallurgy,    "Metallurgy",     80, Tech::Gunpowder},
 };
 constexpr int kTechN = int(sizeof(kTechs) / sizeof(kTechs[0]));
 } // namespace

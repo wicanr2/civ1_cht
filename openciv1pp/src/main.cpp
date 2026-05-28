@@ -3700,14 +3700,15 @@ static int cityviewtest() {
 // Verifies the per-end-of-turn AI-unit-movement pass added to
 // CheckPlayerTurn::processEndOfTurn():
 //   (1) Integrated PLAYING flow + one end-of-turn pass founds 6 AI capitals
-//       and each AI city's productionType defaults to Militia.
-//   (2) findNearestEnemy on a fresh AI Militia returns a target (the human
-//       Settlers / human Militia we inject) and the step's (dx,dy) reduces
-//       Chebyshev distance by 1.
-//   (3) Spin processEndOfTurn() until at least one AI Militia exists in
+//       and each AI city's productionType is Cavalry (highest-attack unit
+//       available at Tech::None — was Militia before the smart-pick pass).
+//   (2) findNearestEnemy on a fresh AI combat unit returns a target (the
+//       human Settlers / human Militia we inject) and the step's (dx,dy)
+//       reduces Chebyshev distance by 1.
+//   (3) Spin processEndOfTurn() until at least one AI combat unit exists in
 //       units() (production threshold reached).
-//   (4) Inject a human Militia adjacent to an AI Militia, snapshot the AI
-//       unit's (x,y), call processEndOfTurn() once: assert the AI Militia
+//   (4) Inject a human Militia adjacent to an AI combat unit, snapshot the
+//       AI unit's (x,y), call processEndOfTurn() once: assert the AI unit
 //       either MOVED (its (x,y) changed by exactly 1 step toward the human)
 //       OR combat occurred (one of the two is no longer alive).
 //   (5) Run multiple end-of-turn passes; assert the alive-unit count
@@ -3729,37 +3730,45 @@ static int aimovetest() {
     auto& um = g.unitManagement();
     g.checkPlayerTurn().processEndOfTurn();
     chk(um.cityCount() == 6, "6 AI capitals founded after 1 end-of-turn");
-    // Default productionType is Militia (UnitManagement.h line 105).
-    int milProdCount = 0;
+    // After the AI smart-pick pass (CheckPlayerTurn), every AI city picks the
+    // HIGHEST-ATTACK unit it can build. Without any tech, the best Tech::None
+    // unit available is Cavalry (atk=2) over Militia (atk=1). Verify each AI
+    // city ends up on Cavalry (the new faithful default) — Militia is now the
+    // fallback for civs with NO settlers, which doesn't apply here.
+    int cavProdCount = 0;
     for (const auto& c : um.cities())
-        if (c.productionType == UnitType::Militia) ++milProdCount;
-    chk(milProdCount == int(um.cityCount()),
-        "every AI city's productionType defaults to Militia");
+        if (c.productionType == UnitType::Cavalry) ++cavProdCount;
+    chk(cavProdCount == int(um.cityCount()),
+        "every AI city's productionType is Cavalry after smart-pick (best "
+        "Tech::None unit)");
 
-    // (3) Spin end-of-turn until at least one AI Militia unit is produced
-    // (shields accumulate at >=1/turn; Militia costs 10 -> <= ~10 turns).
-    int budget = 50;
-    int aiMilitiaCount = 0;
+    // (3) Spin end-of-turn until at least one AI combat unit (Cavalry under
+    // the smart-pick default) is produced (shields ~1/turn; Cavalry cost 20
+    // -> <= ~20 turns). The test no longer assumes Militia specifically — it
+    // just needs an AI combat unit to drive the adjacency / step test.
+    int budget = 80;
+    int aiCombatCount = 0;
     while (budget-- > 0) {
         g.checkPlayerTurn().processEndOfTurn();
-        aiMilitiaCount = 0;
+        aiCombatCount = 0;
         for (const auto& u : um.units()) {
-            if (u.alive && u.owner != 0 && u.type == UnitType::Militia)
-                ++aiMilitiaCount;
+            if (u.alive && u.owner != 0 && u.type != UnitType::Settlers)
+                ++aiCombatCount;
         }
-        if (aiMilitiaCount > 0) break;
+        if (aiCombatCount > 0) break;
     }
-    chk(aiMilitiaCount > 0, "at least one AI Militia produced after spinning turns");
+    chk(aiCombatCount > 0,
+        "at least one AI combat unit produced after spinning turns");
 
-    // Pick the first AI Militia for the adjacency test.
+    // Pick the first AI combat unit (whatever type) for the adjacency test.
     int aiUnitId = -1;
     for (std::size_t i = 0; i < um.units().size(); ++i) {
         const Unit& u = um.units()[i];
-        if (u.alive && u.owner != 0 && u.type == UnitType::Militia) {
+        if (u.alive && u.owner != 0 && u.type != UnitType::Settlers) {
             aiUnitId = int(i); break;
         }
     }
-    chk(aiUnitId >= 0, "found an AI Militia to test");
+    chk(aiUnitId >= 0, "found an AI combat unit to test");
     if (aiUnitId < 0) {
         std::printf("AIMOVETEST: %d failure(s)\n", fail + 1);
         return 1;
@@ -3835,8 +3844,8 @@ static int aimovetest() {
 
     if (fail) std::printf("AIMOVETEST: %d failure(s)\n", fail);
     else      std::printf("AIMOVETEST: all pass (AI greedy-step movement; "
-                          "%d AI Militia produced, alive %d -> %d over 30 turns)\n",
-                          aiMilitiaCount, aliveStart, aliveEnd);
+                          "%d AI combat units produced, alive %d -> %d over "
+                          "30 turns)\n", aiCombatCount, aliveStart, aliveEnd);
     return fail ? 1 : 0;
 }
 
@@ -5568,6 +5577,224 @@ static int diplomacytest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- More unit types (--moreunitstest) ---------------------
+// Verifies the MORE-UNITS slice end-to-end:
+//   (1) UnitDef table contains Legion/Knight/Catapult/Musketeers/Cannon with
+//       positive stats (attack/defense/move/cost > 0) and the right tech.
+//   (2) Tech enum + TechDef table contain Feudalism/Mathematics/Gunpowder/
+//       Metallurgy with positive cost and valid (or None) prereqs.
+//   (3) Tech-gating: without Iron Working, setCityProductionType(Legion)
+//       refused (productionType unchanged). After unlocking IronWorking,
+//       setCityProductionType(Legion) accepted.
+//   (4) Statistical: Knight vs Phalanx (Knight a=4/d=2, Phalanx a=1/d=2)
+//       attacker wins MORE often than Militia vs Phalanx baseline.
+//   (5) AI smart pick: a civ with only basic techs picks Militia for its
+//       cities, a civ with IronWorking (Legion-eligible) picks Legion.
+//   (6) CityView render: translate-on Chinese vs -off English differ
+//       (Chinese unit name on the production line of a Legion-building city).
+static int moreunitstest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // ---- (1): UnitDef table sanity ---------------------------------------
+    {
+        struct Row { UnitType t; const char* name; Tech prereq; };
+        Row rows[] = {
+            {UnitType::Legion,     "Legion",     Tech::IronWorking},
+            {UnitType::Knight,     "Knight",     Tech::Feudalism},
+            {UnitType::Catapult,   "Catapult",   Tech::Mathematics},
+            {UnitType::Musketeers, "Musketeers", Tech::Gunpowder},
+            {UnitType::Cannon,     "Cannon",     Tech::Metallurgy},
+        };
+        for (const Row& r : rows) {
+            const UnitDef& d = unitDefOf(r.t);
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+                          "(1) UnitDef %s: name matches", r.name);
+            chk(std::string(d.name) == r.name, buf);
+            std::snprintf(buf, sizeof(buf),
+                          "(1) UnitDef %s: attack > 0 (got %d)", r.name, d.attack);
+            chk(d.attack > 0, buf);
+            std::snprintf(buf, sizeof(buf),
+                          "(1) UnitDef %s: defense > 0 (got %d)", r.name, d.defense);
+            chk(d.defense > 0, buf);
+            std::snprintf(buf, sizeof(buf),
+                          "(1) UnitDef %s: move > 0 (got %d)", r.name, d.move);
+            chk(d.move > 0, buf);
+            std::snprintf(buf, sizeof(buf),
+                          "(1) UnitDef %s: cost > 0 (got %d)", r.name, d.cost);
+            chk(d.cost > 0, buf);
+            std::snprintf(buf, sizeof(buf),
+                          "(1) UnitDef %s: techPrereq matches", r.name);
+            chk(d.techPrereq == r.prereq, buf);
+        }
+    }
+
+    // ---- (2): Tech entries sanity -----------------------------------------
+    {
+        Tech newTechs[] = {Tech::Feudalism, Tech::Mathematics,
+                           Tech::Gunpowder, Tech::Metallurgy};
+        for (Tech t : newTechs) {
+            const TechDef* d = TechResearch::techDefById(t);
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+                          "(2) TechDef for tech %d present", int(t));
+            chk(d != nullptr, buf);
+            if (d) {
+                std::snprintf(buf, sizeof(buf),
+                              "(2) TechDef %s: cost > 0 (got %d)", d->name, d->cost);
+                chk(d->cost > 0, buf);
+                // Prereq must be either None or a tech that itself has a TechDef.
+                bool prereqOK = (d->prereq == Tech::None) ||
+                                (TechResearch::techDefById(d->prereq) != nullptr);
+                std::snprintf(buf, sizeof(buf),
+                              "(2) TechDef %s: prereq reachable", d->name);
+                chk(prereqOK, buf);
+            }
+        }
+    }
+
+    // ---- (3): Tech-gating on production ----------------------------------
+    {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        auto& tr = g.techResearch();
+        um.setMapBounds(20, 20);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 1);
+        tr.initCivs(2);
+        std::string nm;
+        chk(um.buildCity(5, 5, /*playerId*/ 0, nm),
+            "(3) buildCity for civ 0 succeeded");
+        const int cid = 0;
+        UnitType before = um.cities()[cid].productionType;
+        bool refused = !um.setCityProductionType(cid, UnitType::Legion);
+        chk(refused, "(3) Legion REFUSED before IronWorking known");
+        chk(um.cities()[cid].productionType == before,
+            "(3) productionType unchanged after refusal");
+        tr.setCivKnows(0, Tech::BronzeWorking, true);
+        tr.setCivKnows(0, Tech::IronWorking, true);
+        bool accepted = um.setCityProductionType(cid, UnitType::Legion);
+        chk(accepted, "(3) Legion ACCEPTED after IronWorking unlocked");
+        chk(um.cities()[cid].productionType == UnitType::Legion,
+            "(3) productionType updated to Legion");
+        chk(um.cities()[cid].production == unitDefOf(UnitType::Legion).cost,
+            "(3) production cost synced to Legion's cost");
+    }
+
+    // ---- (4): Statistical Knight vs Phalanx > Militia vs Phalanx ----------
+    {
+        const int trials = 4000;
+        auto runTrials = [&](UnitType atkType) -> int {
+            int atkWins = 0;
+            uint32_t rng = 0x12345678u;
+            for (int i = 0; i < trials; ++i) {
+                Unit atk; atk.owner = 0; atk.type = atkType;
+                atk.x = 0; atk.y = 0; atk.alive = true;
+                Unit def; def.owner = 1; def.type = UnitType::Phalanx;
+                def.x = 1; def.y = 0; def.alive = true;
+                if (UnitManagement::resolveCombat(atk, def, rng,
+                                                  /*walls*/ false)) ++atkWins;
+            }
+            return atkWins;
+        };
+        int militiaWins = runTrials(UnitType::Militia);
+        int knightWins  = runTrials(UnitType::Knight);
+        double mRate = double(militiaWins) / double(trials);
+        double kRate = double(knightWins)  / double(trials);
+        char buf[200];
+        std::snprintf(buf, sizeof(buf),
+                      "(4) Knight win rate (%.2f%%) > Militia win rate (%.2f%%)"
+                      " vs Phalanx", kRate * 100.0, mRate * 100.0);
+        chk(kRate > mRate, buf);
+        std::snprintf(buf, sizeof(buf),
+                      "(4) Knight win rate > 40%% (got %.2f%%)", kRate * 100.0);
+        chk(kRate > 0.40, buf);
+    }
+
+    // ---- (5): AI smart-pick (no IronWorking -> Militia; with -> Legion) --
+    {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        auto& tr = g.techResearch();
+        um.setMapBounds(30, 30);
+        // Three civs: human(0) + AI(1) basic-tech only + AI(2) with IronWorking.
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 2);
+        tr.initCivs(3);
+        // Both AI civs already have a city (we found one for each).
+        std::string nm;
+        chk(um.buildCity(5, 5, /*playerId*/ 1, nm),
+            "(5) buildCity for AI civ 1 (basic-tech) succeeded");
+        chk(um.buildCity(20, 20, /*playerId*/ 2, nm),
+            "(5) buildCity for AI civ 2 (iron-tech) succeeded");
+        // Civ 2 alone gets IronWorking (and its prereq).
+        tr.setCivKnows(2, Tech::BronzeWorking, true);
+        tr.setCivKnows(2, Tech::IronWorking, true);
+        // Run one EOT to trigger the AI smart-pick pass.
+        g.checkPlayerTurn().processEndOfTurn();
+        UnitType pick1 = um.cities()[0].productionType;
+        UnitType pick2 = um.cities()[1].productionType;
+        // Civ 1 has only Tech::None-prereq units available: Militia (a=1) and
+        // Cavalry (a=2). The smart-pick MUST choose Cavalry (highest atk).
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "(5) AI civ 1 (basic tech) picks Cavalry (highest-atk "
+                      "of Militia/Cavalry; got type=%d)", int(pick1));
+        chk(pick1 == UnitType::Cavalry, buf);
+        // Civ 2 also has IronWorking -> Legion (a=4) > Cavalry (a=2) wins.
+        std::snprintf(buf, sizeof(buf),
+                      "(5) AI civ 2 (IronWorking) picks Legion (got type=%d)",
+                      int(pick2));
+        chk(pick2 == UnitType::Legion, buf);
+        // Cross-check: pick2 strictly beats pick1's attack stat (the
+        // smart-pick statement we actually care about in this task).
+        std::snprintf(buf, sizeof(buf),
+                      "(5) iron-tech civ picks higher-attack unit than basic "
+                      "civ (atk %d > %d)",
+                      unitDefOf(pick2).attack, unitDefOf(pick1).attack);
+        chk(unitDefOf(pick2).attack > unitDefOf(pick1).attack, buf);
+    }
+
+    // ---- (6): CityView Chinese pixel diff ---------------------------------
+    std::size_t diffPixels = 0;
+    auto renderCV = [&](bool translateOn) -> std::vector<uint8_t> {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        Translator::instance().enabled = translateOn;
+        auto& um = g.unitManagement();
+        auto& tr = g.techResearch();
+        um.setMapBounds(20, 20);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 1);
+        tr.initCivs(2);
+        tr.setCivKnows(0, Tech::BronzeWorking, true);
+        tr.setCivKnows(0, Tech::IronWorking, true);
+        std::string nm;
+        um.buildCity(5, 5, 0, nm);
+        um.setCityProductionType(0, UnitType::Legion);
+        g.cityView().open(0);
+        g.cityView().draw(g.graphics.screen(0), 1);
+        return g.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> onPx  = renderCV(true);
+    std::vector<uint8_t> offPx = renderCV(false);
+    chk(onPx.size() == offPx.size() && !onPx.empty(),
+        "(6) CityView render produced both buffers");
+    for (std::size_t i = 0; i < onPx.size() && i < offPx.size(); ++i)
+        if (onPx[i] != offPx[i]) ++diffPixels;
+    chk(diffPixels > 0,
+        "(6) CityView translate-on vs -off pixels DIFFER (Chinese 軍團)");
+    Translator::instance().enabled = true;
+
+    if (fail) std::printf("MOREUNITSTEST: %d failure(s)\n", fail);
+    else      std::printf("MOREUNITSTEST: all pass (5 new units + 4 new techs "
+                          "+ tech gating + AI smart-pick + Chinese render; "
+                          "CityView delta=%zu px)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -5642,6 +5869,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--governmenttest")) { return governmenttest(); }
         else if (!std::strcmp(argv[i], "--wondertest")) { return wondertest(); }
         else if (!std::strcmp(argv[i], "--diplomacytest")) { return diplomacytest(); }
+        else if (!std::strcmp(argv[i], "--moreunitstest")) { return moreunitstest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -5707,7 +5935,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

@@ -47,7 +47,28 @@ class OpenCiv1Game;
 // statistics can be exercised against a non-degenerate baseline (atk=1 vs
 // def=2 always rolls 0/0..1 which gives a 100% defender win rate even
 // without Walls). Cavalry stats: a=2 d=1 m=2 cost=20 (faithful Civ1).
-enum class UnitType : uint8_t { Settlers = 0, Militia = 1, Phalanx = 2, Cavalry = 3 };
+//
+// MORE-UNITS slice (Legion/Knight/Catapult/Musketeers/Cannon): faithful
+// Civ1 manual stats (atk/def/move/cost*10, see UnitDef table). Numeric
+// values 4..8 do NOT mirror the C# UnitTypeEnum ordering 1:1 (C# has
+// Legion=3, Musketeers=4, Cavalry=6, Knights=7, Catapult=8, Cannon=9) —
+// because our existing Cavalry=3 was chosen ahead of the larger roster.
+// The save format stores int(type), so the numeric values are STABLE
+// across this port's saves; a future deeper port that wants 1:1 with C#
+// will need a save migration step. Documented divergence.
+enum class UnitType : uint8_t {
+    Settlers   = 0,
+    Militia    = 1,
+    Phalanx    = 2,
+    Cavalry    = 3,
+    Legion     = 4,  // a=4 d=2 m=1 cost=40 (Civ1 manual) — tech IronWorking
+    Knight     = 5,  // a=4 d=2 m=2 cost=40 (Civ1 manual) — tech Feudalism
+    Catapult   = 6,  // a=6 d=1 m=1 cost=40 (Civ1 manual) — tech Mathematics
+    Musketeers = 7,  // a=3 d=3 m=1 cost=30 (Civ1 manual) — tech Gunpowder
+    Cannon     = 8,  // a=8 d=1 m=1 cost=40 (Civ1 manual) — tech Metallurgy
+};
+// Number of UnitType values shipped. Keep in sync with the kDefs table below.
+static constexpr int kUnitTypeCount = 9;
 
 // ---- DIPLOMACY (faithful Civ1 NoContact/Peace/War subset) ---------------
 // Faithful SUBSET of the C# OpenCiv1 Diplomacy state machine
@@ -103,11 +124,10 @@ struct UnitDef {
 //   Militia:  attack=1, defense=1, move=1, cost=1*10 = 10
 //   Phalanx:  attack=1, defense=2, move=1, cost=2*10 = 20
 inline const UnitDef& unitDefOf(UnitType t) {
-    static const UnitDef kDefs[4] = {
+    static const UnitDef kDefs[kUnitTypeCount] = {
         // techPrereq matches the C# UnitDefinition.PrerequisiteTech args in
         // GameData.cs lines 209-211: Settlers/Militia = None; Phalanx =
-        // BronzeWorking. Future units already noted: Legion -> IronWorking
-        // (GameData.cs line 212) — added when the unit ships.
+        // BronzeWorking.
         // Cavalry stats are the standard Civ1 horseback (a=2 d=1 m=2 cost=20,
         // PrerequisiteTech HorsebackRiding). We leave the prereq as None for
         // now so existing tech-gated paths continue to behave; Cavalry is
@@ -116,9 +136,21 @@ inline const UnitDef& unitDefOf(UnitType t) {
         {"Militia",  1, 1, 1, 10, Tech::None},
         {"Phalanx",  1, 2, 1, 20, Tech::BronzeWorking},
         {"Cavalry",  2, 1, 2, 20, Tech::None},
+        // MORE-UNITS slice — faithful Civ1 MANUAL stats (which differ from
+        // the C# port's table in a few cases; e.g. C# Legion is 3/1/1 cost
+        // 2, the manual lists 4/2/1 cost 4 — we ship the manual numbers as
+        // the spec called for them and they give a sharper Knight>Phalanx
+        // statistical signal in tests). Tech prereqs match the C# table.
+        // cost field stores SHIELD cost = manual cost * 10 (same scheme as
+        // Settlers/Militia/Phalanx/Cavalry).
+        {"Legion",     4, 2, 1, 40, Tech::IronWorking},
+        {"Knight",     4, 2, 2, 40, Tech::Feudalism},
+        {"Catapult",   6, 1, 1, 40, Tech::Mathematics},
+        {"Musketeers", 3, 3, 1, 30, Tech::Gunpowder},
+        {"Cannon",     8, 1, 1, 40, Tech::Metallurgy},
     };
     int i = int(t);
-    if (i < 0 || i > 3) i = 0;
+    if (i < 0 || i >= kUnitTypeCount) i = 0;
     return kDefs[i];
 }
 

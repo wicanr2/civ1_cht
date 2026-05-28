@@ -395,6 +395,46 @@ void MiniWorld::renderUnits(GBitmap& screen) const {
                 // small horizontal dash (mounted/horseback mark)
                 screen.drawLine(cxg - inset / 2, cyg, cxg + inset / 2, cyg, 210);
                 break;
+            case UnitType::Legion: {
+                // "L" — vertical line + short bottom horizontal
+                int h = inset / 2;
+                screen.drawLine(cxg - h / 2, cyg - h, cxg - h / 2, cyg + h, 210);
+                screen.drawLine(cxg - h / 2, cyg + h, cxg + h / 2, cyg + h, 210);
+                break;
+            }
+            case UnitType::Knight: {
+                // "K" — vertical + two diagonals meeting at midline
+                int h = inset / 2;
+                screen.drawLine(cxg - h / 2, cyg - h, cxg - h / 2, cyg + h, 210);
+                screen.drawLine(cxg - h / 2, cyg, cxg + h / 2, cyg - h, 210);
+                screen.drawLine(cxg - h / 2, cyg, cxg + h / 2, cyg + h, 210);
+                break;
+            }
+            case UnitType::Catapult: {
+                // "C" — left-open arc approximated as 3-segment bracket
+                int h = inset / 2;
+                screen.drawLine(cxg + h / 2, cyg - h, cxg - h / 2, cyg - h, 210);
+                screen.drawLine(cxg - h / 2, cyg - h, cxg - h / 2, cyg + h, 210);
+                screen.drawLine(cxg - h / 2, cyg + h, cxg + h / 2, cyg + h, 210);
+                break;
+            }
+            case UnitType::Musketeers: {
+                // "M" — vertical, vertical, V in between (compact)
+                int h = inset / 2;
+                screen.drawLine(cxg - h, cyg - h, cxg - h, cyg + h, 210);
+                screen.drawLine(cxg + h, cyg - h, cxg + h, cyg + h, 210);
+                screen.drawLine(cxg - h, cyg - h, cxg, cyg, 210);
+                screen.drawLine(cxg + h, cyg - h, cxg, cyg, 210);
+                break;
+            }
+            case UnitType::Cannon: {
+                // "N" — two verticals + descending diagonal
+                int h = inset / 2;
+                screen.drawLine(cxg - h, cyg - h, cxg - h, cyg + h, 210);
+                screen.drawLine(cxg + h, cyg - h, cxg + h, cyg + h, 210);
+                screen.drawLine(cxg - h, cyg - h, cxg + h, cyg + h, 210);
+                break;
+            }
         }
     }
 }

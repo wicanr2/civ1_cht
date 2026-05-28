@@ -198,6 +198,51 @@ int CheckPlayerTurn::processEndOfTurn() {
         }
     }
 
+    // ---- AI SMART CITY PRODUCTION (faithful greedy approximation) -------
+    // Mirrors the AI city-build decision in C# CityWorker.cs (where AI civs
+    // pick the highest-priority unit/building their tech allows). The full
+    // weighted scorer (threat, terrain, role, ...) is OUT OF SCOPE; we use
+    // the well-documented "pick the highest-attack unit whose tech is known"
+    // heuristic as the milestone behaviour. Rules (per AI city, per turn):
+    //   * Only re-pick when the city is currently producing a Unit (so any
+    //     human-set Building/Wonder production stays untouched). For AI
+    //     cities the default is Unit (Militia), so this triggers every turn
+    //     until a unit unlocks higher than the current pick.
+    //   * Pick the highest-attack unit whose techPrereq is known by this civ
+    //     (Settlers excluded — attack 0). Ties broken in enum order.
+    //     Falls back to Militia (Tech::None) when nothing else qualifies.
+    //   * Settlers founding (new-city) is handled by the AI auto-found pass
+    //     above; per-city production never picks Settlers (matches C# AI
+    //     which doesn't queue Settlers from city build menu in the basic
+    //     "advance on threat" path — the dedicated expansion AI is a TODO).
+    {
+        auto& citiesMut = um.citiesMut();
+        const auto& civs = um.civs();
+        auto& tr = p.techResearch();
+        for (auto& c : citiesMut) {
+            if (c.owner < 0 || std::size_t(c.owner) >= civs.size()) continue;
+            if (civs[std::size_t(c.owner)].isHuman) continue; // human picks
+            if (c.productionKind != City::ProductionKind::Unit) continue;
+            UnitType pick = UnitType::Militia;
+            int bestAtk = -1;
+            for (int i = 0; i < kUnitTypeCount; ++i) {
+                UnitType cand = UnitType(i);
+                if (cand == UnitType::Settlers) continue; // not a combatant
+                const UnitDef& def = unitDefOf(cand);
+                if (def.techPrereq != Tech::None && tr.civCount() > 0 &&
+                    !tr.civKnows(c.owner, def.techPrereq)) continue;
+                if (def.attack > bestAtk) { bestAtk = def.attack; pick = cand; }
+            }
+            // Apply (bypasses tech-gate by writing directly; the picker
+            // already enforced the gate). Preserves accumulated shields
+            // (faithful Civ1 carry-over on production switch).
+            if (c.productionType != pick) {
+                c.productionType = pick;
+                c.production = unitDefOf(pick).cost;
+            }
+        }
+    }
+
     // ---- AI UNIT MOVEMENT PASS (faithful greedy approximation) -----------
     // Mirrors the per-AI-unit dispatch in C# Segment_25fb.F0_25fb_0c9d (each
     // AI unit gets a "what should I do" call once per turn). The full version
