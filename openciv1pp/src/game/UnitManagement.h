@@ -26,6 +26,7 @@
 #pragma once
 #include "TerrainTiles.h"
 #include "TechResearch.h"
+#include "Government.h"
 #include <cstdint>
 #include <functional>
 #include <set>
@@ -154,6 +155,21 @@ struct CivState {
     uint8_t color = 0;        // palette index for the AI unit marker
     std::string name;         // resolved nation name (e.g. "Romans")
     bool isHuman = false;
+
+    // ---- Government (GOVERNMENT slice) ----
+    // Civ1 civs START in Despotism (faithful: the C# StartGameMenu init also
+    // sets Players[].Government = Despotism). When a civ initiates a govt
+    // change via UnitManagement::changeGovernment, the EFFECTIVE government
+    // becomes Anarchy for `anarchyTurnsLeft` turns (Civ1 fixed at 3 turns
+    // for the basic case — a Statue-of-Liberty-style instant change would
+    // override, but wonders aren't ported); when the counter hits 0 the
+    // effective govt switches to `targetGovt` and the transition completes.
+    // Effective government for gameplay purposes is therefore:
+    //   anarchyTurnsLeft > 0 -> Anarchy
+    //   else                 -> govt
+    Government govt = Government::Despotism;
+    Government targetGovt = Government::Despotism;
+    int anarchyTurnsLeft = 0;
 };
 
 struct City {
@@ -279,6 +295,31 @@ public:
     const std::vector<CivState>& civs() const { return civs_; }
     // Direct-write access used by GameLoadAndSave to restore civs from disk.
     std::vector<CivState>& civsMut() { return civs_; }
+
+    // ---- Government (GOVERNMENT slice) ----
+    // Initiate a government change for civ `civId`. Faithful Civ1 rules:
+    //   - civId must be in range,
+    //   - the civ must KNOW the new government's tech prereq (consults the
+    //     host TechResearch; Anarchy/Despotism have Tech::None -> always),
+    //   - the civ must not already be mid-transition (anarchyTurnsLeft > 0
+    //     refuses; switch-during-Anarchy is OUT — matches the C# game-menu
+    //     greyout of the REVOLUTION button while still in Anarchy),
+    //   - switching to the SAME government you already run is a no-op
+    //     (returns false to signal nothing happened).
+    // On success: govt is left untouched (still the OLD government — but
+    // see effectiveGovernment() below), targetGovt is set to `newGovt`, and
+    // anarchyTurnsLeft is set to 3 (the canonical Civ1 transition length).
+    // CheckPlayerTurn::processEndOfTurn decrements the counter each turn
+    // and, on reaching 0, sets govt = targetGovt. While anarchyTurnsLeft
+    // > 0 the EFFECTIVE government is Anarchy (use effectiveGovernment()
+    // to read it).
+    static constexpr int kAnarchyTransitionTurns = 3;
+    bool changeGovernment(int civId, Government newGovt);
+
+    // Read the EFFECTIVE government for civ `civId` (Anarchy while
+    // anarchyTurnsLeft > 0, else the stored govt). Bounds-safe: returns
+    // Government::Despotism for an out-of-range civId.
+    Government effectiveGovernment(int civId) const;
 
     // ---- Settlers improvement actions (faithful subset of F0_1866_*) ----
     // Work-target ids match the (Road/Irrigation) subset of the C#

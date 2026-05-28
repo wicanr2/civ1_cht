@@ -336,6 +336,18 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         }
     }
     {
+        // Owner government — Translator turns "Despotism"->"專制" etc. When
+        // the owner civ is mid-transition (anarchyTurnsLeft > 0) the
+        // EFFECTIVE government reads Anarchy / "無政府".
+        const auto& cvs = p.unitManagement().civs();
+        if (city.owner >= 0 && std::size_t(city.owner) < cvs.size()) {
+            Government g = p.unitManagement().effectiveGovernment(city.owner);
+            std::string val = Translator::instance().translate(
+                                  governmentNameKey(g));
+            drawLabelValue(infoY + lineH * 7, "Government:", val);
+        }
+    }
+    {
         // Owned-buildings line ("建築: Granary, Walls" / "Buildings: ..."),
         // localized via the Translator. Each building name goes through the
         // Translator independently so the "Granary"->"穀倉" rule applies.
@@ -348,7 +360,7 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
             first = false;
         }
         if (val.empty()) val = "-";
-        drawLabelValue(infoY + lineH * 7, "Buildings:", val);
+        drawLabelValue(infoY + lineH * 8, "Buildings:", val);
     }
 
     // 5) Population dots — one warm yellow dot per population point, drawn in
@@ -356,7 +368,7 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
     //    drawn at (24, 140) in F19_0000_111f_DrawCityPopulation; we use small
     //    coloured dots instead of POP.PIC sprites — see header for the stub).
     {
-        int popY = infoY + lineH * 8 + 2;
+        int popY = infoY + lineH * 9 + 2;
         int popX = infoX;
         for (int i = 0; i < population && i < 24; ++i) {
             screen.fillRect(Rect{popX, popY, 6, 8}, 166);

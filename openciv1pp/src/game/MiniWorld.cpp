@@ -752,6 +752,19 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
         char vbuf[16];
         std::snprintf(vbuf, sizeof(vbuf), " %zu", nCivs);
         penX3 = fb.drawString(font, penX3, line3Y, vbuf, 207);
+        // Government line: HUMAN civ (civ 0)'s EFFECTIVE government, routed
+        // through the chokepoint Translator (e.g. "Despotism"->"專制"). When
+        // mid-transition (anarchyTurnsLeft > 0) effectiveGovernment returns
+        // Anarchy so the HUD reads "政府: 無政府" during the 3-turn switch.
+        if (!game_->unitManagement().civs().empty()) {
+            penX3 = fb.drawString(font, penX3, line3Y, "  ", 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  "Government:", 207);
+            Government g = game_->unitManagement().effectiveGovernment(0);
+            penX3 = fb.drawString(font, penX3, line3Y, " ", 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  governmentNameKey(g), 207);
+        }
     }
     if (!lastActionKey_.empty()) {
         penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);

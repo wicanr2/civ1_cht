@@ -26,6 +26,13 @@ const TechDef kTechs[] = {
     {Tech::Writing,       "Writing",        30, Tech::Alphabet},
     {Tech::Currency,      "Currency",       30, Tech::BronzeWorking},
     {Tech::IronWorking,   "Iron Working",   40, Tech::BronzeWorking},
+    // Government-tier techs. Civ1 chains: Monarchy <- CeremonialBurial,
+    // CodeOfLaws <- Alphabet, Democracy <- Philosophy+Literacy. The deeper
+    // mid-era chain isn't ported here so we collapse to a single reachable
+    // prereq each (matches the early-era handful's "one prereq" pattern).
+    {Tech::Monarchy,      "Monarchy",       50, Tech::None},
+    {Tech::CodeOfLaws,    "Code of Laws",   50, Tech::Alphabet},
+    {Tech::Democracy,     "Democracy",      60, Tech::CodeOfLaws},
 };
 constexpr int kTechN = int(sizeof(kTechs) / sizeof(kTechs[0]));
 } // namespace

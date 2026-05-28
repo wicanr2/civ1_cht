@@ -105,6 +105,36 @@ void UnitManagement::setupCivs(int humanTribe, int numAi) {
     }
 }
 
+bool UnitManagement::changeGovernment(int civId, Government newGovt) {
+    if (civId < 0 || std::size_t(civId) >= civs_.size()) return false;
+    CivState& c = civs_[std::size_t(civId)];
+    // Already mid-transition: refuse (the C# REVOLUTION menu greys out
+    // while still in Anarchy). Caller can wait until anarchyTurnsLeft==0.
+    if (c.anarchyTurnsLeft > 0) return false;
+    // No-op when switching to the same government.
+    if (c.govt == newGovt) return false;
+    // Tech-gate: refuse when the civ doesn't yet know the new govt's prereq.
+    // Tech::None bypasses (Anarchy + Despotism are always available).
+    const GovernmentDef& def = governmentDefOf(newGovt);
+    if (def.techPrereq != Tech::None) {
+        if (!p.techResearch().civKnows(civId, def.techPrereq)) {
+            return false;
+        }
+    }
+    // Initiate the transition: target stored, effective govt becomes Anarchy
+    // for `kAnarchyTransitionTurns` turns (CheckPlayerTurn ticks it down).
+    c.targetGovt = newGovt;
+    c.anarchyTurnsLeft = kAnarchyTransitionTurns;
+    return true;
+}
+
+Government UnitManagement::effectiveGovernment(int civId) const {
+    if (civId < 0 || std::size_t(civId) >= civs_.size())
+        return Government::Despotism;
+    const CivState& c = civs_[std::size_t(civId)];
+    return (c.anarchyTurnsLeft > 0) ? Government::Anarchy : c.govt;
+}
+
 int UnitManagement::addUnit(int owner, UnitType type, int x, int y) {
     Unit u;
     u.owner = owner;

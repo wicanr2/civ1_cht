@@ -101,7 +101,7 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     // ownedBuildings list} + per-unit veteran flag for the buildings slice.
     // v3 added the improvements grid + per-unit work state.
     // v2 added per-civ tech-tree state; v1 was the pre-tech baseline.
-    os << "OpenCiv1pp savegame v5\n";
+    os << "OpenCiv1pp savegame v6\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -142,6 +142,14 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     for (const auto& c : civs) {
         os << "civ " << c.tribeIdx << " " << int(c.color) << " "
            << (c.isHuman ? 1 : 0) << " " << c.name << "\n";
+    }
+    // v6: per-civ government state, one line per civ. v1..v5 readers skip the
+    // 'civgovt' key entirely (the istream lookup just falls through); v6
+    // readers restore govt/targetGovt/anarchyTurnsLeft from these lines.
+    for (std::size_t i = 0; i < civs.size(); ++i) {
+        const auto& c = civs[i];
+        os << "civgovt " << i << " " << int(c.govt) << " "
+           << int(c.targetGovt) << " " << c.anarchyTurnsLeft << "\n";
     }
 
     // Units. v3: per-unit work state (workTurnsLeft, workTarget) appended.
@@ -255,7 +263,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         header != "OpenCiv1pp savegame v2" &&
         header != "OpenCiv1pp savegame v3" &&
         header != "OpenCiv1pp savegame v4" &&
-        header != "OpenCiv1pp savegame v5") return false;
+        header != "OpenCiv1pp savegame v5" &&
+        header != "OpenCiv1pp savegame v6") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -281,6 +290,11 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     // (population=1, food=0, foodPerTurn=0 from City's struct defaults).
     struct CityFoodRow { int cityId; int population; int food; int foodPerTurn; };
     std::vector<CityFoodRow> cityFoodRows;
+    // v6: per-civ government state, applied after the civs vector is built.
+    // v1..v5 saves don't emit these lines -> defaults remain (Despotism +
+    // anarchyTurnsLeft=0 from CivState's struct defaults).
+    struct CivGovtRow { int civId; int govt; int targetGovt; int anarchyTurnsLeft; };
+    std::vector<CivGovtRow> civGovtRows;
 
     std::string line;
     while (std::getline(is, line)) {
@@ -353,6 +367,11 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             CityFoodRow r{};
             iss >> r.cityId >> r.population >> r.food >> r.foodPerTurn;
             cityFoodRows.push_back(r);
+        }
+        else if (key == "civgovt") {
+            CivGovtRow r{};
+            iss >> r.civId >> r.govt >> r.targetGovt >> r.anarchyTurnsLeft;
+            civGovtRows.push_back(r);
         }
         else if (key == "citybld") {
             CityBldRow r;
@@ -432,6 +451,19 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     p.unitManagement().civsMut() = std::move(civs);
     p.unitManagement().unitsMut() = std::move(units);
     p.unitManagement().citiesMut() = std::move(cities);
+
+    // v6: apply per-civ government state on top of the restored civs.
+    // Absent in v1..v5 saves -> defaults (Despotism / Despotism / 0) hold.
+    {
+        auto& cv = p.unitManagement().civsMut();
+        for (const auto& r : civGovtRows) {
+            if (r.civId < 0 || std::size_t(r.civId) >= cv.size()) continue;
+            CivState& c = cv[std::size_t(r.civId)];
+            c.govt = Government(r.govt);
+            c.targetGovt = Government(r.targetGovt);
+            c.anarchyTurnsLeft = (r.anarchyTurnsLeft >= 0) ? r.anarchyTurnsLeft : 0;
+        }
+    }
 
     // v4: apply per-city building state on top of the freshly-restored cities.
     // Each citybld row targets a city by id and restores productionKind,

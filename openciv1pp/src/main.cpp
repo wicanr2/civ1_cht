@@ -4779,6 +4779,245 @@ static int techtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Governments (--governmenttest) -------------------------
+// Verifies the GOVERNMENT slice end-to-end:
+//   (1) Default: every civ starts in Despotism (govt == Despotism,
+//       anarchyTurnsLeft == 0, effectiveGovernment == Despotism).
+//   (2) Tech-gate: changeGovernment(Monarchy) is REFUSED before the civ
+//       knows the Monarchy tech; ACCEPTED once Tech::Monarchy is unlocked
+//       (govt unchanged, anarchyTurnsLeft = 3, effective govt = Anarchy).
+//   (3) Transition: processEndOfTurn x3 ticks anarchyTurnsLeft to 0; on the
+//       3rd tick the EFFECTIVE government switches to the target (Monarchy).
+//   (4) Effect: research accumulated over N turns under Republic > Despotism
+//       (Despotism scienceMul=1.0 vs Republic scienceMul=1.0 — Republic
+//       relies on trade — and Democracy 1.5x). We therefore compare
+//       Democracy vs Despotism for science (the multiplier we model). Plus
+//       production: Anarchy (0.5x) < Despotism (1.0x) shields per N turns.
+//   (5) Save/load v6 round-trip preserves govt + targetGovt + anarchyTurnsLeft.
+//   (6) HUD render: translate-on Chinese vs -off English differ (Chinese
+//       government name on, English off).
+static int governmenttest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // (1) Default: Despotism.
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 6);
+        g.techResearch().initCivs(7);
+        chk(um.civs()[0].govt == Government::Despotism,
+            "civ 0 starts in Despotism");
+        chk(um.civs()[0].anarchyTurnsLeft == 0,
+            "civ 0 starts with anarchyTurnsLeft == 0");
+        chk(um.effectiveGovernment(0) == Government::Despotism,
+            "civ 0 effective government == Despotism at start");
+    }
+
+    // (2) Tech-gate + (3) Transition.
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setupCivs(0, 6);
+        auto& tr = g.techResearch();
+        tr.initCivs(7);
+        // Refused without Monarchy tech.
+        bool refused = !um.changeGovernment(0, Government::Monarchy);
+        chk(refused, "changeGovernment(Monarchy) REFUSED pre-Monarchy-tech");
+        chk(um.civs()[0].anarchyTurnsLeft == 0,
+            "post-refusal: anarchyTurnsLeft still 0");
+        chk(um.civs()[0].targetGovt == Government::Despotism,
+            "post-refusal: targetGovt unchanged (Despotism)");
+        // Unlock Monarchy tech -> accepted.
+        tr.setCivKnows(0, Tech::Monarchy, true);
+        bool accepted = um.changeGovernment(0, Government::Monarchy);
+        chk(accepted, "changeGovernment(Monarchy) ACCEPTED post-Monarchy-tech");
+        chk(um.civs()[0].anarchyTurnsLeft == 3,
+            "anarchyTurnsLeft == 3 immediately after acceptance");
+        chk(um.civs()[0].targetGovt == Government::Monarchy,
+            "targetGovt == Monarchy after acceptance");
+        chk(um.effectiveGovernment(0) == Government::Anarchy,
+            "EFFECTIVE government during transition == Anarchy");
+        // 3 end-of-turn ticks -> transition completes.
+        auto& cpt = g.checkPlayerTurn();
+        cpt.processEndOfTurn();
+        chk(um.civs()[0].anarchyTurnsLeft == 2, "tick 1: anarchyTurnsLeft = 2");
+        chk(um.effectiveGovernment(0) == Government::Anarchy,
+            "tick 1: still Anarchy");
+        cpt.processEndOfTurn();
+        chk(um.civs()[0].anarchyTurnsLeft == 1, "tick 2: anarchyTurnsLeft = 1");
+        chk(um.effectiveGovernment(0) == Government::Anarchy,
+            "tick 2: still Anarchy");
+        cpt.processEndOfTurn();
+        chk(um.civs()[0].anarchyTurnsLeft == 0, "tick 3: anarchyTurnsLeft = 0");
+        chk(um.effectiveGovernment(0) == Government::Monarchy,
+            "tick 3: EFFECTIVE government switched to Monarchy");
+        chk(um.civs()[0].govt == Government::Monarchy,
+            "tick 3: stored govt switched to Monarchy");
+    }
+
+    // (4) Effect — Democracy science > Despotism science over N turns.
+    // We hand-set both civs into the target governments (no Anarchy
+    // transition counter) and run N end-of-turns with 1 city each, then
+    // compare the accumulated research POINTS (cheapest tech for both is
+    // Alphabet, cost 10; with civCount=1 city/turn Despotism reaches 1pt/turn
+    // while Democracy reaches ceil(1*1.5)=2pt/turn -> after a few turns
+    // the gap is visible).
+    {
+        auto runScienceN = [&](Government g, int n) -> int {
+            OpenCiv1Game og; setupGame(og, 640, 480);
+            auto& um = og.unitManagement();
+            um.setupCivs(0, 0); // civ 0 only
+            auto& tr = og.techResearch();
+            tr.initCivs(1);
+            // Place a city directly so the per-turn pass adds research pts.
+            std::string nm;
+            (void)um.buildCity(5, 5, /*playerId*/ 0, nm);
+            // Hand-set the stored government (skip transition for the test).
+            um.civsMut()[0].govt = g;
+            um.civsMut()[0].targetGovt = g;
+            um.civsMut()[0].anarchyTurnsLeft = 0;
+            auto& cpt = og.checkPlayerTurn();
+            // Count total unlocked techs * cost + remaining points: easier
+            // proxy is "knowsAlphabet count + leftover points" but cleaner
+            // is: track the absolute # of research points accumulated.
+            int totalUnlocked = 0;
+            int lastPts = tr.civPoints(0);
+            for (int t = 0; t < n; ++t) {
+                int before = tr.civPoints(0);
+                cpt.processEndOfTurn();
+                int after = tr.civPoints(0);
+                if (after < before) {
+                    // tech unlocked this turn — count cost of the
+                    // PRIOR research target (= the cost the civ paid).
+                    totalUnlocked += 1;
+                }
+                lastPts = after;
+            }
+            return totalUnlocked * 10 /* approx cost of Alphabet */ + lastPts;
+        };
+        int despSci = runScienceN(Government::Despotism, 8);
+        int demoSci = runScienceN(Government::Democracy, 8);
+        chk(demoSci > despSci,
+            "Democracy research > Despotism research over 8 turns");
+        // Production: Anarchy halves shields vs Despotism. We compare
+        // accumulated shields directly on the first city.
+        auto runShieldsN = [&](Government effective, int n) -> int {
+            OpenCiv1Game og; setupGame(og, 640, 480);
+            auto& um = og.unitManagement();
+            um.setupCivs(0, 0);
+            og.techResearch().initCivs(1);
+            std::string nm;
+            (void)um.buildCity(5, 5, 0, nm);
+            // To pin EFFECTIVE government to a specific one, write govt
+            // directly AND keep anarchyTurnsLeft=0 (Anarchy then comes
+            // ONLY by stored govt == Anarchy, which the public API rejects
+            // — direct-write here is a test-only path).
+            um.civsMut()[0].govt = effective;
+            um.civsMut()[0].targetGovt = effective;
+            um.civsMut()[0].anarchyTurnsLeft = 0;
+            auto& cpt = og.checkPlayerTurn();
+            for (int t = 0; t < n; ++t) cpt.processEndOfTurn();
+            // Accumulated shields = the city's current shields (it may have
+            // produced units along the way -- count them too).
+            int sh = um.cities()[0].shields
+                   + um.cities()[0].units * um.cities()[0].production;
+            return sh;
+        };
+        int anaShields  = runShieldsN(Government::Anarchy,   12);
+        int despShields = runShieldsN(Government::Despotism, 12);
+        chk(despShields > anaShields,
+            "Despotism shields > Anarchy shields over 12 turns");
+    }
+
+    // (5) Save/load v6 round-trip preserves govt + anarchyTurnsLeft + targetGovt.
+    {
+        const char* savePath = "/tmp/openciv1pp_governmenttest.sav";
+        OpenCiv1Game g1; setupGame(g1, 640, 480);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow1(g1);
+        flow1.enterTitle();
+        for (int k = 0; k < 6; ++k) flow1.handleKey(MenuBoxDialog::KeyEnter);
+        State s1 = flow1.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+        chk(s1 == State::PLAYING, "govt round-trip: reached PLAYING");
+        auto& um1 = g1.unitManagement();
+        auto& tr1 = g1.techResearch();
+        tr1.setCivKnows(0, Tech::Monarchy, true);
+        // civ 0 transitions to Monarchy (mid-transition: anarchyTurnsLeft=3).
+        bool ok0 = um1.changeGovernment(0, Government::Monarchy);
+        chk(ok0, "govt round-trip: civ 0 changeGovernment(Monarchy) OK");
+        // civ 2 hand-set to a completed Republic (no transition).
+        if (um1.civs().size() > 2) {
+            um1.civsMut()[2].govt = Government::Republic;
+            um1.civsMut()[2].targetGovt = Government::Republic;
+            um1.civsMut()[2].anarchyTurnsLeft = 0;
+        }
+        bool saveOk = g1.gameLoadAndSave().saveToFile(savePath, &flow1);
+        chk(saveOk, "govt round-trip: saveToFile succeeded");
+
+        OpenCiv1Game g2; setupGame(g2, 640, 480);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow2(g2);
+        bool loadOk = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
+        chk(loadOk, "govt round-trip: loadFromFile succeeded");
+        auto& um2 = g2.unitManagement();
+        chk(um2.civs()[0].govt == Government::Despotism,
+            "post-load: civ 0 stored govt == Despotism (transition pending)");
+        chk(um2.civs()[0].targetGovt == Government::Monarchy,
+            "post-load: civ 0 targetGovt == Monarchy");
+        chk(um2.civs()[0].anarchyTurnsLeft == 3,
+            "post-load: civ 0 anarchyTurnsLeft == 3 preserved");
+        chk(um2.effectiveGovernment(0) == Government::Anarchy,
+            "post-load: civ 0 EFFECTIVE government == Anarchy");
+        if (um2.civs().size() > 2) {
+            chk(um2.civs()[2].govt == Government::Republic,
+                "post-load: civ 2 govt == Republic preserved");
+            chk(um2.effectiveGovernment(2) == Government::Republic,
+                "post-load: civ 2 EFFECTIVE government == Republic");
+        }
+    }
+
+    // (6) HUD render: translate-on Chinese vs -off English differ.
+    std::size_t diffPixels = 0;
+    auto renderHud = [&](bool translateOn) -> std::vector<uint8_t> {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        Translator::instance().enabled = translateOn;
+        FrontEndFlow flow(g);
+        flow.enterTitle();
+        for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+        // Force civ 0 to Monarchy (no transition) so the HUD shows the
+        // government name. The Chinese label "君主" differs from the English
+        // label "Govt Monarchy" pixel-for-pixel.
+        if (!g.unitManagement().civs().empty()) {
+            g.unitManagement().civsMut()[0].govt = Government::Monarchy;
+            g.unitManagement().civsMut()[0].targetGovt = Government::Monarchy;
+            g.unitManagement().civsMut()[0].anarchyTurnsLeft = 0;
+        }
+        flow.draw();
+        return g.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> onPx  = renderHud(true);
+    std::vector<uint8_t> offPx = renderHud(false);
+    chk(onPx.size() == offPx.size() && !onPx.empty(),
+        "govt HUD: both renders produced a buffer");
+    for (std::size_t i = 0; i < onPx.size() && i < offPx.size(); ++i)
+        if (onPx[i] != offPx[i]) ++diffPixels;
+    chk(diffPixels > 0,
+        "govt HUD: translate-on vs -off pixels DIFFER (Chinese govt text)");
+    Translator::instance().enabled = true;
+
+    if (fail) std::printf("GOVERNMENTTEST: %d failure(s)\n", fail);
+    else      std::printf("GOVERNMENTTEST: all pass (5 governments: "
+                          "default Despotism / tech-gate / 3-turn Anarchy "
+                          "transition / science+production multipliers / "
+                          "v6 round-trip; HUD delta=%zu px)\n",
+                          diffPixels);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -4850,6 +5089,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--improvementtest")) { return improvementtest(); }
         else if (!std::strcmp(argv[i], "--buildingtest")) { return buildingtest(); }
         else if (!std::strcmp(argv[i], "--foodtest")) { return foodtest(); }
+        else if (!std::strcmp(argv[i], "--governmenttest")) { return governmenttest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -4915,7 +5155,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

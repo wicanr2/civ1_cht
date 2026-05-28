@@ -48,6 +48,15 @@ namespace oc1 {
 class OpenCiv1Game;
 
 // Numeric values match C# TechnologyAdvanceEnum (cross-checked above).
+// Monarchy / CodeOfLaws / Democracy added for the GOVERNMENT slice (the
+// 3 governments past the always-available Despotism each gate behind one
+// of these techs). Numeric ids match TechnologyAdvanceEnum.cs:
+//   Monarchy=24, CodeOfLaws=25, Democracy=27. Prereq chains (faithful
+//   GameData.cs / Civ1 manual): Monarchy <- CeremonialBurial (stubbed
+//   here to Tech::None so the early-era slice can reach it), CodeOfLaws
+//   <- Alphabet (one of the two Civ1 prereqs), Democracy <- {Philosophy
+//   + Literacy} (both stubbed to CodeOfLaws so the chain is real but
+//   reachable without porting the deeper tree).
 enum class Tech : int8_t {
     None          = -1,
     Alphabet      = 0,
@@ -56,6 +65,9 @@ enum class Tech : int8_t {
     BronzeWorking = 17,
     IronWorking   = 18,
     Writing       = 22,
+    Monarchy      = 24,
+    CodeOfLaws    = 25,
+    Democracy     = 27,
     TheWheel      = 33,
     Pottery       = 42,
 };

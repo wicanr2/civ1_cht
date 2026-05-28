@@ -8,7 +8,9 @@
 #include "MapManagement.h"
 #include "TerrainTiles.h"
 #include "TechResearch.h"
+#include "Government.h"
 #include <algorithm>
+#include <cmath>
 
 namespace oc1 {
 
@@ -215,6 +217,26 @@ int CheckPlayerTurn::processEndOfTurn() {
         }
     }
 
+    // ---- GOVERNMENT TRANSITION TICK --------------------------------------
+    // Decrement anarchyTurnsLeft for each civ that is mid-transition. When
+    // the counter reaches 0, the EFFECTIVE government becomes targetGovt
+    // (we materialise the switch by writing govt = targetGovt). Mirrors the
+    // Civ1 per-turn revolution counter (3-turn Anarchy then the chosen
+    // stable government takes effect). Run BEFORE the per-city shield pass
+    // so the production/science multipliers below see the freshly-updated
+    // government.
+    {
+        auto& civs = um.civsMut();
+        for (auto& c : civs) {
+            if (c.anarchyTurnsLeft > 0) {
+                c.anarchyTurnsLeft -= 1;
+                if (c.anarchyTurnsLeft == 0) {
+                    c.govt = c.targetGovt;
+                }
+            }
+        }
+    }
+
     // OUTER LOOP: iterate civs (player + AI placeholders). After the AI pass
     // above the cities[] table also contains AI capitals, so the per-civ city
     // pass is now genuinely multi-civ.
@@ -244,7 +266,19 @@ int CheckPlayerTurn::processEndOfTurn() {
                             ++adjGood;
                     }
             }
-            c.shields += shieldYield(adjGood);
+            // Per-civ government PRODUCTION multiplier (Civ1: Anarchy halves
+            // shield output; other governments are baseline 1.0). Applied
+            // multiplicatively to the per-turn shield yield with rounding
+            // to keep results deterministic (floor for fractions <1).
+            int baseShields = shieldYield(adjGood);
+            float prodMul = 1.0f;
+            if (std::size_t(c.owner) < um.civs().size()) {
+                Government eg = um.effectiveGovernment(c.owner);
+                prodMul = governmentDefOf(eg).productionMul;
+            }
+            int finalShields = int(std::floor(float(baseShields) * prodMul));
+            if (finalShields < 0) finalShields = 0;
+            c.shields += finalShields;
 
             // ---- FOOD + POPULATION GROWTH (Civ1 food box) ----------------
             // Faithful Civ1 growth math (simplified worker fan-out to the
@@ -345,7 +379,21 @@ int CheckPlayerTurn::processEndOfTurn() {
                 int cityCount = 0;
                 for (const auto& c : cities)
                     if (c.owner == civId) ++cityCount;
-                if (cityCount > 0) tr.addPoints(civId, cityCount);
+                if (cityCount <= 0) continue;
+                // Per-civ government SCIENCE multiplier (Civ1: Democracy
+                // +50% science; others 1.0). Multiply the baseline (one
+                // research point per city per turn) by scienceMul and
+                // round-up so a Democracy with 2 cities yields 2*1.5=3,
+                // not 3.0->floor=3 (same answer here but ceil keeps a
+                // 1-city Democracy gaining 2/turn instead of 1, which
+                // matches the "Republic +1 trade per tile" character).
+                float sciMul = 1.0f;
+                if (civId >= 0 && std::size_t(civId) < um.civs().size()) {
+                    Government eg = um.effectiveGovernment(civId);
+                    sciMul = governmentDefOf(eg).scienceMul;
+                }
+                int pts = int(std::ceil(float(cityCount) * sciMul));
+                if (pts > 0) tr.addPoints(civId, pts);
             }
         }
     }
