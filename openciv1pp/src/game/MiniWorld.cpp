@@ -982,6 +982,25 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
         penX3 = fb.drawString(font, penX3, line3Y, gb, 207);
     }
 
+    // Disorder line: append "民變: N" when the human civ (civ 0) has any
+    // city in civil disorder. Suppressed when N==0 so the HUD stays clean
+    // for the normal case. Faithful Civ1: the C# HUD draws a "CIVIL
+    // DISORDER" banner over each affected city; we collapse to a single
+    // per-civ count on the HUD line for compactness.
+    if (game_) {
+        const auto& cs = game_->unitManagement().cities();
+        int n = 0;
+        for (const auto& c : cs) if (c.owner == 0 && c.disorder) ++n;
+        if (n > 0) {
+            penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  "Disorder!", 207);
+            char db[16];
+            std::snprintf(db, sizeof(db), " %d", n);
+            penX3 = fb.drawString(font, penX3, line3Y, db, 207);
+        }
+    }
+
     // Research line: show the HUMAN civ (civ 0)'s current research target
     // + progress (pts/cost), translated via the Translator. Drawn at the
     // very end of line 3 when TechResearch has been initialised. Mirrors

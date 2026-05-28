@@ -6010,6 +6010,243 @@ static int goldtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Happiness / disorder / Temple (--happinesstest) -------
+// Verifies the HAPPINESS slice end-to-end:
+//   (1) Population=1 city: happy=0, unhappy=0, disorder=false (no unhappy
+//       generated under pop 5; baseline math = max(0, pop-4)).
+//   (2) Force population=5: after one EOT pass, unhappy=1 disorder=true
+//       (happy=0 < unhappy=1) -> CIVIL DISORDER triggered.
+//   (3) Build Temple -> ownedBuildings contains Temple; next EOT pass
+//       computes unhappy=max(0,1-1)=0, disorder=false (Temple placates 1).
+//   (4) During disorder, processEndOfTurn does NOT add shields nor grow
+//       population (food box stays put even when foodPerTurn is positive).
+//   (5) Save/load v10 round-trip preserves per-city happy/unhappy/disorder.
+//   (6) CityView translate-on Chinese vs -off English pixels differ
+//       (Chinese 快樂/民變 labels fire).
+//   (7) BuildingType::Temple is in the BuildingDef table with cost=40.
+//   (8) Hanging Gardens wonder: civ-wide -1 unhappy in every city.
+static int happinesstest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // ---- (7): Temple cost == 40 -----------------------------------------
+    {
+        const BuildingDef& td = buildingDefOf(BuildingType::Temple);
+        chk(std::strcmp(td.name, "Temple") == 0,
+            "(7) BuildingDef[Temple].name == \"Temple\"");
+        chk(td.cost == 40, "(7) BuildingDef[Temple].cost == 40");
+    }
+
+    // ---- (1): pop=1 -> happy=0 unhappy=0 disorder=false -----------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(40, 40);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 0);
+        std::string nm;
+        chk(um.buildCity(10, 10, 0, nm), "(1) buildCity OK");
+        g.checkPlayerTurn().processEndOfTurn();
+        const City& c = um.cities()[0];
+        chk(c.population == 1, "(1) population == 1");
+        chk(c.happy == 0, "(1) happy == 0");
+        chk(c.unhappy == 0, "(1) unhappy == 0 (pop<=4 -> no unhappy)");
+        chk(!c.disorder, "(1) disorder == false at pop 1");
+    }
+
+    // ---- (2): pop=5 -> unhappy=1 disorder=true --------------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(40, 40);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 0);
+        std::string nm;
+        chk(um.buildCity(10, 10, 0, nm), "(2) buildCity OK");
+        um.citiesMut()[0].population = 5;
+        g.checkPlayerTurn().processEndOfTurn();
+        const City& c = um.cities()[0];
+        chk(c.population == 5,
+            "(2) population stuck at 5 (disorder freezes growth)");
+        chk(c.unhappy == 1, "(2) unhappy == max(0, 5-4) == 1");
+        chk(c.happy == 0,   "(2) happy == 0 (baseline)");
+        chk(c.disorder,     "(2) disorder == true (unhappy>happy)");
+    }
+
+    // ---- (3): Temple placates 1 unhappy ----------------------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(40, 40);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 0);
+        std::string nm;
+        chk(um.buildCity(10, 10, 0, nm), "(3) buildCity OK");
+        // Pop=5 + Temple owned -> unhappy after pass = max(0,1-1) = 0,
+        // disorder = false. Insert the Temple directly into ownedBuildings
+        // (bypassing the production loop so the test stays focused on the
+        // happiness math, not the build cycle).
+        um.citiesMut()[0].population = 5;
+        um.citiesMut()[0].ownedBuildings.insert(BuildingType::Temple);
+        g.checkPlayerTurn().processEndOfTurn();
+        const City& c = um.cities()[0];
+        chk(c.unhappy == 0, "(3) Temple owned -> unhappy reduced to 0");
+        chk(!c.disorder,
+            "(3) Temple owned -> disorder == false");
+    }
+
+    // ---- (4): disorder freezes shield production AND growth -------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(40, 40);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 0);
+        std::string nm;
+        chk(um.buildCity(10, 10, 0, nm), "(4) buildCity OK");
+        // Set up disorder: pop=5, no Temple. Also park food well below
+        // the growth threshold so the only way it could move toward growth
+        // is via the per-turn +foodPerTurn add.
+        City& c0 = um.citiesMut()[0];
+        c0.population = 5;
+        c0.food = 0;
+        c0.shields = 0;
+        int popBefore = c0.population;
+        int shieldsBefore = c0.shields;
+        int foodBefore = c0.food;
+        g.checkPlayerTurn().processEndOfTurn();
+        const City& c = um.cities()[0];
+        chk(c.disorder, "(4) precondition: city IS in disorder");
+        chk(c.shields == shieldsBefore,
+            "(4) disorder: shields did NOT advance this turn");
+        chk(c.population == popBefore,
+            "(4) disorder: population did NOT grow this turn");
+        chk(c.food == foodBefore,
+            "(4) disorder: food box did NOT advance this turn");
+    }
+
+    // ---- (5): Save/load v10 round-trip preserves happy/unhappy/disorder --
+    {
+        const char* savePath = "/tmp/openciv1pp_happinesstest.sav";
+        OpenCiv1Game g1; setupGame(g1, 640, 480);
+        FrontEndFlow flow1(g1);
+        flow1.enterTitle();
+        for (int k = 0; k < 6; ++k) flow1.handleKey(MenuBoxDialog::KeyEnter);
+        FrontEndFlow::State s1 = flow1.handleKey(MenuBoxDialog::KeyEnter);
+        chk(s1 == FrontEndFlow::State::PLAYING, "(5) reached PLAYING");
+        auto& um1 = g1.unitManagement();
+        g1.checkPlayerTurn().processEndOfTurn(); // populate cities
+        chk(!um1.cities().empty(), "(5) >= 1 city after EOT pass");
+        if (!um1.cities().empty()) {
+            City& c = um1.citiesMut()[0];
+            c.happy    = 7;
+            c.unhappy  = 11;
+            c.disorder = true;
+        }
+        bool sok = g1.gameLoadAndSave().saveToFile(savePath, &flow1);
+        chk(sok, "(5) saveToFile (v10) succeeded");
+
+        OpenCiv1Game g2; setupGame(g2, 640, 480);
+        FrontEndFlow flow2(g2);
+        bool lok = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
+        chk(lok, "(5) loadFromFile (v10) succeeded");
+        auto& um2 = g2.unitManagement();
+        chk(!um2.cities().empty(), "(5) post-load: >= 1 city");
+        if (!um2.cities().empty()) {
+            const City& c = um2.cities()[0];
+            chk(c.happy == 7,      "(5) happy preserved (7)");
+            chk(c.unhappy == 11,   "(5) unhappy preserved (11)");
+            chk(c.disorder == true, "(5) disorder preserved (true)");
+        }
+    }
+
+    // ---- (5b): Older saves (v9) still load -> happy/unhappy default ------
+    {
+        const char* path = "/tmp/openciv1pp_happinesstest_v9.sav";
+        FILE* f = std::fopen(path, "w");
+        chk(f != nullptr, "(5b) opened v9 scratch file");
+        if (f) {
+            std::fputs("OpenCiv1pp savegame v9\n"
+                       "turn 1\n"
+                       "year -4000\n"
+                       "difficulty -1\n"
+                       "tribe -1\n"
+                       "seed 0\n"
+                       "name \n"
+                       "state 2\n"
+                       "unitpos 0 0\n"
+                       "civs 1\n"
+                       "civ 0 209 1 Rome\n", f);
+            std::fclose(f);
+        }
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        FrontEndFlow flow(g);
+        bool lok = g.gameLoadAndSave().loadFromFile(path, &flow);
+        chk(lok, "(5b) v9 save still loads (back-compat)");
+    }
+
+    // ---- (6): CityView translate-on vs -off pixels differ ---------------
+    std::size_t diffPixels = 0;
+    auto renderCv = [&](bool translateOn) -> std::vector<uint8_t> {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        Translator::instance().enabled = translateOn;
+        FrontEndFlow flow(g);
+        flow.enterTitle();
+        for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+        flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+        g.checkPlayerTurn().processEndOfTurn();
+        // Force the FIRST city into disorder so the "民變!" pixel hits.
+        if (!g.unitManagement().cities().empty()) {
+            City& c = g.unitManagement().citiesMut()[0];
+            c.population = 6;       // pop>4 -> unhappy
+            c.happy    = 0;
+            c.unhappy  = 2;
+            c.disorder = true;
+        }
+        g.cityView().open(0);
+        g.cityView().draw(g.graphics.screen(0), 1);
+        return g.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> onPx  = renderCv(true);
+    std::vector<uint8_t> offPx = renderCv(false);
+    chk(onPx.size() == offPx.size() && !onPx.empty(),
+        "(6) CityView: both renders produced a buffer");
+    for (std::size_t i = 0; i < onPx.size() && i < offPx.size(); ++i)
+        if (onPx[i] != offPx[i]) ++diffPixels;
+    chk(diffPixels > 0,
+        "(6) CityView: translate-on vs -off pixels DIFFER (Chinese 快樂/民變)");
+    Translator::instance().enabled = true;
+
+    // ---- (8): Hanging Gardens civ-wide -1 unhappy -----------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(40, 40);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 0);
+        std::string nm;
+        chk(um.buildCity(10, 10, 0, nm), "(8) buildCity #1 OK");
+        chk(um.buildCity(20, 20, 0, nm), "(8) buildCity #2 OK");
+        // pop=5 in both cities -> baseline unhappy=1 each.
+        um.citiesMut()[0].population = 5;
+        um.citiesMut()[1].population = 5;
+        // Civ owns Hanging Gardens -> each city's unhappy -= 1 -> 0,
+        // disorder=false in both.
+        um.civsMut()[0].ownedWonders.insert(WonderType::HangingGardens);
+        g.checkPlayerTurn().processEndOfTurn();
+        const City& c0 = um.cities()[0];
+        const City& c1 = um.cities()[1];
+        chk(c0.unhappy == 0 && !c0.disorder,
+            "(8) Hanging Gardens placates city #1");
+        chk(c1.unhappy == 0 && !c1.disorder,
+            "(8) Hanging Gardens placates city #2 (civ-wide)");
+    }
+
+    if (fail) std::printf("HAPPINESSTEST: %d failure(s)\n", fail);
+    else      std::printf("HAPPINESSTEST: all pass (pop<=4 no unhappy, pop=5 "
+                          "disorder, Temple/HangingGardens placate, disorder "
+                          "freezes shields+growth, v10 save/load round-trip; "
+                          "CityView delta=%zu px)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -6086,6 +6323,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--diplomacytest")) { return diplomacytest(); }
         else if (!std::strcmp(argv[i], "--moreunitstest")) { return moreunitstest(); }
         else if (!std::strcmp(argv[i], "--goldtest")) { return goldtest(); }
+        else if (!std::strcmp(argv[i], "--happinesstest")) { return happinesstest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -6151,7 +6389,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

@@ -157,6 +157,10 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         screen.palette.set(172,  85, 255, 255); // bright cyan (river)
         screen.palette.set(173,   0, 170, 170); // dark cyan (swamp)
         screen.palette.set(174, 255, 255, 255); // bright white (arctic)
+        // 175 = VGA bright red — used for the city title when the city is
+        // in CIVIL DISORDER (民變). Pickable visually distinct from the
+        // bright yellow (166) "normal" title.
+        screen.palette.set(175, 255,  85,  85); // bright red (disorder title)
     };
     installCityViewPalette();
 
@@ -216,9 +220,13 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         Size sz = measureString(font, title);
         int tx = kPanelX + (kPanelW - sz.w) / 2;
         // Shadow then text (the F19_ DrawCenteredStringWithShadow recipe).
-        // Title is rendered in bright yellow (166) for visual emphasis.
+        // Title is rendered in bright yellow (166) for visual emphasis —
+        // BUT switches to bright red (175) when the city is in CIVIL
+        // DISORDER, so the player notices at a glance that production +
+        // growth have halted (faithful Civ1 city-screen disorder cue).
+        uint8_t titleCol = city.disorder ? 175 : 166;
         screen.drawString(font, tx + 1, titleY + 1, title, 163);
-        screen.drawString(font, tx, titleY, title, 166);
+        screen.drawString(font, tx, titleY, title, titleCol);
     }
 
     // 4) Info column (LEFT half of bottom panel) — Population:/Founded:/
@@ -454,13 +462,26 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         std::snprintf(buf, sizeof(buf), "%d", gold);
         drawLabelValue(infoY + lineH * 13, "Treasury:", buf);
     }
+    {
+        // Happy: <H> Unhappy: <U> / Status: <Disorder!|Order> — three
+        // lines for the HAPPINESS slice. Translator turns "Happy:" /
+        // "Unhappy:" / "Status:" / "Disorder!" / "Order" into Chinese.
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%d", city.happy);
+        drawLabelValue(infoY + lineH * 14, "Happy:", buf);
+        std::snprintf(buf, sizeof(buf), "%d", city.unhappy);
+        drawLabelValue(infoY + lineH * 15, "Unhappy:", buf);
+        const char* st = city.disorder ? "Disorder!" : "Order";
+        std::string stTr = Translator::instance().translate(st);
+        drawLabelValue(infoY + lineH * 16, "Status:", stTr);
+    }
 
     // 5) Population dots — one warm yellow dot per population point, drawn in
     //    a horizontal row below the info block (mirrors the C# pop-sprite row
     //    drawn at (24, 140) in F19_0000_111f_DrawCityPopulation; we use small
     //    coloured dots instead of POP.PIC sprites — see header for the stub).
     {
-        int popY = infoY + lineH * 14 + 2;
+        int popY = infoY + lineH * 17 + 2;
         int popX = infoX;
         for (int i = 0; i < population && i < 24; ++i) {
             screen.fillRect(Rect{popX, popY, 6, 8}, 166);

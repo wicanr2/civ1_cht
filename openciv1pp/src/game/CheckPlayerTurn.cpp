@@ -345,6 +345,34 @@ int CheckPlayerTurn::processEndOfTurn() {
         for (auto& c : cities) {
             if (c.owner != playerID) continue;
 
+            // ---- HAPPINESS / DISORDER (Civ1 happy/unhappy citizen pass) --
+            // Faithful simplified Civ1 rules:
+            //   unhappy = max(0, population - 4)
+            //   - Temple owned: unhappy -= 1 (clamped >= 0)
+            //   - Civ owns Hanging Gardens: unhappy -= 1 (clamped >= 0)
+            //   happy = 0 baseline (Luxury slider / Entertainer specialists
+            //          / Cathedral / etc. not yet modeled — TODO)
+            //   disorder = (unhappy > happy)
+            // Civ1: when a city is in disorder it produces NO shields and
+            // the food box does NOT advance toward growth this turn. We
+            // model that by computing disorder BEFORE the shield/food
+            // accumulation below and gating both paths on !disorder.
+            // Government modifiers (Despotism +0, Republic/Democracy add
+            // war-unhappy per away unit, etc.) are stubs -> TODO.
+            {
+                int u = c.population - 4;
+                if (u < 0) u = 0;
+                if (c.hasBuilding(BuildingType::Temple) && u > 0) u -= 1;
+                if (std::size_t(c.owner) < um.civs().size() &&
+                    um.civs()[std::size_t(c.owner)].hasWonder(
+                        WonderType::HangingGardens) && u > 0) {
+                    u -= 1;
+                }
+                c.unhappy  = u;
+                c.happy    = 0;
+                c.disorder = (c.unhappy > c.happy);
+            }
+
             // Count adjacent "good" (Grassland/Plains) tiles via the terrain
             // provider installed by MiniWorld::attachGame. When no provider
             // is set (headless tests without a world) we treat the baseline
@@ -372,6 +400,11 @@ int CheckPlayerTurn::processEndOfTurn() {
             }
             int finalShields = int(std::floor(float(baseShields) * prodMul));
             if (finalShields < 0) finalShields = 0;
+            // DISORDER: Civ1 "Civil Disorder" -> no shields produced this
+            // turn (force the contribution to 0). The threshold-trigger
+            // production block below still runs but will be a no-op
+            // because shields didn't advance toward the cost this turn.
+            if (c.disorder) finalShields = 0;
             c.shields += finalShields;
 
             // ---- FOOD + POPULATION GROWTH (Civ1 food box) ----------------
@@ -388,23 +421,31 @@ int CheckPlayerTurn::processEndOfTurn() {
             // mechanics are out of scope.)
             int gross = cityFoodGross(c.x, c.y);
             c.foodPerTurn = gross - c.population * 2;
-            c.food += c.foodPerTurn;
             bool hasGranary = c.hasBuilding(BuildingType::Granary);
             int threshold = (c.population + 1) * (hasGranary ? 5 : 10);
-            if (c.food >= threshold) {
-                c.population += 1;
-                if (hasGranary) {
-                    // New threshold for the NEW population (post-growth).
-                    int newThr = (c.population + 1) * 5;
-                    c.food = newThr / 2; // Granary keeps half-full storage
-                } else {
+            // DISORDER: Civ1 standard "no growth" rule -> the food box does
+            // NOT advance toward growth this turn. We skip both the
+            // accumulation AND the threshold/starvation checks so the
+            // population stays put (foodPerTurn is still reported on the
+            // city struct so the CityView display reads "what this city
+            // WOULD make if order were restored").
+            if (!c.disorder) {
+                c.food += c.foodPerTurn;
+                if (c.food >= threshold) {
+                    c.population += 1;
+                    if (hasGranary) {
+                        // New threshold for the NEW population (post-growth).
+                        int newThr = (c.population + 1) * 5;
+                        c.food = newThr / 2; // Granary keeps half-full storage
+                    } else {
+                        c.food = 0;
+                    }
+                } else if (c.food < 0) {
+                    if (c.population > 1) {
+                        c.population -= 1;
+                    }
                     c.food = 0;
                 }
-            } else if (c.food < 0) {
-                if (c.population > 1) {
-                    c.population -= 1;
-                }
-                c.food = 0;
             }
 
             // Threshold-triggered production. Civ1: a city builds EITHER a

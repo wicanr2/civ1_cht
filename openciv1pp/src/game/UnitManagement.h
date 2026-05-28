@@ -164,26 +164,33 @@ enum class BuildingType : uint8_t {
     Granary  = 1,
     Barracks = 2,
     Walls    = 3,
+    Temple   = 4, // HAPPINESS slice: -1 unhappy citizen (Civ1 cost 40)
 };
+// Count of BuildingType values shipped (including None at 0).
+static constexpr int kBuildingTypeCount = 5;
 
 // A building's fixed stats — faithful subset of the C# CityImprovement
 // definition table. `cost` is the SHIELD threshold (Civ1 standard values).
 struct BuildingDef {
     const char* name; // English key (Translator -> Chinese)
-    int cost;         // shield cost (Granary=60, Barracks=40, Walls=80)
+    int cost;         // shield cost (Granary=60, Barracks=40, Walls=80,
+                      // Temple=40)
 };
 
 // Faithful BuildingDef table (Civ1 standard costs).
 // Sources: Civ1 manual + community wikis (CivFanatics CityImprovements).
+// Temple (HAPPINESS slice) is the only Civ1 happiness-affecting building
+// we ship here; Cathedral/Marketplace/Colosseum are // TODO(port).
 inline const BuildingDef& buildingDefOf(BuildingType t) {
-    static const BuildingDef kDefs[4] = {
+    static const BuildingDef kDefs[kBuildingTypeCount] = {
         {"None",     0},
         {"Granary",  60}, // food-bonus building (food not modeled — TODO)
         {"Barracks", 40}, // produces VETERAN units (+50% combat bonus)
         {"Walls",    80}, // defender on city tile: defense x3 (Civ1 +200%)
+        {"Temple",   40}, // -1 unhappy citizen (Civ1 standard cost 40)
     };
     int i = int(t);
-    if (i < 0 || i > 3) i = 0;
+    if (i < 0 || i >= kBuildingTypeCount) i = 0;
     return kDefs[i];
 }
 
@@ -381,6 +388,26 @@ struct City {
     int population = 1;
     int food = 0;
     int foodPerTurn = 0;
+
+    // ---- HAPPINESS / DISORDER (Civ1 happy/unhappy citizen accounting) ---
+    // Faithful Civ1 simplified rules (see CheckPlayerTurn::processEndOfTurn
+    // for the exact math):
+    //   - For each population point > 4, one unhappy citizen is created.
+    //   - Temple owned: -1 unhappy (clamped to >= 0).
+    //   - Civ owns Hanging Gardens wonder: -1 unhappy in every city
+    //     (clamped to >= 0). Civ-wide effect.
+    //   - happy is 0 baseline (Luxury/specialist Entertainer not modeled
+    //     yet -> TODO).
+    //   - disorder := (unhappy > happy). A disordered city produces NO
+    //     shields AND its population does NOT grow that turn (faithful
+    //     Civ1 "Civil Disorder" rule — production halts and the food
+    //     box does not advance toward growth this turn).
+    // These fields are recomputed each end-of-turn pass; they persist on
+    // save/load (v10) so a saved-mid-disorder city renders correctly on
+    // reload (CityView/HUD read them directly).
+    int  happy    = 0;
+    int  unhappy  = 0;
+    bool disorder = false;
 };
 
 class UnitManagement {

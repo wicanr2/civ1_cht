@@ -95,7 +95,10 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     std::ofstream os(path, std::ios::binary);
     if (!os) return false;
 
-    // Header. v9 adds per-civ gold for the ECONOMY (gold/treasury/upkeep)
+    // Header. v10 adds per-city {happy, unhappy, disorder} for the
+    // HAPPINESS slice. v1..v9 readers skip the 'cityhappy' key entirely
+    // (default: happy=0, unhappy=0, disorder=false from City's struct).
+    // v9 adds per-civ gold for the ECONOMY (gold/treasury/upkeep)
     // slice. v1..v8 readers ignore the v9 'civgold' key (default: gold=50,
     // matching CivState's initial value).
     // v8 added the pairwise relations matrix + selected rival civ.
@@ -109,7 +112,7 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     // ownedBuildings list} + per-unit veteran flag for the buildings slice.
     // v3 added the improvements grid + per-unit work state.
     // v2 added per-civ tech-tree state; v1 was the pre-tech baseline.
-    os << "OpenCiv1pp savegame v9\n";
+    os << "OpenCiv1pp savegame v10\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -259,6 +262,14 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
         os << "civgold " << i << " " << civs[i].gold << "\n";
     }
 
+    // v10: per-city {happy, unhappy, disorder}. One line per city. v1..v9
+    // readers skip the 'cityhappy' key entirely (default: happy=0,
+    // unhappy=0, disorder=false from City's struct init).
+    for (const auto& c : cities) {
+        os << "cityhappy " << c.id << " " << c.happy << " " << c.unhappy
+           << " " << (c.disorder ? 1 : 0) << "\n";
+    }
+
     // Terrain bytes (80*50 = 4000 bytes -> 8000 hex chars on one line).
     os << "terrain ";
     writeHex(os, dumpTerrainBytes(const_cast<OpenCiv1Game&>(p)));
@@ -328,7 +339,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         header != "OpenCiv1pp savegame v6" &&
         header != "OpenCiv1pp savegame v7" &&
         header != "OpenCiv1pp savegame v8" &&
-        header != "OpenCiv1pp savegame v9") return false;
+        header != "OpenCiv1pp savegame v9" &&
+        header != "OpenCiv1pp savegame v10") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -377,6 +389,11 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     // v1..v8 saves don't emit this key -> default gold=50 from CivState.
     struct CivGoldRow { int civId; int gold; };
     std::vector<CivGoldRow> civGoldRows;
+    // v10: per-city {happy, unhappy, disorder}. Applied after cities are
+    // restored. v1..v9 saves don't emit this key -> defaults (0/0/false)
+    // hold (matching City's struct init).
+    struct CityHappyRow { int cityId; int happy; int unhappy; int disorder; };
+    std::vector<CityHappyRow> cityHappyRows;
 
     std::string line;
     while (std::getline(is, line)) {
@@ -510,6 +527,11 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             CivGoldRow r{};
             iss >> r.civId >> r.gold;
             civGoldRows.push_back(r);
+        }
+        else if (key == "cityhappy") {
+            CityHappyRow r{};
+            iss >> r.cityId >> r.happy >> r.unhappy >> r.disorder;
+            cityHappyRows.push_back(r);
         }
         else if (key == "citybld") {
             CityBldRow r;
@@ -682,6 +704,18 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         for (const auto& r : civGoldRows) {
             if (r.civId < 0 || std::size_t(r.civId) >= cv.size()) continue;
             cv[std::size_t(r.civId)].gold = r.gold;
+        }
+    }
+    // v10: apply per-city {happy, unhappy, disorder}. Absent in v1..v9
+    // saves -> defaults (0/0/false) hold (matching City struct init).
+    {
+        auto& cv = p.unitManagement().citiesMut();
+        for (const auto& r : cityHappyRows) {
+            if (r.cityId < 0 || std::size_t(r.cityId) >= cv.size()) continue;
+            City& c = cv[std::size_t(r.cityId)];
+            c.happy    = (r.happy    >= 0) ? r.happy    : 0;
+            c.unhappy  = (r.unhappy  >= 0) ? r.unhappy  : 0;
+            c.disorder = (r.disorder != 0);
         }
     }
 
