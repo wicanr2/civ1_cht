@@ -22,6 +22,7 @@
 namespace oc1 {
 
 class MapManagement; // fwd-decl (optional source of the terrain grid)
+class OpenCiv1Game;  // fwd-decl (optional host: enables UnitManagement::buildCity)
 
 class MiniWorld {
 public:
@@ -81,7 +82,31 @@ public:
     // ---- rendering ----
     void draw(GDriver& gd, int fontId, int tileSize = 12) const;
 
+    // Render every founded city as a marker on its map tile. Called by draw()
+    // when a host game has been attached (attachGame), AFTER terrain and BEFORE
+    // the unit marker. Public for direct test access. Uses the SP257 city
+    // sprite when available, else a distinct colored rect with a "C" overlay.
+    void renderCities(GBitmap& screen) const;
+
     static uint8_t terrainColor(Terrain t);
+
+    // ---- city management (host-game wire-up) ----
+    // Attach the OpenCiv1Game host so MiniWorld can call its UnitManagement
+    // (e.g. for the B-key build-city action). Also installs a terrain provider
+    // (closes over `this`) on UnitManagement so it can validate Water/Arctic.
+    void attachGame(OpenCiv1Game& g);
+    OpenCiv1Game* game() const { return game_; }
+
+    // Player-driven Build City action (B key). Returns true if a city was
+    // founded; outName receives the name. No-op (returns false) when no host
+    // game is attached or the current tile is invalid (Water/Arctic).
+    bool buildCityAtUnit(std::string& outName, int playerId = 0);
+
+    // Last action message to show on the HUD second line (English key, run
+    // through the Translator at draw time).
+    const std::string& lastActionKey() const { return lastActionKey_; }
+    void setLastActionKey(std::string k) { lastActionKey_ = std::move(k); }
+    const std::string& lastCityName() const { return lastCityName_; }
 
 private:
     int w_, h_;
@@ -93,6 +118,10 @@ private:
     std::unique_ptr<GBitmap> tileset_;
     std::unique_ptr<GBitmap> sprites_;
 
+    OpenCiv1Game* game_ = nullptr;        // optional host (for UnitManagement)
+    std::string lastActionKey_;           // shown on HUD line 2 when non-empty
+    std::string lastCityName_;            // last founded city's resolved name
+
     bool usesRealGenerator_ = false;
 
     // Cached viewport math from the last draw() — used by screenToTile() to
@@ -101,7 +130,7 @@ private:
     // case: tileSize=16, camX/camY = top-left, viewW/H = full screen.
     mutable int lastTileSize_ = 16;
     mutable int lastCamX_ = 0, lastCamY_ = 0;
-    mutable int lastViewW_ = 320, lastViewH_ = 200 - 36;
+    mutable int lastViewW_ = 320, lastViewH_ = 200 - 56;
 
     Terrain& at(int x, int y) { return tiles_[std::size_t(y) * w_ + x]; }
     void placeUnitNearCenter();

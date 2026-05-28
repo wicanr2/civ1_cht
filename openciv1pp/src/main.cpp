@@ -23,6 +23,7 @@
 #include "game/MainIntro.h"
 #include "game/MiniWorld.h"
 #include "game/MapManagement.h"
+#include "game/UnitManagement.h"
 #include "localization/Translator.h"
 #include "platform/SdlPresenter.h"
 #include "resource/PicLoader.h"
@@ -1045,8 +1046,10 @@ static int mousetest() {
         int ux = world.unitX(), uy = world.unitY();
         // Build a pixel coord clearly east of the unit, inside the viewport.
         // Camera centres on the unit so unit-pixel ~= (cols/2 * tileSize, rows/2 * tileSize).
+        // viewH = fb.height() - hudH; hudH was widened to 56 so the third HUD
+        // line ("Cities: N") fits. Keep the unit-centre estimate in sync.
         int unitPxX = (ux - 0) * 0 + ((/*viewW*/ 480) / 12 / 2) * 12 + 6;
-        int unitPxY = (uy - 0) * 0 + ((/*viewH*/ (300 - 36)) / 12 / 2) * 12 + 6;
+        int unitPxY = (uy - 0) * 0 + ((/*viewH*/ (300 - 56)) / 12 / 2) * 12 + 6;
         // Actual unit pixel is camCentre*tileSize + tileSize/2; cheat by going
         // via screenToTile from the unit's known map coords. Use the unit-pixel
         // estimate above + a deliberate offset of (+24, 0) -> two tiles east.
@@ -1934,6 +1937,124 @@ static std::string resolveAssetDir(const char* explicitDir) {
     return std::string();
 }
 
+// Headless verification of the Build-City action (UnitManagement port). Asserts
+//   - buildCity on a Grassland tile -> true, cities()++, outName non-empty
+//   - buildCity on a Water tile     -> false (terrain invalid)
+//   - two successful builds          -> cityCount==2 with distinct positions
+//   - render with vs without cities  -> pixel diff (cities contribute ink)
+//   - translate-on vs -off HUD       -> pixel diff (Chinese "城市:" vs "Cities:")
+static int citytest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // Force a known-grassland tile by constructing a small MiniWorld whose
+    // center we override; easier: build a tiny world and find a non-water
+    // non-arctic tile to use, then a water tile.
+    OpenCiv1Game g;
+    setupGame(g, 480, 300);
+    Translator::instance().enabled = true;
+    MiniWorld w(40, 30, 12345u);
+    w.attachGame(g);
+
+    // Find a grassland-ish (any non-water, non-arctic) tile and a water tile.
+    int gx = -1, gy = -1, wx = -1, wy = -1;
+    for (int y = 0; y < 30 && (gx < 0 || wx < 0); ++y)
+        for (int x = 0; x < 40 && (gx < 0 || wx < 0); ++x) {
+            Terrain t = w.terrainAt(x, y);
+            if (gx < 0 && t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+            if (wx < 0 && t == Terrain::Water) { wx = x; wy = y; }
+        }
+    chk(gx >= 0, "found a land tile to build on");
+    chk(wx >= 0, "found a water tile (negative-test site)");
+
+    auto& um = g.unitManagement();
+    std::string name;
+    chk(um.cityCount() == 0, "no cities at start");
+    chk(um.buildCity(gx, gy, 0, name), "buildCity on land returns true");
+    chk(um.cityCount() == 1, "cityCount incremented to 1");
+    chk(!name.empty(), "outName non-empty after successful build");
+
+    // Water rejected.
+    std::string n2;
+    chk(!um.buildCity(wx, wy, 0, n2), "buildCity on water returns false");
+    chk(um.cityCount() == 1, "cityCount still 1 after failed water build");
+    chk(n2.empty(), "outName left empty on failed build");
+
+    // Arctic rejected (when present).
+    int ax = -1, ay = -1;
+    for (int y = 0; y < 30 && ax < 0; ++y)
+        for (int x = 0; x < 40 && ax < 0; ++x)
+            if (w.terrainAt(x, y) == Terrain::Arctic) { ax = x; ay = y; }
+    if (ax >= 0) {
+        std::string n3;
+        chk(!um.buildCity(ax, ay, 0, n3), "buildCity on arctic returns false");
+    }
+
+    // Second successful build on a DIFFERENT land tile.
+    int gx2 = -1, gy2 = -1;
+    for (int y = 0; y < 30 && gx2 < 0; ++y)
+        for (int x = 0; x < 40 && gx2 < 0; ++x) {
+            if (x == gx && y == gy) continue;
+            Terrain t = w.terrainAt(x, y);
+            if (t != Terrain::Water && t != Terrain::Arctic) { gx2 = x; gy2 = y; }
+        }
+    chk(gx2 >= 0, "found a second distinct land tile");
+    std::string n4;
+    chk(um.buildCity(gx2, gy2, 0, n4), "second buildCity succeeds");
+    chk(um.cityCount() == 2, "cityCount == 2 after two builds");
+    chk(um.cities()[0].x != um.cities()[1].x || um.cities()[0].y != um.cities()[1].y,
+        "two cities at distinct positions");
+
+    // Render pixel-diff: with cities vs without.
+    auto renderWithCities = [&](bool withCities) -> std::vector<uint8_t> {
+        OpenCiv1Game gg;
+        setupGame(gg, 480, 300);
+        Translator::instance().enabled = true;
+        MiniWorld ww(40, 30, 12345u);
+        ww.attachGame(gg);
+        if (withCities) {
+            std::string nm;
+            gg.unitManagement().buildCity(gx, gy, 0, nm);
+            gg.unitManagement().buildCity(gx2, gy2, 0, nm);
+        }
+        ww.draw(gg.graphics, 1, 12);
+        return gg.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> withC = renderWithCities(true);
+    std::vector<uint8_t> noC   = renderWithCities(false);
+    chk(withC.size() == noC.size() && !withC.empty(), "both renders produced a buffer");
+    std::size_t cityDiff = 0;
+    for (std::size_t i = 0; i < withC.size() && i < noC.size(); ++i)
+        if (withC[i] != noC[i]) ++cityDiff;
+    chk(cityDiff > 0, "cities contribute ink (render differs with vs without)");
+
+    // Translation pixel-diff: HUD "Cities: 0" (no cities, default state) — zh vs en.
+    auto renderHud = [&](bool translate) -> std::vector<uint8_t> {
+        OpenCiv1Game gg;
+        setupGame(gg, 480, 300);
+        Translator::instance().enabled = translate;
+        MiniWorld ww(40, 30, 12345u);
+        ww.attachGame(gg);
+        ww.draw(gg.graphics, 1, 12);
+        return gg.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> zhBuf = renderHud(true);
+    std::vector<uint8_t> enBuf = renderHud(false);
+    std::size_t hudDiff = 0;
+    for (std::size_t i = 0; i < zhBuf.size() && i < enBuf.size(); ++i)
+        if (zhBuf[i] != enBuf[i]) ++hudDiff;
+    chk(hudDiff > 0, "HUD Chinese vs English pixels DIFFER (城市: vs Cities:)");
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail)
+        std::printf("CITYTEST: %d failure(s)\n", fail);
+    else
+        std::printf("CITYTEST: all pass (BuildCity action; %zu city-ink + %zu i18n pixels differ)\n",
+                    cityDiff, hudDiff);
+    return fail ? 1 : 0;
+}
+
 // Headless verification of the playable world. Asserts the pure API
 // (deterministic map, clamped movement, turn advance, terrain name keys) and
 // PROVES the HUD is localized by rendering the world twice (Translator on vs
@@ -2319,6 +2440,9 @@ static int playInteractive(const std::string& assetDir, bool realgen = false) {
         else
             std::printf("[play] no TER257.PIC in %s; using colored rects\n", assetDir.c_str());
     }
+    // Attach the game host so the B-key BuildCity action is wired (Settlers
+    // -> city at the unit's tile via UnitManagement).
+    world.attachGame(g);
     GBitmap& fb = g.graphics.screen(0);
 
     SdlPresenter pres;
@@ -2346,6 +2470,15 @@ static int playInteractive(const std::string& assetDir, bool realgen = false) {
             case SdlPresenter::KeyLeft:  dirty = world.moveUnit(-1, 0) || dirty; break;
             case SdlPresenter::KeyRight: dirty = world.moveUnit( 1, 0) || dirty; break;
             case SdlPresenter::KeyEnter: world.endTurn(); dirty = true; break;
+            case SdlPresenter::KeyB: {
+                std::string nm;
+                if (world.buildCityAtUnit(nm, 0)) {
+                    std::printf("[play] founded city: %s at (%d,%d)\n",
+                                nm.c_str(), world.unitX(), world.unitY());
+                    dirty = true;
+                }
+                break;
+            }
             case SdlPresenter::KeyEsc:   pres.shutdown(); return 0;
             default: break;
         }
@@ -2445,6 +2578,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--mousetest")) { return mousetest(); }
         else if (!std::strcmp(argv[i], "--introtest")) { return introtest(); }
         else if (!std::strcmp(argv[i], "--realgentest")) { return realgentest(); }
+        else if (!std::strcmp(argv[i], "--citytest")) { return citytest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -2502,7 +2636,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

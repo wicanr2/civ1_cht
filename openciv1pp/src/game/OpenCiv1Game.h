@@ -25,6 +25,7 @@ class GameMenus;     // ported CodeObject (fwd-declared to break the include cyc
 class MainCode;      // ported CodeObject (fwd-declared to break the include cycle)
 class MainIntro;     // ported CodeObject (fwd-declared to break the include cycle)
 class MapManagement; // ported CodeObject (fwd-declared to break the include cycle)
+class UnitManagement;// ported CodeObject (fwd-declared to break the include cycle)
 
 class OpenCiv1Game {
 public:
@@ -63,6 +64,7 @@ public:
     MainCode& mainCode() { return *mainCode_; }
     MainIntro& mainIntro() { return *mainIntro_; }
     MapManagement& mapManagement() { return *mapManagement_; }
+    UnitManagement& unitManagement() { return *unitManagement_; }
 
 private:
     std::string resourcePath_ = ".";
@@ -77,6 +79,7 @@ private:
     std::unique_ptr<MainCode> mainCode_;
     std::unique_ptr<MainIntro> mainIntro_;
     std::unique_ptr<MapManagement> mapManagement_;
+    std::unique_ptr<UnitManagement> unitManagement_;
 };
 
 } // namespace oc1

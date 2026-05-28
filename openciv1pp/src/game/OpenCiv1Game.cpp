@@ -9,6 +9,7 @@
 #include "MainCode.h"
 #include "MainIntro.h"
 #include "MapManagement.h"
+#include "UnitManagement.h"
 
 namespace oc1 {
 
@@ -24,6 +25,7 @@ OpenCiv1Game::OpenCiv1Game() {
     mainCode_ = std::make_unique<MainCode>(*this);
     mainIntro_ = std::make_unique<MainIntro>(*this);
     mapManagement_ = std::make_unique<MapManagement>(*this);
+    unitManagement_ = std::make_unique<UnitManagement>(*this);
 }
 OpenCiv1Game::~OpenCiv1Game() = default;
 

@@ -1,5 +1,7 @@
 #include "MiniWorld.h"
 #include "MapManagement.h"
+#include "OpenCiv1Game.h"
+#include "UnitManagement.h"
 #include "../resource/PicLoader.h"
 #include <algorithm>
 #include <cstdint>
@@ -176,6 +178,62 @@ bool MiniWorld::handleMouseClick(int fbX, int fbY) {
     return moveUnit(dx, dy);
 }
 
+void MiniWorld::attachGame(OpenCiv1Game& g) {
+    game_ = &g;
+    auto& um = g.unitManagement();
+    um.setMapBounds(w_, h_);
+    um.setTerrainProvider([this](int x, int y) { return this->terrainAt(x, y); });
+}
+
+bool MiniWorld::buildCityAtUnit(std::string& outName, int playerId) {
+    if (!game_) return false;
+    auto& um = game_->unitManagement();
+    um.setMapBounds(w_, h_);
+    if (um.buildCity(unitX_, unitY_, playerId, turn_, outName)) {
+        lastActionKey_ = "Build City";
+        lastCityName_ = outName;
+        return true;
+    }
+    return false;
+}
+
+void MiniWorld::renderCities(GBitmap& screen) const {
+    if (!game_) return;
+    const auto& cities = game_->unitManagement().cities();
+    if (cities.empty()) return;
+
+    const int tileSize = lastTileSize_;
+    const int camX = lastCamX_, camY = lastCamY_;
+    const int cols = (lastViewW_ + tileSize - 1) / tileSize;
+    const int rows = (lastViewH_ + tileSize - 1) / tileSize;
+    // Distinct palette entries for the city marker (rect + outline + glyph).
+    screen.palette.set(211, 250, 220, 90);   // city fill (warm yellow)
+    screen.palette.set(212,  50,  30, 10);   // city outline (dark)
+    for (const auto& c : cities) {
+        int rx = c.x - camX, ry = c.y - camY;
+        if (rx < 0 || ry < 0 || rx >= cols || ry >= rows) continue;
+        int px = rx * tileSize, py = ry * tileSize;
+        if (sprites_) {
+            // SP257.PIC city sprite — first city graphic (col 0, row 1 of the
+            // 16x16 sprite grid). Transparent (index 0).
+            screen.drawBitmap(px, py, *sprites_,
+                              Rect{0, 16, 16, 16}, true);
+        } else {
+            int inset = std::max(1, tileSize / 6);
+            screen.fillRect(Rect{px + inset, py + inset,
+                                 tileSize - 2 * inset,
+                                 tileSize - 2 * inset}, 211);
+            screen.drawRect(Rect{px + inset, py + inset,
+                                 tileSize - 2 * inset,
+                                 tileSize - 2 * inset}, 212);
+            // A small "+" cross inside for visual distinction from the unit.
+            int cx = px + tileSize / 2, cy = py + tileSize / 2;
+            screen.drawLine(cx - inset, cy, cx + inset, cy, 212);
+            screen.drawLine(cx, cy - inset, cx, cy + inset, 212);
+        }
+    }
+}
+
 bool MiniWorld::moveUnit(int dx, int dy) {
     int nx = std::clamp(unitX_ + dx, 0, w_ - 1);
     int ny = std::clamp(unitY_ + dy, 0, h_ - 1);
@@ -210,7 +268,7 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
     fb.palette.set(209, 230,  40,  40); // unit marker
     fb.palette.set(210,   0,   0,   0); // grid lines (dark)
 
-    const int hudH = 36;
+    const int hudH = 56; // room for 3 HUD text lines (turn/help/cities)
     const int viewW = fb.width();
     const int viewH = fb.height() - hudH;
     const int cols = viewW / tileSize;
@@ -261,6 +319,11 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
         }
     }
 
+    // Cities pass: AFTER terrain (and unit), BEFORE the HUD bar. Visually the
+    // city marker REPLACES the Settlers sprite on its tile (Civ1 behaviour:
+    // the Settlers is consumed when the city is founded).
+    renderCities(fb);
+
     // ---- bottom HUD bar (all Chinese, via the translating drawString) ----
     const int hudY = fb.height() - hudH;
     fb.fillRect(Rect{0, hudY, fb.width(), hudH}, 208);
@@ -284,8 +347,33 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
     gd.drawString(GDriver::MainScreen, font, tx, ty + lineH,
                   "Arrow keys: move", 207);
     int hx = gd.getDrawStringSize(fontId, "Arrow keys: move").w;
-    gd.drawString(GDriver::MainScreen, font, tx + hx + 8, ty + lineH,
-                  "Enter: end turn  Esc: quit", 207);
+    int penX2 = tx + hx + 8;
+    penX2 = gd.drawString(GDriver::MainScreen, font, penX2, ty + lineH,
+                          "Enter: end turn  Esc: quit", 207);
+
+    // Line 3: "城市:" count, then (when set) the last action + city name. The
+    // city count is always shown so the HUD changes the moment a city is
+    // founded; the Translator turns "Cities:" -> "城市: " and "Build City"
+    // -> "建立城市" at this single drawString chokepoint.
+    int line3Y = ty + lineH * 2;
+    std::size_t nCities = game_ ? game_->unitManagement().cityCount() : 0;
+    int penX3 = gd.drawString(GDriver::MainScreen, font, tx, line3Y,
+                              "Cities:", 207);
+    char cnum[16];
+    std::snprintf(cnum, sizeof(cnum), " %zu", nCities);
+    penX3 = fb.drawString(font, penX3, line3Y, cnum, 207);
+    if (!lastActionKey_.empty()) {
+        penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+        penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                              lastActionKey_, 207);
+        if (!lastCityName_.empty()) {
+            penX3 = fb.drawString(font, penX3, line3Y, ": ", 207);
+            // City name itself: also translated when the Translator has an
+            // entry for it (e.g. "Capital" -> "首都").
+            gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                          lastCityName_, 207);
+        }
+    }
 }
 
 } // namespace oc1

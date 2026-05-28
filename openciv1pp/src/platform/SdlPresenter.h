@@ -39,7 +39,7 @@ public:
     // still flag quit() as before. ESC maps to KeyEsc (4) AND requests quit, so
     // an interactive menu can cancel cleanly.
     static constexpr int KeyUp = 1, KeyDown = 2, KeyEnter = 3, KeyEsc = 4,
-                         KeyLeft = 5, KeyRight = 6;
+                         KeyLeft = 5, KeyRight = 6, KeyB = 7;
     int pollKey();
 
     // ---- mouse input ----
