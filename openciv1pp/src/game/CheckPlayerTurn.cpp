@@ -364,9 +364,11 @@ int CheckPlayerTurn::processEndOfTurn() {
             // Faithful simplified Civ1 rules:
             //   unhappy = max(0, population - 4)
             //   - Temple owned: unhappy -= 1 (clamped >= 0)
+            //   - Cathedral owned: unhappy -= 3 (clamped >= 0; stacks with
+            //     Temple's -1 for a combined -4 in a Temple+Cathedral city)
             //   - Civ owns Hanging Gardens: unhappy -= 1 (clamped >= 0)
             //   happy = 0 baseline (Luxury slider / Entertainer specialists
-            //          / Cathedral / etc. not yet modeled — TODO)
+            //          / Colosseum / etc. not yet modeled — TODO)
             //   disorder = (unhappy > happy)
             // Civ1: when a city is in disorder it produces NO shields and
             // the food box does NOT advance toward growth this turn. We
@@ -378,6 +380,12 @@ int CheckPlayerTurn::processEndOfTurn() {
                 int u = c.population - 4;
                 if (u < 0) u = 0;
                 if (c.hasBuilding(BuildingType::Temple) && u > 0) u -= 1;
+                // Cathedral (MORE-BUILDINGS slice): -3 unhappy citizens
+                // (clamped >= 0). Faithful Civ1 Cathedral effect.
+                if (c.hasBuilding(BuildingType::Cathedral) && u > 0) {
+                    u -= 3;
+                    if (u < 0) u = 0;
+                }
                 if (std::size_t(c.owner) < um.civs().size() &&
                     um.civs()[std::size_t(c.owner)].hasWonder(
                         WonderType::HangingGardens) && u > 0) {
@@ -446,7 +454,23 @@ int CheckPlayerTurn::processEndOfTurn() {
             // WOULD make if order were restored").
             if (!c.disorder) {
                 c.food += c.foodPerTurn;
-                if (c.food >= threshold) {
+                // AQUEDUCT (MORE-BUILDINGS slice): Civ1 rule — without an
+                // Aqueduct a city CANNOT grow past population 8 (the food
+                // box fills but the population stays put). We model this
+                // by capping the food box at the pop-9 threshold-minus-one
+                // so the city stops accumulating extra food (the visible
+                // foodPerTurn still reports the gross-net delta, matching
+                // Civ1's behaviour where the food bar visibly maxes out).
+                bool aqueductGate = (c.population >= 8 &&
+                                     !c.hasBuilding(BuildingType::Aqueduct));
+                if (aqueductGate) {
+                    // Cap food at the growth threshold minus 1 (the city
+                    // sits "full" but cannot tick over to pop 9). Starvation
+                    // path below still runs (food<0 still shrinks pop).
+                    int cap = threshold - 1;
+                    if (c.food > cap) c.food = cap;
+                }
+                if (c.food >= threshold && !aqueductGate) {
                     c.population += 1;
                     if (hasGranary) {
                         // New threshold for the NEW population (post-growth).
@@ -558,23 +582,33 @@ int CheckPlayerTurn::processEndOfTurn() {
         // skip when civCount==0 so the pre-tech-tree tests still pass).
         if (tr.civCount() > 0) {
             for (int civId = 0; civId < tr.civCount(); ++civId) {
+                // PER-CITY science accumulation. Each owned city contributes
+                // 1 baseline science point, scaled by per-city building
+                // multipliers (Library +50%) BEFORE summing. This shape
+                // (per-city contribution * 1.5 when the city owns a Library)
+                // mirrors the C# CityWorker per-city resource fan-out and
+                // matches Civ1's documented Library effect ("a Library
+                // increases science output in this city by 50%").
                 int cityCount = 0;
-                for (const auto& c : cities)
-                    if (c.owner == civId) ++cityCount;
+                float perCivBase = 0.0f;
+                for (const auto& c : cities) {
+                    if (c.owner != civId) continue;
+                    ++cityCount;
+                    float cityPts = 1.0f; // baseline per-city science
+                    // Library (MORE-BUILDINGS slice): +50% science here.
+                    if (c.hasBuilding(BuildingType::Library)) cityPts *= 1.5f;
+                    perCivBase += cityPts;
+                }
                 if (cityCount <= 0) continue;
                 // Per-civ government SCIENCE multiplier (Civ1: Democracy
-                // +50% science; others 1.0). Multiply the baseline (one
-                // research point per city per turn) by scienceMul and
-                // round-up so a Democracy with 2 cities yields 2*1.5=3,
-                // not 3.0->floor=3 (same answer here but ceil keeps a
-                // 1-city Democracy gaining 2/turn instead of 1, which
-                // matches the "Republic +1 trade per tile" character).
+                // +50% science; others 1.0). Applied AFTER the per-city
+                // Library bonus so the two multipliers stack.
                 float sciMul = 1.0f;
                 if (civId >= 0 && std::size_t(civId) < um.civs().size()) {
                     Government eg = um.effectiveGovernment(civId);
                     sciMul = governmentDefOf(eg).scienceMul;
                 }
-                int pts = int(std::ceil(float(cityCount) * sciMul));
+                int pts = int(std::ceil(perCivBase * sciMul));
                 // Wonder bonuses (simplified): Hanging Gardens and Colossus
                 // each grant +1 science per city (Civ1: +1 happy citizen
                 // and +1 trade-per-ocean-tile respectively; both proxied
@@ -591,13 +625,19 @@ int CheckPlayerTurn::processEndOfTurn() {
 
     // ---- ECONOMY (gold + treasury + unit upkeep) -------------------------
     // Faithful Civ1 per-turn economy:
-    //   trade(civ)  = (1 + #cities) * Government.tradeMul   (simplified
-    //                 baseline; full per-tile trade-yield TODO).
+    //   trade(civ)  = (1 baseline + sum_per_city(1 * marketplaceMul)) *
+    //                 Government.tradeMul   (simplified baseline; full
+    //                 per-tile trade-yield TODO).
     //   gold gain   = floor(trade * 0.5)  (50/0/50 implicit tax/lux/sci
     //                 split; full 3-way slider TODO).
     //   upkeep      = #alive units owned by this civ (1 gold/turn each).
     //   netGold     = gain - upkeep.
     //   civ.gold   += netGold.
+    // Marketplace (MORE-BUILDINGS slice): each city that owns a Marketplace
+    //   contributes 1.5 trade instead of 1 (Civ1: +50% gold output in this
+    //   city). The 1.5 multiplier is applied PER-CITY to the city's
+    //   contribution to the civ-wide trade sum, then the existing /2 gold
+    //   split + government tradeMul stay 1:1 with the prior shape.
     //   if civ.gold < 0: repeatedly disband this civ's WEAKEST alive
     //   non-Settlers unit (smallest attack; ties broken by smallest
     //   defense, then by unit index) and decrement upkeep, until gold>=0
@@ -614,8 +654,19 @@ int CheckPlayerTurn::processEndOfTurn() {
         // O(numCivs + numCities + numUnits) instead of O(numCivs^2)).
         std::vector<int> cityCount(std::size_t(nCivs), 0);
         std::vector<int> unitCount(std::size_t(nCivs), 0);
+        // Per-civ pre-government trade contribution sum (1 baseline + per-
+        // city contribution scaled by Marketplace). Float so the *1.5
+        // Marketplace bonus survives across multiple cities without
+        // intermediate rounding (final cast to int via floor below).
+        std::vector<float> tradeBase(std::size_t(nCivs), 0.0f);
+        for (int i = 0; i < nCivs; ++i) tradeBase[std::size_t(i)] = 1.0f; // baseline
         for (const auto& c : cities) {
-            if (c.owner >= 0 && c.owner < nCivs) ++cityCount[std::size_t(c.owner)];
+            if (c.owner >= 0 && c.owner < nCivs) {
+                ++cityCount[std::size_t(c.owner)];
+                float cityTrade = 1.0f;
+                if (c.hasBuilding(BuildingType::Marketplace)) cityTrade *= 1.5f;
+                tradeBase[std::size_t(c.owner)] += cityTrade;
+            }
         }
         for (const auto& u : units) {
             if (!u.alive) continue;
@@ -623,10 +674,8 @@ int CheckPlayerTurn::processEndOfTurn() {
         }
         for (int civId = 0; civId < nCivs; ++civId) {
             CivState& cv = civs[std::size_t(civId)];
-            // Trade baseline: 1 baseline + #cities (simplified per spec).
-            int cities_n = cityCount[std::size_t(civId)];
             float tradeMul = governmentDefOf(um.effectiveGovernment(civId)).tradeMul;
-            int trade = int(std::floor(float(1 + cities_n) * tradeMul));
+            int trade = int(std::floor(tradeBase[std::size_t(civId)] * tradeMul));
             if (trade < 0) trade = 0;
             int goldGain = trade / 2;            // floor(trade * 0.5)
             int upkeep = unitCount[std::size_t(civId)]; // 1 gold/turn each

@@ -375,6 +375,21 @@ bool UnitManagement::setCityProductionBuilding(int cityId, BuildingType b) {
     City& c = cities_[std::size_t(cityId)];
     if (c.hasBuilding(b)) return false; // already owned
     const BuildingDef& bd = buildingDefOf(b);
+    // TECH-GATED (MORE-BUILDINGS slice): refuse when the owner civ doesn't
+    // yet know the building's techPrereq. Mirrors the C# CityImprovement
+    // PrerequisiteTech check in the build-menu grey-out. Existing
+    // Granary/Barracks/Walls/Temple ship with Tech::None and are always
+    // buildable — preserving the pre-MORE-BUILDINGS behaviour. The guard
+    // is conservative: when no civ tech state is provisioned (civs_ empty,
+    // out-of-range owner, or techCount==0), the check is bypassed so the
+    // pre-tech-tree tests still pass (same shape as setCityProductionType).
+    if (bd.techPrereq != Tech::None && !civs_.empty() &&
+        c.owner >= 0 && std::size_t(c.owner) < civs_.size() &&
+        p.techResearch().civCount() > 0) {
+        if (!p.techResearch().civKnows(c.owner, bd.techPrereq)) {
+            return false; // tech not yet researched -> refuse
+        }
+    }
     c.productionKind = City::ProductionKind::Building;
     c.productionBuildingType = b;
     c.production = bd.cost;

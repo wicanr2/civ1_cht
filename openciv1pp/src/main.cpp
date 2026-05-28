@@ -4475,6 +4475,364 @@ static int buildingtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- MORE-BUILDINGS slice (--buildingstest2) ----------------
+// Verifies the 4 additional iconic Civ1 buildings end-to-end:
+//   (1) Marketplace: tech-gated on Currency. Pre-Currency the
+//       setCityProductionBuilding call is REFUSED. Post-Currency it accepts
+//       and the building completes after enough EOTs. With Marketplace
+//       owned, civ-wide gold gain per turn rises by ~50% vs the same
+//       baseline city without it.
+//   (2) Library: tech-gated on Writing. After building, that civ's research
+//       points per turn rise by ~50% vs baseline (per-city *1.5).
+//   (3) Cathedral: tech-gated on Mysticism. With pop=8 (unhappy=4) a city
+//       is in disorder; adding a Cathedral drops unhappy by 3 -> 1 ->
+//       still > happy(0) so disorder PERSISTS, but Cathedral+Temple stacks
+//       (Temple -1, Cathedral -3 = -4 -> unhappy=0 -> disorder cleared).
+//   (4) Aqueduct: tech-gated on Construction. A city at pop=8 without
+//       Aqueduct does NOT grow past 8 (food caps at threshold-1). With
+//       Aqueduct it DOES grow to pop 9 after enough food turns.
+//   (5) Save/load: ownedBuildings round-trip preserves the new enum values
+//       (Marketplace/Library/Cathedral/Aqueduct).
+//   (6) CityView render: translate-on Chinese vs -off English pixels differ
+//       (新建築名: 市場/圖書館/教堂/水道橋).
+static int buildingstest2() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // Sanity: BuildingDef table covers the 4 new buildings with the right
+    // costs + tech prereqs (locks the spec at the def-table level so a
+    // future refactor can't silently drift).
+    {
+        chk(buildingDefOf(BuildingType::Marketplace).cost == 60,
+            "spec: Marketplace cost == 60");
+        chk(buildingDefOf(BuildingType::Library).cost == 80,
+            "spec: Library cost == 80");
+        chk(buildingDefOf(BuildingType::Cathedral).cost == 160,
+            "spec: Cathedral cost == 160");
+        chk(buildingDefOf(BuildingType::Aqueduct).cost == 120,
+            "spec: Aqueduct cost == 120");
+        chk(buildingDefOf(BuildingType::Marketplace).techPrereq == Tech::Currency,
+            "spec: Marketplace prereq == Currency");
+        chk(buildingDefOf(BuildingType::Library).techPrereq == Tech::Writing,
+            "spec: Library prereq == Writing");
+        chk(buildingDefOf(BuildingType::Cathedral).techPrereq == Tech::Mysticism,
+            "spec: Cathedral prereq == Mysticism");
+        chk(buildingDefOf(BuildingType::Aqueduct).techPrereq == Tech::Construction,
+            "spec: Aqueduct prereq == Construction");
+    }
+
+    // ---- (1) Marketplace: tech gate + +50% gold effect -------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(40, 40);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 0);
+        auto& tr = g.techResearch();
+        tr.initCivs(1);
+        std::string nm;
+        chk(um.buildCity(10, 10, 0, nm), "(1) buildCity OK");
+        // Pre-Currency: setCityProductionBuilding(Marketplace) refused.
+        chk(!um.setCityProductionBuilding(0, BuildingType::Marketplace),
+            "(1) Marketplace REFUSED pre-Currency");
+        // Unlock Currency -> accepted.
+        tr.setCivKnows(0, Tech::Currency, true);
+        chk(um.setCityProductionBuilding(0, BuildingType::Marketplace),
+            "(1) Marketplace ACCEPTED post-Currency");
+        chk(um.cities()[0].productionBuildingType == BuildingType::Marketplace,
+            "(1) productionBuildingType == Marketplace");
+
+        // Spin EOTs until Marketplace appears in ownedBuildings.
+        // Clamp pop=1 each turn so the no-terrain-provider city doesn't
+        // grow into disorder (pop=5 unhappy=1 disorder=true freezes
+        // shields and would stall the build). The build cycle stays the
+        // exclusive variable under test.
+        int budget = 200;
+        bool built = false;
+        while (budget-- > 0) {
+            um.citiesMut()[0].population = 1;
+            g.checkPlayerTurn().processEndOfTurn();
+            if (um.cities()[0].hasBuilding(BuildingType::Marketplace))
+                { built = true; break; }
+        }
+        chk(built, "(1) Marketplace added to ownedBuildings");
+
+        // Gold-effect assertion: compare per-turn gold gain WITH vs WITHOUT
+        // a Marketplace using two fresh games. Same controlled environment
+        // for both (single city, no units, despot govt) so the only delta is
+        // the Marketplace's per-city trade *1.5 multiplier.
+        auto goldDelta = [&](bool withMarketplace) -> int {
+            OpenCiv1Game gg; setupGame(gg, 640, 480);
+            auto& uu = gg.unitManagement();
+            uu.setMapBounds(40, 40);
+            uu.setupCivs(0, 0);
+            std::string nn;
+            uu.buildCity(10, 10, 0, nn);
+            if (withMarketplace)
+                uu.citiesMut()[0].ownedBuildings.insert(BuildingType::Marketplace);
+            int goldBefore = uu.civs()[0].gold;
+            gg.checkPlayerTurn().processEndOfTurn();
+            return uu.civs()[0].gold - goldBefore;
+        };
+        // Without Marketplace: tradeBase = 1.0 + 1.0 = 2.0, gold = 1.
+        // With Marketplace: tradeBase = 1.0 + 1.5 = 2.5, gold = 1 (floor).
+        // The floor erases the bonus at 1 city. Use a 4-city civ where
+        // 4 Marketplaces lift tradeBase from 5.0 to 5.0 + 4*0.5 = 7.0,
+        // gold from 2 to 3 — a visible +1 (>=50% of 2).
+        auto goldDeltaN = [&](int nCities, bool withMarketplaces) -> int {
+            OpenCiv1Game gg; setupGame(gg, 640, 480);
+            auto& uu = gg.unitManagement();
+            uu.setMapBounds(40, 40);
+            uu.setupCivs(0, 0);
+            std::string nn;
+            for (int i = 0; i < nCities; ++i) {
+                uu.buildCity(5 + i*3, 10, 0, nn);
+                if (withMarketplaces)
+                    uu.citiesMut()[i].ownedBuildings.insert(BuildingType::Marketplace);
+            }
+            int goldBefore = uu.civs()[0].gold;
+            gg.checkPlayerTurn().processEndOfTurn();
+            return uu.civs()[0].gold - goldBefore;
+        };
+        int g1city = goldDelta(false);
+        (void)g1city;
+        int g4plain = goldDeltaN(4, false);
+        int g4mkt   = goldDeltaN(4, true);
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "(1) gold/turn WITH Marketplaces (%d) > baseline (%d)",
+                      g4mkt, g4plain);
+        chk(g4mkt > g4plain, buf);
+        // Faithful +50% check: 4 Marketplaces vs 4 plain.
+        //   plain: tradeBase = 1 + 4*1 = 5, trade=5, gold = 5/2 = 2
+        //   mkt:   tradeBase = 1 + 4*1.5 = 7, trade=7, gold = 7/2 = 3
+        chk(g4plain == 2, "(1) baseline 4-city gold gain == 2");
+        chk(g4mkt   == 3, "(1) 4-Marketplace gold gain == 3 (50% lift visible)");
+    }
+
+    // ---- (2) Library: tech gate + +50% science effect --------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(40, 40);
+        um.setupCivs(0, 0);
+        auto& tr = g.techResearch();
+        tr.initCivs(1);
+        std::string nm;
+        um.buildCity(10, 10, 0, nm);
+        // Pre-Writing: refused.
+        chk(!um.setCityProductionBuilding(0, BuildingType::Library),
+            "(2) Library REFUSED pre-Writing");
+        // Unlock Writing (and its Alphabet prereq) -> accepted.
+        tr.setCivKnows(0, Tech::Alphabet, true);
+        tr.setCivKnows(0, Tech::Writing, true);
+        chk(um.setCityProductionBuilding(0, BuildingType::Library),
+            "(2) Library ACCEPTED post-Writing");
+        // Science-effect assertion: 2-city civ, Library on both -> +50%.
+        auto sciDelta = [&](int nCities, bool withLibraries) -> int {
+            OpenCiv1Game gg; setupGame(gg, 640, 480);
+            auto& uu = gg.unitManagement();
+            uu.setMapBounds(40, 40);
+            uu.setupCivs(0, 0);
+            auto& trr = gg.techResearch();
+            trr.initCivs(1);
+            // Park civ 0 researching a CHEAP tech (Alphabet, cost 10) so a
+            // single EOT can't unlock it (and would zero the points) — we
+            // want to read the raw point accumulation. Use BronzeWorking
+            // (cost 20) and Alphabet not yet known, points start at 0.
+            trr.setCivResearching(0, Tech::BronzeWorking);
+            trr.setCivPoints(0, 0);
+            std::string nn;
+            for (int i = 0; i < nCities; ++i) {
+                uu.buildCity(5 + i*3, 10, 0, nn);
+                if (withLibraries)
+                    uu.citiesMut()[i].ownedBuildings.insert(BuildingType::Library);
+            }
+            gg.checkPlayerTurn().processEndOfTurn();
+            return trr.civPoints(0);
+        };
+        // 2 cities plain: 2.0 base, ceil(2.0*1.0)=2 pts.
+        // 2 cities w/ Libraries: 2*1.5 = 3.0, ceil=3 pts.
+        int sciPlain = sciDelta(2, false);
+        int sciLib   = sciDelta(2, true);
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "(2) science/turn WITH Libraries (%d) > baseline (%d)",
+                      sciLib, sciPlain);
+        chk(sciLib > sciPlain, buf);
+        chk(sciPlain == 2, "(2) baseline 2-city science == 2");
+        chk(sciLib   == 3, "(2) 2-Library science == 3 (50% lift visible)");
+    }
+
+    // ---- (3) Cathedral: -3 unhappy stacks with Temple ---------------------
+    {
+        // Pop 8 -> base unhappy = 4. Without Cathedral or Temple: disorder.
+        // With Cathedral alone: unhappy = max(0, 4-3) = 1 > happy(0) ->
+        // still disorder (Cathedral alone insufficient at pop 8). With
+        // Cathedral + Temple: unhappy = max(0, 4-1-3) = 0 -> NOT disorder.
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(40, 40);
+        um.setupCivs(0, 0);
+        std::string nm;
+        chk(um.buildCity(10, 10, 0, nm), "(3) buildCity OK");
+        // Baseline: pop=8, no Temple, no Cathedral.
+        um.citiesMut()[0].population = 8;
+        g.checkPlayerTurn().processEndOfTurn();
+        chk(um.cities()[0].unhappy == 4,
+            "(3) baseline pop=8 -> unhappy == 4");
+        chk(um.cities()[0].disorder,
+            "(3) baseline disorder == true");
+        // Add Cathedral alone: unhappy = 4-3 = 1, still > 0 -> disorder.
+        um.citiesMut()[0].ownedBuildings.insert(BuildingType::Cathedral);
+        g.checkPlayerTurn().processEndOfTurn();
+        chk(um.cities()[0].unhappy == 1,
+            "(3) Cathedral alone: unhappy 4-3 = 1");
+        chk(um.cities()[0].disorder,
+            "(3) Cathedral alone insufficient -> disorder persists");
+        // Add Temple: unhappy = 4-1-3 = 0 -> order restored.
+        um.citiesMut()[0].ownedBuildings.insert(BuildingType::Temple);
+        g.checkPlayerTurn().processEndOfTurn();
+        chk(um.cities()[0].unhappy == 0,
+            "(3) Cathedral+Temple: unhappy reduced to 0");
+        chk(!um.cities()[0].disorder,
+            "(3) Cathedral+Temple: disorder cleared (order restored)");
+    }
+
+    // ---- (4) Aqueduct: gates growth past pop 8 ---------------------------
+    {
+        // Pop=8 sits AT the Civ1 hard growth cap; without an Aqueduct the
+        // city CANNOT advance to pop 9 even with a full food box. We don't
+        // rely on the per-tile food math here (the simplified 5-tile fan-
+        // out can't reliably net positive at pop 8); we drive the test by
+        // forcing the food box just past the pop-9 threshold each turn and
+        // asserting (a) without Aqueduct the city stays at 8 and the food
+        // box is CAPPED at threshold-1; (b) with Aqueduct the city grows
+        // to pop 9 on the very next EOT.
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(40, 40);
+        um.setupCivs(0, 0);
+        std::string nm;
+        chk(um.buildCity(10, 10, 0, nm), "(4) buildCity OK");
+        // pop=8 + food parked HIGH each turn. With no terrain provider the
+        // city's foodPerTurn = 10 (default gross) - 8*2 (pop eats) = -6, so
+        // we park food at 110 BEFORE each EOT — after the -6 subtraction
+        // the box still sits above the pop-9 threshold (90). Without an
+        // Aqueduct the gate caps food at 89 (threshold-1) and population
+        // stays at 8 every turn; with one, food=104 >= 90 triggers growth
+        // to pop 9.
+        //
+        // Pre-insert Temple + Cathedral so disorder NEVER triggers (pop=8
+        // unhappy=4 - 1(Temple) - 3(Cathedral) = 0 -> disorder=false; if
+        // disorder were on, the food box wouldn't advance and the growth
+        // check wouldn't fire — masking the Aqueduct effect under test).
+        um.citiesMut()[0].ownedBuildings.insert(BuildingType::Temple);
+        um.citiesMut()[0].ownedBuildings.insert(BuildingType::Cathedral);
+        um.citiesMut()[0].population = 8;
+        for (int i = 0; i < 5; ++i) {
+            um.citiesMut()[0].food = 110; // park high BEFORE EOT each turn
+            g.checkPlayerTurn().processEndOfTurn();
+            chk(um.cities()[0].population == 8,
+                "(4) without Aqueduct: pop stays at 8 each turn");
+            chk(um.cities()[0].food <= 89,
+                "(4) without Aqueduct: food capped <= threshold-1 (89)");
+        }
+
+        // Now add Aqueduct + re-park food -> pop grows past 8 on next EOT.
+        um.citiesMut()[0].ownedBuildings.insert(BuildingType::Aqueduct);
+        um.citiesMut()[0].food = 110;
+        g.checkPlayerTurn().processEndOfTurn();
+        chk(um.cities()[0].population >= 9,
+            "(4) with Aqueduct: pop grew past 8");
+    }
+
+    // ---- (5) Save/load round-trip preserves new ownedBuildings ----------
+    {
+        const char* savePath = "/tmp/openciv1pp_buildingstest2.sav";
+        OpenCiv1Game g1; setupGame(g1, 640, 480);
+        Translator::instance().enabled = true;
+        MiniWorld w(20, 20, 5555u);
+        w.attachGame(g1);
+        auto& um1 = g1.unitManagement();
+        int gx = -1, gy = -1;
+        for (int y = 0; y < 20 && gx < 0; ++y)
+            for (int x = 0; x < 20 && gx < 0; ++x) {
+                Terrain t = w.terrainAt(x, y);
+                if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+            }
+        std::string nm;
+        um1.buildCity(gx, gy, 0, nm);
+        um1.citiesMut()[0].ownedBuildings.insert(BuildingType::Marketplace);
+        um1.citiesMut()[0].ownedBuildings.insert(BuildingType::Library);
+        um1.citiesMut()[0].ownedBuildings.insert(BuildingType::Cathedral);
+        um1.citiesMut()[0].ownedBuildings.insert(BuildingType::Aqueduct);
+        bool sok = g1.gameLoadAndSave().saveToFile(savePath, nullptr);
+        chk(sok, "(5) saveToFile succeeded");
+
+        OpenCiv1Game g2; setupGame(g2, 640, 480);
+        bool lok = g2.gameLoadAndSave().loadFromFile(savePath, nullptr);
+        chk(lok, "(5) loadFromFile succeeded");
+        const auto& cv = g2.unitManagement().cities();
+        chk(cv.size() == 1, "(5) city count preserved");
+        if (!cv.empty()) {
+            const City& cc = cv[0];
+            chk(cc.hasBuilding(BuildingType::Marketplace),
+                "(5) Marketplace preserved");
+            chk(cc.hasBuilding(BuildingType::Library),
+                "(5) Library preserved");
+            chk(cc.hasBuilding(BuildingType::Cathedral),
+                "(5) Cathedral preserved");
+            chk(cc.hasBuilding(BuildingType::Aqueduct),
+                "(5) Aqueduct preserved");
+        }
+    }
+
+    // ---- (6) Translate ON vs OFF render differs (Chinese building names) -
+    std::size_t i18nDiff = 0;
+    {
+        auto render = [&](bool translate) -> std::vector<uint8_t> {
+            OpenCiv1Game g;
+            setupGame(g, 640, 480);
+            Translator::instance().enabled = translate;
+            MiniWorld ww(40, 30, 2222u);
+            ww.attachGame(g);
+            auto& um = g.unitManagement();
+            int gx = -1, gy = -1;
+            for (int y = 0; y < 30 && gx < 0; ++y)
+                for (int x = 0; x < 40 && gx < 0; ++x) {
+                    Terrain t = ww.terrainAt(x, y);
+                    if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+                }
+            std::string nm;
+            um.buildCity(gx, gy, 0, nm);
+            um.citiesMut()[0].ownedBuildings.insert(BuildingType::Marketplace);
+            um.citiesMut()[0].ownedBuildings.insert(BuildingType::Library);
+            um.citiesMut()[0].ownedBuildings.insert(BuildingType::Cathedral);
+            um.citiesMut()[0].ownedBuildings.insert(BuildingType::Aqueduct);
+            ww.draw(g.graphics, 1, 12);
+            return g.graphics.screen(0).pixels();
+        };
+        std::vector<uint8_t> zh = render(true);
+        std::vector<uint8_t> en = render(false);
+        chk(zh.size() == en.size() && !zh.empty(),
+            "(6) both renders produced a buffer");
+        for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+            if (zh[i] != en[i]) ++i18nDiff;
+        chk(i18nDiff > 0,
+            "(6) Chinese vs English HUD pixels DIFFER (new building names i18n)");
+    }
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail) std::printf("BUILDINGSTEST2: %d failure(s)\n", fail);
+    else      std::printf("BUILDINGSTEST2: all pass (Marketplace/Library/"
+                          "Cathedral/Aqueduct + tech gating + save round-trip; "
+                          "%zu i18n pixels differ)\n", i18nDiff);
+    return fail ? 1 : 0;
+}
+
 // ---------------- Food + population growth (--foodtest) ------------------
 // Verifies the food/population/growth slice end-to-end:
 //   (1) Initial city: population=1, food=0, foodPerTurn=0.
@@ -6624,6 +6982,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--minimaptest")) { return minimaptest(); }
         else if (!std::strcmp(argv[i], "--improvementtest")) { return improvementtest(); }
         else if (!std::strcmp(argv[i], "--buildingtest")) { return buildingtest(); }
+        else if (!std::strcmp(argv[i], "--buildingstest2")) { return buildingstest2(); }
         else if (!std::strcmp(argv[i], "--foodtest")) { return foodtest(); }
         else if (!std::strcmp(argv[i], "--governmenttest")) { return governmenttest(); }
         else if (!std::strcmp(argv[i], "--wondertest")) { return wondertest(); }
@@ -6697,7 +7056,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

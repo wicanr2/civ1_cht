@@ -58,6 +58,12 @@ const TechDef kTechs[] = {
     // directly, no save-format migration is needed (the prereq edge is
     // already in place).
     {Tech::MapMaking,     "Map Making",     30, Tech::Alphabet},
+    // MORE-BUILDINGS slice — Mysticism. Civ1 prereq = CeremonialBurial (era-1,
+    // not in this subset); collapsed to Tech::None for reachability (same
+    // pattern as Monarchy). cost 20 (era-1 like Masonry/BronzeWorking).
+    // Used as the Cathedral building's substitute prereq (faithful Civ1
+    // prereq is Monotheism — documented divergence in UnitManagement.h).
+    {Tech::Mysticism,     "Mysticism",      20, Tech::None},
 };
 constexpr int kTechN = int(sizeof(kTechs) / sizeof(kTechs[0]));
 } // namespace

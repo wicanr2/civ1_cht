@@ -103,6 +103,13 @@ enum class Tech : int8_t {
     // enum value is reserved here so future widening can flip Trireme's
     // techPrereq to Tech::MapMaking without a save migration.
     MapMaking     = 14,
+    // MORE-BUILDINGS slice — Mysticism (Civ1 TechnologyAdvanceEnum.Mysticism
+    // = 28). Faithful Civ1 prereq for Mysticism is CeremonialBurial (era-1);
+    // we collapse to Tech::None for the early-era subset (same single-prereq
+    // simplification used by Monarchy/Pottery). Substituted as the Cathedral
+    // building's prereq (Civ1: Cathedral requires Monotheism, which is two
+    // tiers past the early-era handful). Documented divergence.
+    Mysticism     = 28,
 };
 
 // One row of the (early-era subset of the) C# technologyAdvanceTypes table.

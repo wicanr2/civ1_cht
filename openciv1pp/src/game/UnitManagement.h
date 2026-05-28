@@ -173,38 +173,65 @@ inline const UnitDef& unitDefOf(UnitType t) {
 
 // ---- City improvements (buildings) -------------------------------------
 // A faithful SUBSET of the C# CityImprovementEnum (28 buildings in Civ1).
-// We ship the iconic early-era 3: Granary, Barracks, Walls. Numeric ids match
-// the Civ1 order (Granary=1, Barracks=2, Walls=3) so future expansion can
-// re-use the same integer encoding on disk (see GameLoadAndSave v4).
+// We ship 8 iconic Civ1 buildings: Granary, Barracks, Walls, Temple,
+// Marketplace, Library, Cathedral, Aqueduct. Numeric ids match the Civ1
+// order so future expansion can re-use the same integer encoding on disk
+// (see GameLoadAndSave v4 — the per-city ownedBuildings CSV transparently
+// flows new enum values through).
 enum class BuildingType : uint8_t {
-    None     = 0,
-    Granary  = 1,
-    Barracks = 2,
-    Walls    = 3,
-    Temple   = 4, // HAPPINESS slice: -1 unhappy citizen (Civ1 cost 40)
+    None        = 0,
+    Granary     = 1,
+    Barracks    = 2,
+    Walls       = 3,
+    Temple      = 4,  // HAPPINESS slice: -1 unhappy citizen (Civ1 cost 40)
+    // MORE-BUILDINGS slice (faithful Civ1 effects + costs):
+    Marketplace = 5,  // +50% gold (Civ1 cost 60 shields, req Currency)
+    Library     = 6,  // +50% science (Civ1 cost 80 shields, req Writing)
+    // Cathedral: Civ1 prereq is Monotheism (NOT in the early-era subset);
+    // we substitute Mysticism as a documented simplification (see
+    // TechResearch.h Tech::Mysticism note). Civ1 cost 160 shields, -3
+    // unhappy citizens (stacks with Temple's -1).
+    Cathedral   = 7,
+    // Aqueduct: Civ1 cost 120 shields, req Construction. Gates city
+    // growth past population 8 — without one, the food box does not
+    // advance toward a pop-9 growth (population caps at 8).
+    Aqueduct    = 8,
 };
 // Count of BuildingType values shipped (including None at 0).
-static constexpr int kBuildingTypeCount = 5;
+static constexpr int kBuildingTypeCount = 9;
 
 // A building's fixed stats — faithful subset of the C# CityImprovement
 // definition table. `cost` is the SHIELD threshold (Civ1 standard values).
 struct BuildingDef {
-    const char* name; // English key (Translator -> Chinese)
-    int cost;         // shield cost (Granary=60, Barracks=40, Walls=80,
-                      // Temple=40)
+    const char* name;     // English key (Translator -> Chinese)
+    int cost;             // shield cost (Civ1 standard values per def)
+    Tech techPrereq;      // required tech to build (Tech::None = always
+                          // buildable; matches the C# CityImprovement
+                          // PrerequisiteTech field). Existing buildings
+                          // (Granary/Barracks/Walls/Temple) ship with
+                          // None — historically buildable from game start
+                          // in this port's slice; the MORE-BUILDINGS
+                          // slice gates Marketplace/Library/Cathedral/
+                          // Aqueduct behind their faithful Civ1 prereqs.
 };
 
-// Faithful BuildingDef table (Civ1 standard costs).
+// Faithful BuildingDef table (Civ1 standard costs + prereqs).
 // Sources: Civ1 manual + community wikis (CivFanatics CityImprovements).
-// Temple (HAPPINESS slice) is the only Civ1 happiness-affecting building
-// we ship here; Cathedral/Marketplace/Colosseum are // TODO(port).
 inline const BuildingDef& buildingDefOf(BuildingType t) {
     static const BuildingDef kDefs[kBuildingTypeCount] = {
-        {"None",     0},
-        {"Granary",  60}, // food-bonus building (food not modeled — TODO)
-        {"Barracks", 40}, // produces VETERAN units (+50% combat bonus)
-        {"Walls",    80}, // defender on city tile: defense x3 (Civ1 +200%)
-        {"Temple",   40}, // -1 unhappy citizen (Civ1 standard cost 40)
+        {"None",        0,   Tech::None},
+        {"Granary",     60,  Tech::None},        // food-bonus (Granary halves food box)
+        {"Barracks",    40,  Tech::None},        // produces VETERAN units (+50% combat)
+        {"Walls",       80,  Tech::None},        // defender on city tile: defense x3
+        {"Temple",      40,  Tech::None},        // -1 unhappy citizen
+        // MORE-BUILDINGS slice. Civ1 prereqs (manual): Marketplace=Currency,
+        // Library=Writing, Cathedral=Monotheism (substituted to Mysticism;
+        // documented in BuildingType enum comment + TechResearch.h),
+        // Aqueduct=Construction.
+        {"Marketplace", 60,  Tech::Currency},    // +50% gold contribution
+        {"Library",     80,  Tech::Writing},     // +50% science contribution
+        {"Cathedral",   160, Tech::Mysticism},   // -3 unhappy citizens (stacks w/ Temple)
+        {"Aqueduct",    120, Tech::Construction},// gates city growth past pop 8
     };
     int i = int(t);
     if (i < 0 || i >= kBuildingTypeCount) i = 0;
