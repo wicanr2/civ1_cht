@@ -24,9 +24,12 @@ public:
     bool pumpEvents();
 
     // Polls one keyboard event and returns a mapped navigation code matching
-    // MenuBoxDialog::NavKey (1=Up,2=Down,3=Enter,4=Esc), or 0 if no relevant
-    // key is pending. SDL_QUIT and ESC still flag quit() as before. ESC maps to
-    // KeyEsc (4) AND requests quit, so an interactive menu can cancel cleanly.
+    // MenuBoxDialog::NavKey (1=Up,2=Down,3=Enter,4=Esc), plus 5=Left,6=Right for
+    // the map-scroller, or 0 if no relevant key is pending. SDL_QUIT and ESC
+    // still flag quit() as before. ESC maps to KeyEsc (4) AND requests quit, so
+    // an interactive menu can cancel cleanly.
+    static constexpr int KeyUp = 1, KeyDown = 2, KeyEnter = 3, KeyEsc = 4,
+                         KeyLeft = 5, KeyRight = 6;
     int pollKey();
 
     // True once the user asked to quit (SDL_QUIT or pressed ESC).

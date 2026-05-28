@@ -50,7 +50,8 @@ bool SdlPresenter::pumpEvents() {
 
 int SdlPresenter::pollKey() {
     // Mapped codes mirror MenuBoxDialog::NavKey (kept as literals so this SDL
-    // layer stays free of any game-header dependency): 1=Up,2=Down,3=Enter,4=Esc.
+    // layer stays free of any game-header dependency): 1=Up,2=Down,3=Enter,4=Esc;
+    // 5=Left,6=Right extend it for the map-scroller.
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         if (ev.type == SDL_QUIT) { quit_ = true; return 0; }
@@ -61,6 +62,8 @@ int SdlPresenter::pollKey() {
                 case SDLK_RETURN:
                 case SDLK_KP_ENTER: return 3;
                 case SDLK_ESCAPE: quit_ = true; return 4;
+                case SDLK_LEFT:   return 5;
+                case SDLK_RIGHT:  return 6;
                 default: break;
             }
         }

@@ -19,6 +19,7 @@
 #include "game/TextBoxDialogs.h"
 #include "game/FrontEndFlow.h"
 #include "game/GameMenus.h"
+#include "game/MiniWorld.h"
 #include "localization/Translator.h"
 #include "platform/SdlPresenter.h"
 #include "resource/PicLoader.h"
@@ -26,6 +27,7 @@
 #include "vcpu/VCPU.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -1238,6 +1240,209 @@ static int menuflowInteractive() {
     return 0;
 }
 
+// ---------------- MiniWorld playable slice ----------------
+// NOTE: MiniWorld is an original minimal playable slice (NOT a faithful Civ1
+// CodeObject port): a procedurally-generated tile map + a movable unit + turn
+// counter + a Chinese HUD, built on the verified GDriver/Translator engine.
+
+// Resolve the DOS-assets directory for the playable map's real tileset:
+// an explicit dir (from --assets <dir>) wins; otherwise the OPENCIV1_DOS_ASSETS
+// environment variable; otherwise empty (fallback to colored rects).
+static std::string resolveAssetDir(const char* explicitDir) {
+    if (explicitDir && explicitDir[0]) return std::string(explicitDir);
+    if (const char* env = std::getenv("OPENCIV1_DOS_ASSETS"); env && env[0])
+        return std::string(env);
+    return std::string();
+}
+
+// Headless verification of the playable world. Asserts the pure API
+// (deterministic map, clamped movement, turn advance, terrain name keys) and
+// PROVES the HUD is localized by rendering the world twice (Translator on vs
+// off) and asserting the pixel buffers differ. Dumps the Chinese render to
+// /tmp/play.ppm.
+static int playtest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    const int W = 40, H = 30;
+    const uint32_t seed = 12345u;
+
+    // Deterministic map: same seed -> same terrain at a sample of tiles.
+    MiniWorld a(W, H, seed), b(W, H, seed);
+    bool sameMap = true;
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            if (a.terrainAt(x, y) != b.terrainAt(x, y)) sameMap = false;
+    chk(sameMap, "same seed -> identical map (deterministic)");
+    MiniWorld c(W, H, seed + 1);
+    bool differs = false;
+    for (int y = 0; y < H && !differs; ++y)
+        for (int x = 0; x < W; ++x)
+            if (a.terrainAt(x, y) != c.terrainAt(x, y)) { differs = true; break; }
+    chk(differs, "different seed -> different map");
+
+    // terrainNameKey returns the expected English key for a known tile.
+    chk(std::string(MiniWorld::terrainNameKey(Terrain::Ocean)) == "Ocean" &&
+        std::string(MiniWorld::terrainNameKey(Terrain::Mountains)) == "Mountains",
+        "terrainNameKey returns expected English keys");
+    chk(std::string(MiniWorld::terrainNameKey(a.terrainAt(a.unitX(), a.unitY()))).size() > 0,
+        "current tile has a terrain name key");
+
+    // moveUnit right increases x by 1; clamps at the right edge.
+    {
+        MiniWorld m(W, H, seed);
+        int x0 = m.unitX();
+        chk(m.moveUnit(1, 0) && m.unitX() == x0 + 1, "moveUnit(+1,0) increases x by 1");
+        // walk to the right edge; further right is clamped (no change -> false).
+        while (m.unitX() < W - 1) m.moveUnit(1, 0);
+        chk(m.unitX() == W - 1, "moveUnit clamps at right edge");
+        chk(!m.moveUnit(1, 0) && m.unitX() == W - 1, "moveUnit past right edge is a no-op");
+        // can't go below 0 on the left.
+        while (m.unitX() > 0) m.moveUnit(-1, 0);
+        chk(m.unitX() == 0, "moveUnit reaches left edge (x==0)");
+        chk(!m.moveUnit(-1, 0) && m.unitX() == 0, "moveUnit can't go below 0");
+        // vertical clamps too.
+        while (m.unitY() > 0) m.moveUnit(0, -1);
+        chk(m.unitY() == 0 && !m.moveUnit(0, -1), "moveUnit clamps at top (y==0)");
+    }
+
+    // endTurn increments the turn counter.
+    {
+        MiniWorld m(W, H, seed);
+        int t0 = m.turn();
+        m.endTurn(); m.endTurn();
+        chk(m.turn() == t0 + 2, "endTurn increments the turn counter");
+    }
+
+    // Localization proof: render the world Chinese vs English; pixels must differ.
+    auto render = [&](bool translate) -> std::vector<uint8_t> {
+        OpenCiv1Game g;
+        setupGame(g, 480, 300);
+        Translator::instance().enabled = translate;
+        MiniWorld m(W, H, seed);
+        m.draw(g.graphics, 1, 12);
+        return g.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> zh = render(true);
+    std::vector<uint8_t> en = render(false);
+    chk(zh.size() == en.size() && !zh.empty(), "both renders produced a buffer");
+    std::size_t diffPixels = 0;
+    for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+        if (zh[i] != en[i]) ++diffPixels;
+    chk(diffPixels > 0, "HUD Chinese vs English pixels DIFFER (HUD is localized)");
+
+    // The map region must have ink (terrain colours were drawn).
+    {
+        GBitmap fb(480, 300);
+        fb.pixelsMut() = zh;
+        bool hasTerrain = false;
+        for (auto px : fb.pixels()) if (px >= 200 && px <= 206) { hasTerrain = true; break; }
+        chk(hasTerrain, "map region drew terrain tiles");
+        bool hasUnit = false;
+        for (auto px : fb.pixels()) if (px == 209) { hasUnit = true; break; }
+        chk(hasUnit, "unit marker drawn");
+        dumpPPM(fb, "/tmp/play.ppm");
+    }
+
+    // Real-asset tileset sub-check: only when OPENCIV1_DOS_ASSETS is set AND
+    // TER257.PIC exists there. Otherwise SKIP (headless tests must stay green
+    // with NO assets). loadTileset must always be a no-throw no-op when absent.
+    {
+        MiniWorld noAssets(W, H, seed);
+        chk(!noAssets.loadTileset("/nonexistent/dir") && !noAssets.hasTileset(),
+            "loadTileset on a missing dir fails gracefully (no tileset)");
+
+        std::string dir = resolveAssetDir(nullptr); // env only, in this context
+        std::error_code ec;
+        if (!dir.empty() &&
+            std::filesystem::exists(std::filesystem::path(dir) / "TER257.PIC", ec)) {
+            MiniWorld m(W, H, seed);
+            chk(m.loadTileset(dir), "loadTileset succeeds when TER257.PIC present");
+            chk(m.hasTileset(), "tileset is loaded");
+            chk(m.tilesetWidth() == 320 && m.tilesetHeight() == 200,
+                "TER257 tileset is 320x200");
+            // Render one frame with the real tiles and dump it for eyeballing.
+            OpenCiv1Game g;
+            setupGame(g, 480, 300);
+            Translator::instance().enabled = true;
+            m.draw(g.graphics, 1, 16);
+            dumpPPM(g.graphics.screen(0), "/tmp/playmap.ppm");
+            std::printf("  (real-tile frame -> /tmp/playmap.ppm)\n");
+        } else {
+            std::printf("  (no DOS assets; real-tile sub-check skipped)\n");
+        }
+    }
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail)
+        std::printf("PLAYTEST: %d failure(s)\n", fail);
+    else
+        std::printf("PLAYTEST: all pass (MiniWorld playable slice; "
+                    "%zu localized HUD pixels differ)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
+// Interactive playable slice (SDL). setupGame, translation ON, build a world,
+// then loop draw -> present -> pollKey -> (arrows move / Enter endTurn / Esc
+// quit). Under the dummy SDL driver pollKey blocks for input — that's expected.
+static int playInteractive(const std::string& assetDir) {
+    OpenCiv1Game g;
+    setupGame(g, 480, 300);
+    Translator::instance().enabled = true;
+
+    MiniWorld world(40, 30, 12345u);
+    if (!assetDir.empty()) {
+        if (world.loadTileset(assetDir))
+            std::printf("[play] real Civ1 tiles from %s\n", assetDir.c_str());
+        else
+            std::printf("[play] no TER257.PIC in %s; using colored rects\n", assetDir.c_str());
+    }
+    GBitmap& fb = g.graphics.screen(0);
+
+    SdlPresenter pres;
+    if (!pres.init("OpenCiv1++ Play (zh-TW)", fb.width(), fb.height(), 2)) return 1;
+
+    world.draw(g.graphics, 1, world.hasTileset() ? 16 : 12);
+    while (true) {
+        if (!pres.present(fb)) break;           // window closed
+        int key = pres.pollKey();
+        if (key == 0) continue;                 // present() vsyncs the loop
+        bool dirty = false;
+        switch (key) {
+            case SdlPresenter::KeyUp:    dirty = world.moveUnit(0, -1); break;
+            case SdlPresenter::KeyDown:  dirty = world.moveUnit(0,  1); break;
+            case SdlPresenter::KeyLeft:  dirty = world.moveUnit(-1, 0); break;
+            case SdlPresenter::KeyRight: dirty = world.moveUnit( 1, 0); break;
+            case SdlPresenter::KeyEnter: world.endTurn(); dirty = true; break;
+            case SdlPresenter::KeyEsc:   pres.shutdown(); return 0;
+            default: break;
+        }
+        if (dirty) world.draw(g.graphics, 1, world.hasTileset() ? 16 : 12);
+    }
+    pres.shutdown();
+    return 0;
+}
+
+// Headless one-frame render of the playable map to a PPM (no SDL window). Loads
+// the real tileset when assetDir is non-empty + TER257.PIC is present; otherwise
+// renders the colored-rect fallback. Used by `--play --assets <dir> --dump <ppm>`.
+static int playDump(const std::string& assetDir, const char* ppmPath) {
+    OpenCiv1Game g;
+    setupGame(g, 480, 300);
+    Translator::instance().enabled = true;
+    MiniWorld world(40, 30, 12345u);
+    bool real = !assetDir.empty() && world.loadTileset(assetDir);
+    world.draw(g.graphics, 1, world.hasTileset() ? 16 : 12);
+    if (!dumpPPM(g.graphics.screen(0), ppmPath)) {
+        std::fprintf(stderr, "playdump: cannot write %s\n", ppmPath);
+        return 1;
+    }
+    std::printf("[playdump] wrote %s (%s)\n", ppmPath,
+                real ? "real Civ1 tiles" : "colored-rect fallback");
+    return 0;
+}
+
 static void drawScene(OpenCiv1Game& g) {
     GBitmap& s = g.graphics.screen(0);
     s.clear(1);
@@ -1254,11 +1459,15 @@ static void drawScene(OpenCiv1Game& g) {
 
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
+    bool play = false;
     const char* dumpPath = nullptr;
     const char* picPath = nullptr;
     const char* gfxDumpPath = nullptr;
+    const char* assetsDir = nullptr;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) { dump = true; dumpPath = argv[++i]; }
+        else if (!std::strcmp(argv[i], "--assets") && i + 1 < argc) { assetsDir = argv[++i]; }
+        else if (!std::strcmp(argv[i], "--play")) { play = true; }
         else if (!std::strcmp(argv[i], "--pic") && i + 1 < argc) picPath = argv[++i];
         else if (!std::strcmp(argv[i], "--gfxdraw") && i + 1 < argc) gfxDumpPath = argv[++i];
         else if (!std::strcmp(argv[i], "--english")) english = true;
@@ -1278,6 +1487,12 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--textboxtest")) { return textboxtest(); }
         else if (!std::strcmp(argv[i], "--flowtest")) { return flowtest(); }
         else if (!std::strcmp(argv[i], "--gamemenutest")) { return gamemenutest(); }
+        else if (!std::strcmp(argv[i], "--playtest")) { return playtest(); }
+        else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
+            // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
+            const char* dir = argv[++i]; const char* out = argv[++i];
+            return playDump(resolveAssetDir(dir), out);
+        }
         else if (!std::strcmp(argv[i], "--menu")) { return menuInteractive(); }
         else if (!std::strcmp(argv[i], "--menuflow")) { return menuflowInteractive(); }
         else if (!std::strcmp(argv[i], "--drawscene") && i + 1 < argc) {
@@ -1291,11 +1506,20 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --play: real Civ1 tiles when an asset dir is given (--assets <dir> or the
+    // OPENCIV1_DOS_ASSETS env), else the colored-rect fallback. With --dump it
+    // renders one headless frame to the PPM instead of opening an SDL window.
+    if (play) {
+        std::string dir = resolveAssetDir(assetsDir);
+        if (dump && dumpPath) return playDump(dir, dumpPath);
+        return playInteractive(dir);
+    }
+
     // run the whole headless suite; nonzero if any fails (CI entry point)
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
