@@ -78,6 +78,11 @@ private:
     // absent (fallback path used in draw()).
     std::unique_ptr<GBitmap> backdrop_;
     bool triedLoadBackdrop_ = false;
+    // Cached TER257.PIC tileset (loaded lazily on open()) — drives the 21-tile
+    // mini-grid's real-tile blit path. nullptr falls back to per-terrain
+    // distinct palette indices in draw().
+    std::unique_ptr<GBitmap> tileset_;
+    bool triedLoadTileset_ = false;
 };
 
 } // namespace oc1

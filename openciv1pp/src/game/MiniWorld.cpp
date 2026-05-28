@@ -121,19 +121,24 @@ Terrain MiniWorld::terrainAt(int x, int y) const {
 // oc1::terrainNameKey (defined in TerrainTiles.cpp). No definition needed here.
 
 uint8_t MiniWorld::terrainColor(Terrain t) {
-    // Custom indices (installed by draw()): distinct, readable map colours used
-    // ONLY in the colored-rect fallback (no real tileset). The 7 indices match
-    // the original MiniWorld terrains; the additional Civ1 terrains
-    // (Tundra/Arctic/Swamp/Jungle/River) fall through to Water for the
-    // fallback view — the real tileset draws them faithfully via TER257.
+    // Custom indices (installed by draw()): one DISTINCT, BRIGHT palette index
+    // per Civ1 terrain so the fallback (no-tileset) view is recognisable. The
+    // RGB values are installed in draw() below at indices 200..212. The 12
+    // Terrain enum values each map to a UNIQUE index — no fall-throughs to
+    // Water so Tundra/Arctic/Swamp/Jungle/River read distinctly.
     switch (t) {
-        case Terrain::Water:     return 200;
-        case Terrain::Grassland: return 201;
-        case Terrain::Plains:    return 202;
-        case Terrain::Forest:    return 203;
-        case Terrain::Hills:     return 204;
-        case Terrain::Mountains: return 205;
-        case Terrain::Desert:    return 206;
+        case Terrain::Water:     return 200; // dark blue
+        case Terrain::Grassland: return 201; // bright green
+        case Terrain::Plains:    return 202; // bright yellow
+        case Terrain::Forest:    return 203; // dark green
+        case Terrain::Hills:     return 204; // light grey
+        case Terrain::Mountains: return 205; // dark grey
+        case Terrain::Desert:    return 206; // brown
+        case Terrain::Tundra:    return 213; // very light grey
+        case Terrain::Arctic:    return 214; // bright white
+        case Terrain::Swamp:     return 215; // dark cyan
+        case Terrain::Jungle:    return 216; // darker green
+        case Terrain::River:     return 217; // bright cyan
         default:                 return 200;
     }
 }
@@ -398,14 +403,22 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
         fb.copyPaletteFrom(*tileset_);
         tileSize = 16; // real tiles are 16x16
     } else {
-        // Fallback: install the synthetic terrain palette colours.
-        fb.palette.set(200,  40,  60, 160); // Water
-        fb.palette.set(201,  70, 170,  60); // Grassland
-        fb.palette.set(202, 150, 170,  70); // Plains
-        fb.palette.set(203,  30, 110,  40); // Forest
-        fb.palette.set(204, 150, 120,  70); // Hills
-        fb.palette.set(205, 120, 120, 120); // Mountains
-        fb.palette.set(206, 200, 180, 110); // Desert
+        // Fallback: install DISTINCT, BRIGHT VGA-style colours so all 12
+        // Terrain enum values are visually distinguishable on the map. RGB
+        // values mirror the 16-colour VGA palette (see
+        // Palette::loadDefaultVga). Indices match MiniWorld::terrainColor.
+        fb.palette.set(200,   0,   0, 170); // Water     (VGA dark blue 1)
+        fb.palette.set(201,  85, 255,  85); // Grassland (VGA bright green 10)
+        fb.palette.set(202, 255, 255,  85); // Plains    (VGA bright yellow 14)
+        fb.palette.set(203,   0, 130,   0); // Forest    (dark green, near VGA 2)
+        fb.palette.set(204, 170, 170, 170); // Hills     (VGA light grey 7)
+        fb.palette.set(205,  90,  90,  90); // Mountains (between VGA grey 7/8)
+        fb.palette.set(206, 170,  85,   0); // Desert    (VGA brown 6)
+        fb.palette.set(213, 210, 210, 210); // Tundra    (very light grey)
+        fb.palette.set(214, 255, 255, 255); // Arctic    (VGA bright white 15)
+        fb.palette.set(215,   0, 130, 130); // Swamp     (dark cyan, near VGA 3)
+        fb.palette.set(216,   0, 100,   0); // Jungle    (deeper green vs Forest)
+        fb.palette.set(217,  85, 255, 255); // River     (VGA bright cyan 11)
     }
     fb.palette.set(207, 255, 255, 255); // grid / HUD text
     fb.palette.set(208,  20,  20,  30); // HUD bar background

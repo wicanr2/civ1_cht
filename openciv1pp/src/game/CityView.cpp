@@ -47,6 +47,21 @@ bool CityView::open(int cityId) {
             }
         }
     }
+    // Lazy-load TER257.PIC for the 21-tile mini-grid (real-tile path). When the
+    // file is absent (e.g. no DOS assets) we fall through to the per-terrain
+    // colored-rect path inside draw().
+    if (!triedLoadTileset_) {
+        triedLoadTileset_ = true;
+        std::error_code ec;
+        const std::string& rp = p.resourcePath();
+        if (!rp.empty()) {
+            std::filesystem::path pth = std::filesystem::path(rp) / "TER257.PIC";
+            if (std::filesystem::exists(pth, ec)) {
+                auto bmp = loadPicFile(pth.string(), true);
+                if (bmp) tileset_ = std::move(bmp);
+            }
+        }
+    }
     return true;
 }
 
@@ -92,30 +107,65 @@ void CityView::draw(GBitmap& screen, int fontId) {
 
 // ---- the actual screen-build (mirrors F19_0000_0000_ShowCityLayout shape). --
 void CityView::draw(GBitmap& screen, const City& city, int fontId) {
-    // Install a small set of dedicated palette indices so the city view has
-    // a recognisable look regardless of which palette the world map left
-    // behind. Picked to be far from terrain hues 200..206 and the AI civ
-    // colours 220..226 (see MiniWorld::renderUnits).
-    screen.palette.set(160,  20,  20,  40); // backdrop fill (dark blue)
-    screen.palette.set(161, 200, 180, 120); // panel fill (warm tan)
-    screen.palette.set(162,  90,  60,  20); // panel border (deep brown)
-    screen.palette.set(163,   0,   0,   0); // text shadow
-    screen.palette.set(164, 255, 255, 255); // text colour
-    screen.palette.set(165, 220, 200, 140); // sub-panel fill
-    screen.palette.set(166, 250, 220,  90); // city dot / population (warm yellow)
-    screen.palette.set(167,  60, 160,  80); // grass tile (mini-grid)
-    screen.palette.set(168,  50,  90, 180); // water tile (mini-grid)
-    screen.palette.set(169, 180, 180, 180); // mountain tile (mini-grid)
-    screen.palette.set(170, 140, 100,  60); // hills/desert tile (mini-grid)
+    // Install a dedicated set of palette indices with HIGH-CONTRAST values
+    // mirroring the 16-colour VGA palette (Palette::loadDefaultVga in
+    // src/graphics/Palette.h). Picked to be far from terrain hues 200..206
+    // and the AI civ colours 220..226 (see MiniWorld::renderUnits). We DO
+    // NOT write to indices 0..15 directly because copyPaletteFrom(*backdrop_)
+    // would clobber them; instead we install matching VGA RGB values at
+    // dedicated 16x.. indices so the panel/text stays readable on top of
+    // whatever palette the loaded backdrop installs.
+    //   160 = VGA dark blue   (1)   -> backdrop fill
+    //   161 = VGA dark grey   (8)   -> panel fill (DARK so text on top reads)
+    //   162 = VGA bright white (15) -> panel border / dividers
+    //   163 = VGA black        (0)  -> text shadow
+    //   164 = VGA bright white (15) -> body text / labels
+    //   165 = VGA light grey   (7)  -> sub-panel fill
+    //   166 = VGA bright yellow(14) -> population dots / city centre / title
+    //   167 = VGA bright green (10) -> grassland / plains
+    //   168 = VGA dark blue    (1)  -> water / river
+    //   169 = VGA light grey   (7)  -> hills / mountains
+    //   170 = VGA brown        (6)  -> desert
+    //   171 = VGA dark green   (2)  -> forest / jungle
+    //   172 = VGA bright cyan  (11) -> river highlight
+    //   173 = VGA dark cyan    (3)  -> swamp
+    auto installCityViewPalette = [&]() {
+        screen.palette.set(160,   0,   0, 170); // dark blue (backdrop fill)
+        screen.palette.set(161,  85,  85,  85); // dark grey (panel fill)
+        screen.palette.set(162, 255, 255, 255); // bright white (border)
+        screen.palette.set(163,   0,   0,   0); // black (text shadow)
+        screen.palette.set(164, 255, 255, 255); // bright white (text)
+        screen.palette.set(165, 170, 170, 170); // light grey (sub-panel)
+        screen.palette.set(166, 255, 255,  85); // bright yellow (title + pop)
+        screen.palette.set(167,  85, 255,  85); // bright green (grass/plains)
+        screen.palette.set(168,   0,   0, 170); // dark blue (water/river)
+        screen.palette.set(169, 170, 170, 170); // light grey (hills/mountains)
+        screen.palette.set(170, 170,  85,   0); // brown (desert)
+        screen.palette.set(171,   0, 170,   0); // dark green (forest/jungle)
+        screen.palette.set(172,  85, 255, 255); // bright cyan (river)
+        screen.palette.set(173,   0, 170, 170); // dark cyan (swamp)
+        screen.palette.set(174, 255, 255, 255); // bright white (arctic)
+    };
+    installCityViewPalette();
 
     // 1) Backdrop: CBACK*.PIC when loaded (mirrors the C# HILL.PIC backdrop
-    //    used by ShowCityLayout); else a flat colored fill.
+    //    used by ShowCityLayout); else a flat colored fill. The palette is
+    //    re-installed AFTER copyPaletteFrom so the panel/text colours survive
+    //    the backdrop's palette table.
     if (backdrop_ &&
         backdrop_->width() <= screen.width() && backdrop_->height() <= screen.height()) {
         screen.copyPaletteFrom(*backdrop_);
         screen.drawBitmap(0, 0, *backdrop_, false);
+        installCityViewPalette();
     } else {
         screen.clear(160);
+    }
+    // When TER257 tileset is loaded for the mini-grid, its palette (indices
+    // 0..~127) must be installed so the blit pixels resolve correctly. Our
+    // CityView overrides at 160+ are re-applied AFTER so they survive.
+    if (tileset_) {
+        screen.copyPaletteFrom(*tileset_);
+        installCityViewPalette();
     }
 
     // 2) Main panel rectangle (F19 layout: a big inset panel below the title
@@ -143,8 +193,9 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         Size sz = measureString(font, title);
         int tx = kPanelX + (kPanelW - sz.w) / 2;
         // Shadow then text (the F19_ DrawCenteredStringWithShadow recipe).
+        // Title is rendered in bright yellow (166) for visual emphasis.
         screen.drawString(font, tx + 1, titleY + 1, title, 163);
-        screen.drawString(font, tx, titleY, title, 164);
+        screen.drawString(font, tx, titleY, title, 166);
     }
 
     // 4) Info column (left side) — Population:/Founded:/Owner:/Production:.
@@ -233,12 +284,41 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         screen.drawString(font, infoX + 1, tY + 1, lbl, 163);
         screen.drawString(font, infoX, tY, lbl, 164);
 
+        // When TER257 is available, the mini-grid blits the 16x16 base tile per
+        // cell (cellSz==16). Otherwise we draw 18px colored rects keyed to a
+        // DISTINCT bright palette index per terrain enum (so all 12 terrains
+        // are visually distinguishable in the fallback view).
+        const bool useTiles = (tileset_ != nullptr);
+        const int cellSz = useTiles ? 16 : 18;
         int gridX0 = kPanelX + 170;
         int gridY0 = infoY + 4;
-        const int cellSz = 18;
 
         const MapManagement* mm = nullptr;
         try { mm = &p.mapManagement(); } catch (...) { mm = nullptr; }
+
+        // Per-terrain palette index lookup for the fallback path. DISTINCT
+        // VGA-style colours so each terrain reads at a glance (mirrors the
+        // colour scheme called out in the polish task: Water/River=blue,
+        // Grassland=green, Plains=yellow, Forest/Jungle=dark-green, Hills/
+        // Mountains=light-grey, Desert=brown, Tundra=light-grey, Arctic=white,
+        // Swamp=dark-cyan).
+        auto terrainCol = [](Terrain t) -> uint8_t {
+            switch (t) {
+                case Terrain::Water:     return 168; // dark blue
+                case Terrain::River:     return 172; // bright cyan
+                case Terrain::Grassland: return 167; // bright green
+                case Terrain::Plains:    return 166; // bright yellow
+                case Terrain::Forest:    return 171; // dark green
+                case Terrain::Jungle:    return 171; // dark green
+                case Terrain::Hills:     return 169; // light grey
+                case Terrain::Mountains: return 169; // light grey
+                case Terrain::Desert:    return 170; // brown
+                case Terrain::Tundra:    return 165; // light grey (sub-panel)
+                case Terrain::Arctic:    return 174; // bright white
+                case Terrain::Swamp:     return 173; // dark cyan
+                default:                 return 167; // grass fallback
+            }
+        };
 
         // 5x5 area; skip the 4 corners == 21 tiles ("fat cross" city radius).
         for (int dy = -2; dy <= 2; ++dy) {
@@ -258,21 +338,19 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
                         t = Terrain::Water;
                     }
                 }
-                uint8_t col = 167; // default grass
-                switch (t) {
-                    case Terrain::Water: case Terrain::River: col = 168; break;
-                    case Terrain::Mountains: case Terrain::Arctic: col = 169; break;
-                    case Terrain::Hills: case Terrain::Desert:
-                    case Terrain::Tundra:  col = 170; break;
-                    case Terrain::Grassland: case Terrain::Plains:
-                    case Terrain::Forest: case Terrain::Swamp:
-                    case Terrain::Jungle:  col = 167; break;
-                    default: col = 167; break;
+                if (useTiles) {
+                    TileXY tile = terrainToTileXY(t);
+                    screen.drawBitmap(gx, gy, *tileset_,
+                                      Rect{tile.col * 16, tile.row * 16, 16, 16},
+                                      false);
+                    screen.drawRect(Rect{gx, gy, cellSz, cellSz}, 162);
+                } else {
+                    screen.fillRect(Rect{gx, gy, cellSz - 1, cellSz - 1},
+                                    terrainCol(t));
+                    screen.drawRect(Rect{gx, gy, cellSz - 1, cellSz - 1}, 162);
                 }
-                screen.fillRect(Rect{gx, gy, cellSz - 1, cellSz - 1}, col);
-                screen.drawRect(Rect{gx, gy, cellSz - 1, cellSz - 1}, 162);
                 if (dx == 0 && dy == 0) {
-                    // city centre marker (warm yellow + dark outline)
+                    // city centre marker (bright yellow + dark outline)
                     int inset = 3;
                     screen.fillRect(Rect{gx + inset, gy + inset,
                                          cellSz - 1 - 2 * inset,

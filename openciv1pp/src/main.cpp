@@ -3060,9 +3060,18 @@ static int aitest() {
         "with-AI vs no-AI pixels DIFFER (AI markers contribute ink)");
 
     {
-        GBitmap fb(480, 300);
-        fb.pixelsMut() = withAi;
-        dumpPPM(fb, "/tmp/aitest_playing.ppm");
+        // Re-drive a PLAYING render here so we dump the screen WITH its full
+        // installed palette (MiniWorld::draw + renderUnits both set 200..226).
+        // A fresh GBitmap would only carry the default VGA ramp and so render
+        // the high indices as washed-out grey.
+        OpenCiv1Game gd;
+        setupGame(gd, 480, 300);
+        Translator::instance().enabled = true;
+        FrontEndFlow fd(gd);
+        fd.enterTitle();
+        for (int k = 0; k < 6; ++k) fd.handleKey(MenuBoxDialog::KeyEnter);
+        fd.draw();
+        dumpPPM(gd.graphics.screen(0), "/tmp/aitest_playing.ppm");
     }
 
     Translator::instance().enabled = true;
@@ -3457,10 +3466,24 @@ static int cityviewtest() {
     }
 
     // Dump a visual when OPENCIV1_DOS_ASSETS is present (extra debug aid).
+    // Re-run the render against the SAME screen we then dump, so the dump
+    // sees the palette installed by CityView::draw (not the default VGA ramp
+    // that a fresh GBitmap starts with).
     if (const char* env = std::getenv("OPENCIV1_DOS_ASSETS"); env && *env) {
-        GBitmap fb(480, 300);
-        fb.pixelsMut() = zhBuf;
-        dumpPPM(fb, "/tmp/cityview.ppm");
+        OpenCiv1Game gd;
+        setupGame(gd, 480, 300);
+        Translator::instance().enabled = true;
+        gd.setResourcePath(resolveAssetDir(env));
+        FrontEndFlow fd(gd);
+        fd.enterTitle();
+        for (int k = 0; k < 6; ++k) fd.handleKey(MenuBoxDialog::KeyEnter);
+        gd.checkPlayerTurn().processEndOfTurn();
+        int cid = 0;
+        for (std::size_t i = 0; i < gd.unitManagement().cities().size(); ++i)
+            if (gd.unitManagement().cities()[i].owner > 0) { cid = int(i); break; }
+        gd.cityView().open(cid);
+        gd.cityView().draw(gd.graphics.screen(0), 1);
+        dumpPPM(gd.graphics.screen(0), "/tmp/cityview.ppm");
     }
 
     Translator::instance().enabled = true; // restore default
