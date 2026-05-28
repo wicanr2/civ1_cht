@@ -4,6 +4,7 @@
 #include "UnitManagement.h"
 #include "CheckPlayerTurn.h"
 #include "CityView.h"
+#include "TechResearch.h"
 #include "../resource/PicLoader.h"
 #include <algorithm>
 #include <cstdint>
@@ -570,7 +571,31 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
                               "Production:", 207);
         char pbuf[32];
         std::snprintf(pbuf, sizeof(pbuf), " %d/%d", c0.shields, c0.production);
-        fb.drawString(font, penX3, line3Y, pbuf, 207);
+        penX3 = fb.drawString(font, penX3, line3Y, pbuf, 207);
+    }
+    // Research line: show the HUMAN civ (civ 0)'s current research target
+    // + progress (pts/cost), translated via the Translator. Drawn at the
+    // very end of line 3 when TechResearch has been initialised. Mirrors
+    // the Civ1 HUD's "Researching: <Tech> (pts/cost)" panel.
+    if (game_ && game_->techResearch().civCount() > 0) {
+        Tech target = game_->techResearch().civResearching(0);
+        int pts = game_->techResearch().civPoints(0);
+        int cost = game_->techResearch().civResearchCost(0);
+        penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+        penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                              "Research:", 207);
+        const char* nameKey = TechResearch::techNameKey(target);
+        if (nameKey && nameKey[0]) {
+            penX3 = fb.drawString(font, penX3, line3Y, " ", 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  nameKey, 207);
+            char rb[24];
+            std::snprintf(rb, sizeof(rb), " %d/%d", pts, cost);
+            fb.drawString(font, penX3, line3Y, rb, 207);
+        } else {
+            // No active research target (all early-era techs unlocked).
+            penX3 = fb.drawString(font, penX3, line3Y, " -", 207);
+        }
     }
 }
 

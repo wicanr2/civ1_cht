@@ -6,6 +6,7 @@
 #include "OpenCiv1Game.h"
 #include "UnitManagement.h"
 #include "TerrainTiles.h"
+#include "TechResearch.h"
 #include <algorithm>
 
 namespace oc1 {
@@ -172,6 +173,28 @@ int CheckPlayerTurn::processEndOfTurn() {
                 c.shields -= needed;
                 c.units += 1;
                 um.addUnit(c.owner, c.productionType, c.x, c.y);
+            }
+        }
+    }
+
+    // ---- TECH RESEARCH per-civ points accumulation ------------------------
+    // Faithful early slice: each civ accumulates research points proportional
+    // to its city count (one baseline point per city per turn). The C# path
+    // (F0_*_GetCityResourceCount fan-out + science-rate slider) is out of
+    // scope here; the per-city-baseline shape matches the "more cities ==
+    // more science" character of Civ1's early game. When the accumulated
+    // points cross the current tech's cost, TechResearch::addPoints unlocks
+    // it and auto-picks the cheapest still-reachable next target.
+    {
+        auto& tr = p.techResearch();
+        // Only run when initCivs() has provisioned per-civ tech state (we
+        // skip when civCount==0 so the pre-tech-tree tests still pass).
+        if (tr.civCount() > 0) {
+            for (int civId = 0; civId < tr.civCount(); ++civId) {
+                int cityCount = 0;
+                for (const auto& c : cities)
+                    if (c.owner == civId) ++cityCount;
+                if (cityCount > 0) tr.addPoints(civId, cityCount);
             }
         }
     }

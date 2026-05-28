@@ -29,6 +29,7 @@ class UnitManagement;// ported CodeObject (fwd-declared to break the include cyc
 class CheckPlayerTurn;// ported CodeObject (fwd-declared to break the include cycle)
 class CityView;      // ported CodeObject (fwd-declared to break the include cycle)
 class GameLoadAndSave;// ported CodeObject (fwd-declared to break the include cycle)
+class TechResearch;  // ported CodeObject (fwd-declared to break the include cycle)
 
 class OpenCiv1Game {
 public:
@@ -71,6 +72,7 @@ public:
     CheckPlayerTurn& checkPlayerTurn() { return *checkPlayerTurn_; }
     CityView& cityView() { return *cityView_; }
     GameLoadAndSave& gameLoadAndSave() { return *gameLoadAndSave_; }
+    TechResearch& techResearch() { return *techResearch_; }
 
 private:
     std::string resourcePath_ = ".";
@@ -89,6 +91,7 @@ private:
     std::unique_ptr<CheckPlayerTurn> checkPlayerTurn_;
     std::unique_ptr<CityView> cityView_;
     std::unique_ptr<GameLoadAndSave> gameLoadAndSave_;
+    std::unique_ptr<TechResearch> techResearch_;
 };
 
 } // namespace oc1

@@ -27,6 +27,7 @@
 #include "game/CheckPlayerTurn.h"
 #include "game/CityView.h"
 #include "game/GameLoadAndSave.h"
+#include "game/TechResearch.h"
 #include "localization/Translator.h"
 #include "platform/SdlPresenter.h"
 #include "resource/PicLoader.h"
@@ -3761,6 +3762,156 @@ static int savetest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Tech research / tech-gated build (--techtest) ----------
+// Verifies the TechResearch CodeObject end-to-end:
+//   (1) initCivs(7): every civ starts with no known techs + researching
+//       Alphabet, 0 points.
+//   (2) addPoints(0, 10): civ 0 (cost(Alphabet)=10) unlocks Alphabet and the
+//       cheapest still-reachable next tech is picked.
+//   (3) Tech-gate: setCityProductionType(0, Phalanx) refuses (returns false)
+//       before BronzeWorking is known; succeeds after.
+//   (4) Save/load round-trip preserves per-civ {knownTechs, researching, points}.
+//   (5) HUD render: translate-on vs -off pixels differ (Chinese tech name on).
+static int techtest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // (1) initCivs sets a clean slate.
+    {
+        OpenCiv1Game g;
+        setupGame(g, 480, 300);
+        auto& tr = g.techResearch();
+        tr.initCivs(7);
+        chk(tr.civCount() == 7, "initCivs(7) -> civCount() == 7");
+        chk(tr.civResearching(0) == Tech::Alphabet,
+            "civ 0 initial research == Alphabet");
+        chk(tr.civPoints(0) == 0, "civ 0 initial points == 0");
+        chk(!tr.civKnows(0, Tech::Alphabet),
+            "civ 0 does NOT know Alphabet at start");
+        chk(!tr.civKnows(0, Tech::BronzeWorking),
+            "civ 0 does NOT know Bronze Working at start");
+    }
+
+    // (2) addPoints unlocks at threshold + auto-picks next.
+    {
+        OpenCiv1Game g; setupGame(g, 480, 300);
+        auto& tr = g.techResearch();
+        tr.initCivs(7);
+        const int alphaCost = tr.civResearchCost(0); // = 10
+        tr.addPoints(0, alphaCost);
+        chk(tr.civKnows(0, Tech::Alphabet),
+            "after addPoints(0,10) civ 0 KNOWS Alphabet");
+        chk(tr.civPoints(0) == 0, "post-unlock: points reset to 0");
+        chk(tr.civResearching(0) != Tech::Alphabet &&
+            tr.civResearching(0) != Tech::None,
+            "post-unlock: switched to a NEW research target");
+    }
+
+    // (3) Tech-gate on city production.
+    {
+        OpenCiv1Game g; setupGame(g, 480, 300);
+        Translator::instance().enabled = true;
+        auto& tr = g.techResearch();
+        auto& um = g.unitManagement();
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 6);
+        tr.initCivs(7);
+        // Found a city for civ 0 so we can target it.
+        std::string nm;
+        bool built = um.buildCity(5, 5, /*playerId*/ 0, nm);
+        chk(built, "buildCity(5,5,0) for tech-gate setup");
+        // Phalanx requires BronzeWorking which civ 0 does NOT know yet.
+        bool refused = !um.setCityProductionType(0, UnitType::Phalanx);
+        chk(refused,
+            "setCityProductionType(0, Phalanx) REFUSED pre-BronzeWorking");
+        chk(um.cities()[0].productionType != UnitType::Phalanx,
+            "city productionType unchanged after refusal");
+        // Militia (Tech::None) always allowed.
+        bool okMil = um.setCityProductionType(0, UnitType::Militia);
+        chk(okMil, "setCityProductionType(0, Militia) succeeds (no prereq)");
+        // Unlock BronzeWorking -> Phalanx now accepted.
+        tr.setCivKnows(0, Tech::BronzeWorking, true);
+        bool okPhx = um.setCityProductionType(0, UnitType::Phalanx);
+        chk(okPhx, "setCityProductionType(0, Phalanx) SUCCEEDS post-BronzeWorking");
+        chk(um.cities()[0].productionType == UnitType::Phalanx,
+            "city productionType updated to Phalanx after unlock");
+    }
+
+    // (4) Save/load round-trip preserves per-civ tech state.
+    {
+        const char* savePath = "/tmp/openciv1pp_techtest.sav";
+        OpenCiv1Game g1; setupGame(g1, 480, 300);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow1(g1);
+        flow1.enterTitle();
+        for (int k = 0; k < 6; ++k) flow1.handleKey(MenuBoxDialog::KeyEnter);
+        State s1 = flow1.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+        chk(s1 == State::PLAYING, "tech round-trip: reached PLAYING");
+        auto& tr1 = g1.techResearch();
+        // Mid-research state: civ 0 knows Alphabet, has 4 pts toward next;
+        // civ 2 knows BronzeWorking + Pottery.
+        tr1.setCivKnows(0, Tech::Alphabet, true);
+        tr1.setCivResearching(0, Tech::BronzeWorking);
+        tr1.setCivPoints(0, 4);
+        tr1.setCivKnows(2, Tech::BronzeWorking, true);
+        tr1.setCivKnows(2, Tech::Pottery, true);
+        tr1.setCivResearching(2, Tech::IronWorking);
+        tr1.setCivPoints(2, 17);
+        bool saveOk = g1.gameLoadAndSave().saveToFile(savePath, &flow1);
+        chk(saveOk, "tech round-trip: saveToFile succeeded");
+
+        OpenCiv1Game g2; setupGame(g2, 480, 300);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow2(g2);
+        bool loadOk = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
+        chk(loadOk, "tech round-trip: loadFromFile succeeded");
+        auto& tr2 = g2.techResearch();
+        chk(tr2.civKnows(0, Tech::Alphabet),
+            "post-load: civ 0 knows Alphabet");
+        chk(tr2.civResearching(0) == Tech::BronzeWorking,
+            "post-load: civ 0 researching Bronze Working");
+        chk(tr2.civPoints(0) == 4, "post-load: civ 0 has 4 pts");
+        chk(tr2.civKnows(2, Tech::BronzeWorking) &&
+            tr2.civKnows(2, Tech::Pottery),
+            "post-load: civ 2 knows BronzeWorking + Pottery");
+        chk(tr2.civResearching(2) == Tech::IronWorking,
+            "post-load: civ 2 researching Iron Working");
+        chk(tr2.civPoints(2) == 17, "post-load: civ 2 has 17 pts");
+    }
+
+    // (5) HUD render: translate-on Chinese vs -off English differ.
+    std::size_t diffPixels = 0;
+    auto renderHud = [&](bool translateOn) -> std::vector<uint8_t> {
+        OpenCiv1Game g; setupGame(g, 480, 300);
+        Translator::instance().enabled = translateOn;
+        FrontEndFlow flow(g);
+        flow.enterTitle();
+        for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+        // Force civ 0 to a known research state so the HUD text is stable.
+        g.techResearch().setCivResearching(0, Tech::BronzeWorking);
+        g.techResearch().setCivPoints(0, 7);
+        flow.draw();
+        return g.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> onPx  = renderHud(true);
+    std::vector<uint8_t> offPx = renderHud(false);
+    chk(onPx.size() == offPx.size() && !onPx.empty(),
+        "tech HUD: both renders produced a buffer");
+    for (std::size_t i = 0; i < onPx.size() && i < offPx.size(); ++i)
+        if (onPx[i] != offPx[i]) ++diffPixels;
+    chk(diffPixels > 0,
+        "tech HUD: translate-on vs -off pixels DIFFER (Chinese tech text)");
+    Translator::instance().enabled = true;
+
+    if (fail) std::printf("TECHTEST: %d failure(s)\n", fail);
+    else      std::printf("TECHTEST: all pass (tech tree: init/addPoints/"
+                          "tech-gate/save-load round-trip; HUD delta=%zu px)\n",
+                          diffPixels);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -3827,6 +3978,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--combattest")) { return combattest(); }
         else if (!std::strcmp(argv[i], "--aimovetest")) { return aimovetest(); }
         else if (!std::strcmp(argv[i], "--savetest")) { return savetest(); }
+        else if (!std::strcmp(argv[i], "--techtest")) { return techtest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -3892,7 +4044,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

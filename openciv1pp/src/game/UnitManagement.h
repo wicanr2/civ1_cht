@@ -25,6 +25,7 @@
 //   * production/work tiles, trade route arrays, city-status flags.
 #pragma once
 #include "TerrainTiles.h"
+#include "TechResearch.h"
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -53,6 +54,9 @@ struct UnitDef {
     int defense;          // DefenseStrength (UnitDefinition.cs line 15)
     int move;             // MoveCount (line 12)
     int cost;             // shield cost (Cost * local_4a, line 838)
+    Tech techPrereq;      // required tech (Tech::None means buildable from
+                          // game start). Mirrors UnitDefinition.PrerequisiteTech
+                          // (GameData.cs line 209-236, last enum arg).
 };
 
 // Faithful UnitDef table for the early-era handful. Index by UnitType.
@@ -62,9 +66,13 @@ struct UnitDef {
 //   Phalanx:  attack=1, defense=2, move=1, cost=2*10 = 20
 inline const UnitDef& unitDefOf(UnitType t) {
     static const UnitDef kDefs[3] = {
-        {"Settlers", 0, 1, 1, 40},
-        {"Militia",  1, 1, 1, 10},
-        {"Phalanx",  1, 2, 1, 20},
+        // techPrereq matches the C# UnitDefinition.PrerequisiteTech args in
+        // GameData.cs lines 209-211: Settlers/Militia = None; Phalanx =
+        // BronzeWorking. Future units already noted: Legion -> IronWorking
+        // (GameData.cs line 212) — added when the unit ships.
+        {"Settlers", 0, 1, 1, 40, Tech::None},
+        {"Militia",  1, 1, 1, 10, Tech::None},
+        {"Phalanx",  1, 2, 1, 20, Tech::BronzeWorking},
     };
     int i = int(t);
     if (i < 0 || i > 2) i = 0;
@@ -190,7 +198,13 @@ public:
     // the freshly-picked unit's cost without the caller doing it manually).
     // Mirrors the C# CityWorker.cs path that updates City.CurrentProductionID
     // and re-reads Units[ID].Cost on the next end-of-turn pass.
-    void setCityProductionType(int cityId, UnitType t);
+    //
+    // TECH-GATED: refuses (returns false, no state change) when the OWNER civ
+    // does not yet know the unit's techPrereq (mirrors the C# build menu's
+    // unbuildable-unit greyout). Settlers/Militia (Tech::None) always build;
+    // Phalanx needs BronzeWorking — see UnitDef table above. Bounds-invalid
+    // city ids also return false.
+    bool setCityProductionType(int cityId, UnitType t);
 
     // ---- COMBAT (faithful Civ1 formula) -----------------------------------
     // The reference combat path in C# is buried in Segment_25fb (the AI unit

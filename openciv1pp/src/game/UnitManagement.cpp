@@ -8,6 +8,7 @@
 #include "OpenCiv1Game.h"
 #include "MainCode.h"
 #include "TerrainTiles.h"
+#include "TechResearch.h"
 #include <cstdio>
 
 namespace oc1 {
@@ -116,10 +117,25 @@ int UnitManagement::addUnit(int owner, UnitType type, int x, int y) {
     return idx;
 }
 
-void UnitManagement::setCityProductionType(int cityId, UnitType t) {
-    if (cityId < 0 || std::size_t(cityId) >= cities_.size()) return;
+bool UnitManagement::setCityProductionType(int cityId, UnitType t) {
+    if (cityId < 0 || std::size_t(cityId) >= cities_.size()) return false;
+    // Tech gate: refuse when the OWNER civ does not yet know the unit's
+    // prereq tech. Tech::None bypasses (Settlers/Militia always buildable).
+    // We consult the host TechResearch when civs() has been provisioned;
+    // when civs is empty (tests that haven't called initCivs) we skip the
+    // check entirely (back-compat for citytest/turntest that pre-date the
+    // tech tree).
+    const UnitDef& def = unitDefOf(t);
+    const int owner = cities_[std::size_t(cityId)].owner;
+    if (def.techPrereq != Tech::None && !civs_.empty() &&
+        owner >= 0 && std::size_t(owner) < civs_.size()) {
+        if (!p.techResearch().civKnows(owner, def.techPrereq)) {
+            return false; // tech not yet researched -> refuse
+        }
+    }
     cities_[std::size_t(cityId)].productionType = t;
-    cities_[std::size_t(cityId)].production = unitDefOf(t).cost;
+    cities_[std::size_t(cityId)].production = def.cost;
+    return true;
 }
 
 // Tiny xorshift32 (deterministic per-seed; we use it as the RNG step for the

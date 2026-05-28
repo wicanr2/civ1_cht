@@ -5,6 +5,7 @@
 #include "TerrainTiles.h"
 #include "TextBoxDialogs.h"
 #include "UnitManagement.h"
+#include "TechResearch.h"
 #include <algorithm>
 #include <cstdint>
 #include <utility>
@@ -89,6 +90,10 @@ void FrontEndFlow::enterPlaying() {
     // layout is reproducible for a given (difficulty, tribe) pick.
     constexpr int kNumAi = 6;
     p.unitManagement().setupCivs(chosenTribe_, kNumAi);
+    // Wire the per-civ tech tree (Alphabet as the canonical first research
+    // target for every civ). Mirrors the C# GameData init where every
+    // Players[i].TechnologyAdvances[] starts empty.
+    p.techResearch().initCivs(1 + kNumAi);
     std::vector<std::pair<int,int>> starts;
     placeStartingPositions(p.mapManagement(), 1 + kNumAi,
                            seed ^ 0xA17C1051u, starts, /*minDistance*/ 10);

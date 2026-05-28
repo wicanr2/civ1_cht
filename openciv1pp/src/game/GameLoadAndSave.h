@@ -12,7 +12,8 @@
 // same place" without depending on a binary format we don't yet handle.
 //
 // FORMAT (single text file, ASCII; one record per line):
-//   line 1   : "OpenCiv1pp savegame v1"
+//   line 1   : "OpenCiv1pp savegame v2"   (was v1 pre-tech-tree; v1 still loads
+//              for back-compat — tech records are OPTIONAL)
 //   line 2+  : "<KEY> <value...>" records, in this order:
 //                turn          <int>
 //                year          <int>
@@ -31,6 +32,10 @@
 //                              <production> <units> <productionTypeInt> <name...>
 //                terrain       <80*50 hex bytes; one byte per cell in row-major
 //                              (y * 80 + x) order; 4000 bytes -> 8000 hex chars>
+//                techcivs      <count>   (per-civ tech state count)
+//                techcsv       <civId> <researchingInt> <points> <techCsv>
+//                              techCsv = comma-separated integer Tech ids the
+//                              civ knows; "" (or "-") when none yet.
 //
 // TODO(port): the faithful CIVIL*.SVE binary read/write (the C# F11_0000_*
 // methods + ReadInt16/WriteInt16 layout) — that is the entire C# class.

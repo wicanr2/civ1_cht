@@ -5,6 +5,7 @@
 #include "CityView.h"
 #include "OpenCiv1Game.h"
 #include "UnitManagement.h"
+#include "TechResearch.h"
 #include "MainCode.h"
 #include "MiniWorld.h"
 #include "MapManagement.h"
@@ -257,6 +258,21 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%d/%d", city.shields, city.production);
         drawLabelValue(infoY + lineH * 3, "Production:", buf);
+    }
+    // "Researching: <tech>  (pts/cost)" — the owner civ's current research
+    // target (Translator turns the tech English key into Chinese). Skipped
+    // when TechResearch hasn't been provisioned for this game.
+    if (p.techResearch().civCount() > 0) {
+        Tech t = p.techResearch().civResearching(city.owner);
+        const char* nameKey = TechResearch::techNameKey(t);
+        if (nameKey && nameKey[0]) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), " (%d/%d)",
+                          p.techResearch().civPoints(city.owner),
+                          p.techResearch().civResearchCost(city.owner));
+            std::string val = Translator::instance().translate(nameKey) + buf;
+            drawLabelValue(infoY + lineH * 4 - 2, "Researching:", val);
+        }
     }
 
     // 5) Population dots — one warm yellow dot per population point, drawn in

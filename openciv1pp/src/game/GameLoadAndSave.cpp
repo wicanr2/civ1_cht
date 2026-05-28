@@ -12,6 +12,7 @@
 #include "MiniWorld.h"
 #include "UnitManagement.h"
 #include "CheckPlayerTurn.h"
+#include "TechResearch.h"
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -94,8 +95,8 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     std::ofstream os(path, std::ios::binary);
     if (!os) return false;
 
-    // Header.
-    os << "OpenCiv1pp savegame v1\n";
+    // Header. v2 adds the per-civ tech-tree state (techcivs/techcsv records).
+    os << "OpenCiv1pp savegame v2\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -161,6 +162,29 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     writeHex(os, dumpTerrainBytes(const_cast<OpenCiv1Game&>(p)));
     os << "\n";
 
+    // Per-civ tech state. One techcsv line per civ; the techCsv tail is the
+    // comma-separated list of Tech enum ids the civ knows ("" when none).
+    const auto& tr = p.techResearch();
+    int techN = tr.civCount();
+    os << "techcivs " << techN << "\n";
+    for (int civId = 0; civId < techN; ++civId) {
+        os << "techcsv " << civId << " " << int(tr.civResearching(civId))
+           << " " << tr.civPoints(civId) << " ";
+        // Comma-separated list of known Tech ids (from the shared TechDef
+        // table — we don't iterate the bitset directly so the on-disk form
+        // stays portable across enum widenings).
+        bool first = true;
+        for (int i = 0; i < TechResearch::techCount(); ++i) {
+            Tech t = TechResearch::techByIndex(i).id;
+            if (!tr.civKnows(civId, t)) continue;
+            if (!first) os << ",";
+            os << int(t);
+            first = false;
+        }
+        if (first) os << "-"; // sentinel for "no known techs"
+        os << "\n";
+    }
+
     return bool(os);
 }
 
@@ -171,7 +195,10 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
 
     std::string header;
     if (!std::getline(is, header)) return false;
-    if (header != "OpenCiv1pp savegame v1") return false;
+    // Accept v1 (pre-tech-tree) and v2 (current). v1 files just skip the
+    // tech state restore and TechResearch::initCivs runs (Alphabet default).
+    if (header != "OpenCiv1pp savegame v1" &&
+        header != "OpenCiv1pp savegame v2") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -183,6 +210,10 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     std::vector<Unit> units;
     std::vector<City> cities;
     std::vector<uint8_t> terrain;
+    // Per-civ tech state we'll restore after the main vectors are applied.
+    struct TechRow { int civId; int researching; int points; std::vector<int> known; };
+    std::vector<TechRow> techRows;
+    int techCivsCount = 0;
 
     std::string line;
     while (std::getline(is, line)) {
@@ -249,6 +280,28 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
                 return false;
             }
         }
+        else if (key == "techcivs") { iss >> techCivsCount; }
+        else if (key == "techcsv") {
+            TechRow r;
+            std::string csv;
+            iss >> r.civId >> r.researching >> r.points >> csv;
+            if (csv != "-" && !csv.empty()) {
+                // split on commas
+                std::size_t start = 0;
+                while (start <= csv.size()) {
+                    std::size_t comma = csv.find(',', start);
+                    std::string tok = csv.substr(start,
+                        (comma == std::string::npos ? csv.size() : comma) - start);
+                    if (!tok.empty()) {
+                        try { r.known.push_back(std::stoi(tok)); }
+                        catch (...) { /* skip malformed token */ }
+                    }
+                    if (comma == std::string::npos) break;
+                    start = comma + 1;
+                }
+            }
+            techRows.push_back(std::move(r));
+        }
     }
 
     // Apply: front-end picks first (they drive the seed used by the MiniWorld
@@ -297,6 +350,21 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
 
     // Turn restoration uses a direct setter (added to MiniWorld below).
     if (mw) mw->setTurnForRestore(turn);
+
+    // Restore per-civ TechResearch state. When no techcivs record was present
+    // (v1 savefile), fall back to a fresh init sized to the loaded civ count.
+    auto& tr = p.techResearch();
+    if (techCivsCount > 0 || !techRows.empty()) {
+        tr.initCivs(techCivsCount > 0 ? techCivsCount
+                                      : int(techRows.size()));
+        for (const auto& r : techRows) {
+            tr.setCivResearching(r.civId, Tech(r.researching));
+            tr.setCivPoints(r.civId, r.points);
+            for (int k : r.known) tr.setCivKnows(r.civId, Tech(k), true);
+        }
+    } else if (!p.unitManagement().civs().empty()) {
+        tr.initCivs(int(p.unitManagement().civs().size()));
+    }
 
     return true;
 }
