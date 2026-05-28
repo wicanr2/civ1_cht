@@ -49,6 +49,38 @@ class OpenCiv1Game;
 // without Walls). Cavalry stats: a=2 d=1 m=2 cost=20 (faithful Civ1).
 enum class UnitType : uint8_t { Settlers = 0, Militia = 1, Phalanx = 2, Cavalry = 3 };
 
+// ---- DIPLOMACY (faithful Civ1 NoContact/Peace/War subset) ---------------
+// Faithful SUBSET of the C# OpenCiv1 Diplomacy state machine
+// (OpenCiv1/src/Game/CodeObjects/MeetWithKing.cs ~143KB; way too big to port
+// 1:1) + the NxN GameData.Diplomacy[8,8] relation matrix (GameData.cs). The
+// full C# state machine has many sub-states (Ceasefire, Treaty, Alliance,
+// Vendetta, Embassy, ...); we ship the three classical ones the Civ1 manual
+// + community wikis identify as the load-bearing diplomatic axis:
+//   - NoContact: civs haven't met yet; combat is impossible, diplomacy
+//                screen unreachable. Default for every civ pair on game start.
+//   - Peace:     civs have met (got close enough at some point); combat
+//                is REFUSED until war is declared. Default after the
+//                meetCheck() upgrades NoContact -> Peace.
+//   - War:       active combat allowed. Either side may have declared.
+// Diagonal self-relation is Peace (a civ is never at war with itself).
+// Matrix is symmetric: setRelation(A,B,r) sets both directions.
+enum class Relation : uint8_t {
+    NoContact = 0,  // default; never met (combat impossible)
+    Peace     = 1,  // met; combat refused
+    War       = 2,  // combat allowed
+};
+
+// English key for HUD/CityView display. Translator turns these into Chinese
+// ("No Contact"->"未接觸", "Peace"->"和平", "War"->"戰爭").
+inline const char* relationNameKey(Relation r) {
+    switch (r) {
+        case Relation::NoContact: return "No Contact";
+        case Relation::Peace:     return "Peace";
+        case Relation::War:       return "War";
+    }
+    return "No Contact";
+}
+
 // A unit's fixed stats — faithful subset of UnitDefinition.cs (only the
 // fields actually consumed by the combat / cost / movement paths in this
 // slice). `cost` is the SHIELD threshold (C# stores Cost as 10s, multiplied
@@ -564,6 +596,39 @@ public:
     const std::string& lastCombatKey() const { return lastCombatKey_; }
     void setLastCombatKey(std::string k) { lastCombatKey_ = std::move(k); }
 
+    // ---- DIPLOMACY (faithful subset of GameData.Diplomacy[N,N]) ---------
+    // Pairwise relations matrix, sized NxN where N = civs_.size(). Initialised
+    // to NoContact off-diagonal, Peace on the diagonal (a civ is never at war
+    // with itself). setupCivs() reshapes this; helpers below maintain symmetry.
+    Relation getRelation(int civA, int civB) const;
+    // Symmetric write: sets both (A,B) and (B,A). Self-set (A==B) coerces to
+    // Peace (the diagonal invariant). Out-of-range civ ids are a no-op.
+    void setRelation(int civA, int civB, Relation r);
+    // Convenience: is the (civA, civB) pair at War? Bounds-safe (returns
+    // false for out-of-range ids — non-existent civ can't be a combatant).
+    bool isAtWar(int civA, int civB) const;
+    // meetCheck: scan every (civA, civB) pair where civA<civB; if any of
+    // civA's units OR cities is within Chebyshev distance <= kMeetRange of
+    // ANY of civB's units OR cities, upgrade NoContact -> Peace (symmetric).
+    // Returns the count of pairs whose relation was flipped this call (0
+    // means "no new contacts this turn"). Existing Peace/War are untouched.
+    // Idempotent across calls (re-running it after no movement returns 0).
+    // O((units+cities)^2) — fine for the 8-civ Civ1 cap.
+    static constexpr int kMeetRange = 2; // Chebyshev distance for "in sight"
+    int meetCheck();
+    // The "rival civ" the player most recently interacted with (used by the
+    // SDL W/P keys to know which civ to declare war on / make peace with).
+    // Defaults to 1 (civ 1) — the simplest UX choice for tests + first cut;
+    // setSelectedRivalCiv() lets a fuller HUD cycle through rivals.
+    int selectedRivalCiv() const { return selectedRivalCiv_; }
+    void setSelectedRivalCiv(int civId) { selectedRivalCiv_ = civId; }
+    // AI diplomacy decision (called at end-of-turn for each AI civ). If the
+    // AI is at Peace with the human AND humanUnits > 2*aiUnits, AI rolls a
+    // deterministic seeded RNG; on hit it sets the relation to War. Returns
+    // true when AI declared war this call. RNG is seeded from (turn, civId)
+    // so tests are reproducible.
+    bool aiDecideDeclareWar(int aiCivId, int humanCivId, int turn);
+
     // Deterministic RNG state for combat rolls (seeded from the world seed in
     // FrontEndFlow::enterPlaying; tests inject a known seed via setCombatRngSeed
     // so the win-rate statistics are reproducible). Public so tests can read
@@ -586,6 +651,26 @@ private:
     // Index 0 (WonderType::None) is unused but kept for indexing parity with
     // the enum's numeric values.
     int wonderOwnerCity_[kWonderCount] = { -1, -1, -1, -1, -1 };
+
+    // ---- DIPLOMACY ------------------------------------------------------
+    // Pairwise relations matrix (NxN where N = civs_.size()). Reshaped to
+    // match civs_ in setupCivs(); GameLoadAndSave restores it from disk
+    // (v8). All off-diagonal entries start at NoContact, diagonals at Peace.
+    // Maintained symmetric by setRelation().
+    std::vector<std::vector<Relation>> relations_;
+    // The civ id the player's UI currently targets for W/P (Declare War /
+    // Make Peace) keys. Default = 1 (first AI civ) so single-rival tests
+    // and small games "just work" without a rival-selection UI.
+    int selectedRivalCiv_ = 1;
+
+public:
+    // Direct write access used by GameLoadAndSave to restore the relations
+    // matrix from disk after civs_ has been restored. Resizes to NxN.
+    void resizeRelations(int n);
+    // Public read of the raw matrix for GameLoadAndSave.
+    const std::vector<std::vector<Relation>>& relationsRaw() const {
+        return relations_;
+    }
 };
 
 } // namespace oc1

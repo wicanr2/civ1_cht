@@ -175,6 +175,16 @@ public:
     // when none is at the tile. Used by the HUD to look up workTurnsLeft.
     int humanSettlerAtCursor(int playerId = 0) const;
 
+    // ---- Diplomacy (W / P keys) ------------------------------------------
+    // Declare War on the selected rival civ. Symmetric write through
+    // UnitManagement::setRelation. Sets lastActionKey to "Declare War" so
+    // the HUD reflects the change. No-op (returns false) when no host game
+    // attached, no rival selected, or the rival civ doesn't exist.
+    bool declareWarOnRival(int playerId = 0);
+    // Make Peace with the selected rival civ. Symmetric write through
+    // UnitManagement::setRelation. Sets lastActionKey to "Make Peace".
+    bool makePeaceWithRival(int playerId = 0);
+
     // Last action message to show on the HUD second line (English key, run
     // through the Translator at draw time).
     const std::string& lastActionKey() const { return lastActionKey_; }

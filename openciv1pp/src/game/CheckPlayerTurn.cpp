@@ -237,6 +237,35 @@ int CheckPlayerTurn::processEndOfTurn() {
         }
     }
 
+    // ---- DIPLOMACY: meetCheck + AI war declarations ---------------------
+    // Mirrors the C# MeetWithKing.cs first-contact + AI declaration paths.
+    // Run AFTER the AI movement pass so AI units that just stepped INTO
+    // contact range register the new relation this turn (Civ1: meet
+    // happens during the offending player's turn, not the next one).
+    // meetCheck() flips NoContact -> Peace for every pair within
+    // Chebyshev distance <= kMeetRange (faithful "in sight" approximation).
+    // aiDecideDeclareWar() runs per AI civ; deterministic on (turn, civId).
+    {
+        um.meetCheck();
+        // Find the human civ id (the first civ flagged isHuman; default 0).
+        int humanId = -1;
+        const auto& civs = um.civs();
+        for (std::size_t i = 0; i < civs.size(); ++i) {
+            if (civs[i].isHuman) { humanId = int(i); break; }
+        }
+        if (humanId >= 0) {
+            // Pull the current turn count from MiniWorld via the host (the
+            // turn counter lives on MiniWorld; we use the YEAR as a stable
+            // determinism source when MiniWorld isn't attached — both grow
+            // monotonically, so either yields a stable (turn,civId) seed).
+            int seedTurn = um.year(); // deterministic per-EOT seed source
+            for (std::size_t i = 0; i < civs.size(); ++i) {
+                if (int(i) == humanId) continue;
+                um.aiDecideDeclareWar(int(i), humanId, seedTurn);
+            }
+        }
+    }
+
     // ---- GOVERNMENT TRANSITION TICK --------------------------------------
     // Decrement anarchyTurnsLeft for each civ that is mid-transition. When
     // the counter reaches 0, the EFFECTIVE government becomes targetGovt

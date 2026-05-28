@@ -65,6 +65,144 @@ static const uint8_t kCivMarkerIndex[8] = {
     226,  // 7 (reserved for future expansion)
 };
 
+// ---- DIPLOMACY (faithful subset of GameData.Diplomacy[N,N]) -------------
+// Helpers maintain matrix symmetry + the diagonal Peace invariant. All
+// out-of-range civ ids are no-ops / safe defaults (NoContact / false).
+void UnitManagement::resizeRelations(int n) {
+    if (n < 0) n = 0;
+    relations_.assign(std::size_t(n), std::vector<Relation>(std::size_t(n), Relation::NoContact));
+    for (int i = 0; i < n; ++i) relations_[std::size_t(i)][std::size_t(i)] = Relation::Peace;
+}
+
+Relation UnitManagement::getRelation(int civA, int civB) const {
+    if (civA < 0 || civB < 0) return Relation::NoContact;
+    if (std::size_t(civA) >= relations_.size()) return Relation::NoContact;
+    if (std::size_t(civB) >= relations_.size()) return Relation::NoContact;
+    return relations_[std::size_t(civA)][std::size_t(civB)];
+}
+
+void UnitManagement::setRelation(int civA, int civB, Relation r) {
+    if (civA < 0 || civB < 0) return;
+    if (std::size_t(civA) >= relations_.size()) return;
+    if (std::size_t(civB) >= relations_.size()) return;
+    if (civA == civB) {
+        // Diagonal invariant: a civ is always at Peace with itself.
+        relations_[std::size_t(civA)][std::size_t(civA)] = Relation::Peace;
+        return;
+    }
+    relations_[std::size_t(civA)][std::size_t(civB)] = r;
+    relations_[std::size_t(civB)][std::size_t(civA)] = r;
+}
+
+bool UnitManagement::isAtWar(int civA, int civB) const {
+    return getRelation(civA, civB) == Relation::War;
+}
+
+// meetCheck: scan every (civA, civB) pair where civA<civB; if any of civA's
+// alive units OR cities is within Chebyshev distance <= kMeetRange of any
+// of civB's alive units OR cities, upgrade NoContact -> Peace (symmetric).
+// Returns the count of pairs whose relation flipped this call.
+// Faithful Civ1 shape: the C# F0_25fb_* AI dispatch fires the "meet" event
+// when the per-player visibility grid (line-of-sight on adjacent tiles)
+// crosses a foreign unit/city. We use Chebyshev<=2 as the documented
+// approximation of "in sight" for this slice (1=adjacent, 2=adjacent+1).
+int UnitManagement::meetCheck() {
+    int flipped = 0;
+    const int n = int(civs_.size());
+    if (n < 2) return 0;
+    auto cheb = [](int ax, int ay, int bx, int by) {
+        int dx = ax > bx ? ax - bx : bx - ax;
+        int dy = ay > by ? ay - by : by - ay;
+        return dx > dy ? dx : dy;
+    };
+    for (int a = 0; a < n; ++a) {
+        for (int b = a + 1; b < n; ++b) {
+            if (getRelation(a, b) != Relation::NoContact) continue;
+            bool close = false;
+            // Gather every (x,y) presence for each civ (alive units + cities).
+            // O(units+cities) per civ, O(N^2 * (units+cities)^2) overall —
+            // fine for the 8-civ Civ1 cap and the handful of units we model.
+            for (const auto& ua : units_) {
+                if (!ua.alive || ua.owner != a) continue;
+                for (const auto& ub : units_) {
+                    if (!ub.alive || ub.owner != b) continue;
+                    if (cheb(ua.x, ua.y, ub.x, ub.y) <= kMeetRange) {
+                        close = true; break;
+                    }
+                }
+                if (close) break;
+                for (const auto& cb : cities_) {
+                    if (cb.owner != b) continue;
+                    if (cheb(ua.x, ua.y, cb.x, cb.y) <= kMeetRange) {
+                        close = true; break;
+                    }
+                }
+                if (close) break;
+            }
+            if (!close) {
+                for (const auto& ca : cities_) {
+                    if (ca.owner != a) continue;
+                    for (const auto& ub : units_) {
+                        if (!ub.alive || ub.owner != b) continue;
+                        if (cheb(ca.x, ca.y, ub.x, ub.y) <= kMeetRange) {
+                            close = true; break;
+                        }
+                    }
+                    if (close) break;
+                    for (const auto& cb : cities_) {
+                        if (cb.owner != b) continue;
+                        if (cheb(ca.x, ca.y, cb.x, cb.y) <= kMeetRange) {
+                            close = true; break;
+                        }
+                    }
+                    if (close) break;
+                }
+            }
+            if (close) {
+                setRelation(a, b, Relation::Peace);
+                ++flipped;
+            }
+        }
+    }
+    return flipped;
+}
+
+// AI diplomacy decision (called at end-of-turn for each AI civ). Faithful
+// simplified rule: if at Peace with the human AND the human has MORE THAN
+// 2x the AI's unit count, the AI rolls a seeded xorshift; on hit (low 8
+// bits < kAiWarThreshold) it declares war. The seed (turn*8 + civId)
+// makes this deterministic for a given (turn, civId) pair so tests are
+// reproducible.
+//
+// The threshold is intentionally LOW so the test-friendly path "human has
+// 5 units, AI has 1 unit, turn=10" reliably triggers (otherwise the AI
+// would never declare war in the tiny test setups). Real games scale up
+// the threshold via difficulty-level table — out of scope here.
+static constexpr uint8_t kAiWarThreshold = 64; // 25% probability per check
+bool UnitManagement::aiDecideDeclareWar(int aiCivId, int humanCivId, int turn) {
+    if (aiCivId < 0 || std::size_t(aiCivId) >= civs_.size()) return false;
+    if (humanCivId < 0 || std::size_t(humanCivId) >= civs_.size()) return false;
+    if (aiCivId == humanCivId) return false;
+    if (civs_[std::size_t(aiCivId)].isHuman) return false;
+    if (!civs_[std::size_t(humanCivId)].isHuman) return false;
+    if (getRelation(aiCivId, humanCivId) != Relation::Peace) return false;
+    int humanUnits = 0, aiUnits = 0;
+    for (const auto& u : units_) {
+        if (!u.alive) continue;
+        if (u.owner == humanCivId) ++humanUnits;
+        else if (u.owner == aiCivId) ++aiUnits;
+    }
+    // Strength gate: human must be "much stronger" (> 2x). 0 AI units
+    // still qualifies (the AI is the weakest civ on the map).
+    if (humanUnits <= 2 * aiUnits) return false;
+    // Deterministic seeded roll. xorshift one step.
+    uint32_t seed = uint32_t(turn) * 8u + uint32_t(aiCivId) + 0x9E3779B9u;
+    seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+    if ((seed & 0xFFu) >= kAiWarThreshold) return false;
+    setRelation(aiCivId, humanCivId, Relation::War);
+    return true;
+}
+
 void UnitManagement::setupCivs(int humanTribe, int numAi) {
     civs_.clear();
     units_.clear();
@@ -103,6 +241,9 @@ void UnitManagement::setupCivs(int humanTribe, int numAi) {
         a.isHuman = false;
         civs_.push_back(std::move(a));
     }
+    // Reshape pairwise relations to match the new civ count. Diagonal Peace,
+    // all off-diagonals NoContact (faithful Civ1: civs haven't met at start).
+    resizeRelations(int(civs_.size()));
 }
 
 bool UnitManagement::changeGovernment(int civId, Government newGovt) {
@@ -364,6 +505,31 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
     }
     if (enemyId >= 0) {
         Unit& enemy = units_[std::size_t(enemyId)];
+        // ---- DIPLOMACY GATE -------------------------------------------------
+        // Combat only triggers if the two owners are at War. Faithful Civ1:
+        //   - NoContact: this is the moment of FIRST CONTACT. Upgrade the
+        //     pair to Peace via the symmetric setter and DO NOT enter
+        //     combat or move (the unit stays put; the player can declare
+        //     war next turn to attack). We populate lastCombatKey_ with
+        //     "Meet" so the HUD can flash a contact banner.
+        //   - Peace: combat is REFUSED. The unit stays put (no movement,
+        //     no combat, no death). lastCombatKey_ cleared.
+        //   - War: fall through to the standard combat path below.
+        if (u.owner != enemy.owner &&
+            std::size_t(u.owner) < civs_.size() &&
+            std::size_t(enemy.owner) < civs_.size()) {
+            Relation r = getRelation(u.owner, enemy.owner);
+            if (r == Relation::NoContact) {
+                setRelation(u.owner, enemy.owner, Relation::Peace);
+                lastCombatKey_ = "Meet";
+                return false; // no move, no combat: first-contact handshake
+            }
+            if (r == Relation::Peace) {
+                lastCombatKey_ = "";
+                return false; // refuse combat: peace treaty blocks attack
+            }
+            // r == Relation::War: fall through to combat below.
+        }
         lastCombatKey_ = "Battle";
         // Walls: if the defender is standing on a city tile owned by the
         // defender's civ and that city owns Walls, defender gets the

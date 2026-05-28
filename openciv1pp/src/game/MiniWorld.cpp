@@ -251,6 +251,33 @@ bool MiniWorld::startBuildRoadAtUnit(int playerId) {
     return false;
 }
 
+bool MiniWorld::declareWarOnRival(int playerId) {
+    if (!game_) return false;
+    auto& um = game_->unitManagement();
+    int rival = um.selectedRivalCiv();
+    if (rival < 0 || std::size_t(rival) >= um.civs().size()) return false;
+    if (rival == playerId) return false;
+    um.setRelation(playerId, rival, Relation::War);
+    lastActionKey_ = "Declare War";
+    lastCityName_.clear();
+    return true;
+}
+
+bool MiniWorld::makePeaceWithRival(int playerId) {
+    if (!game_) return false;
+    auto& um = game_->unitManagement();
+    int rival = um.selectedRivalCiv();
+    if (rival < 0 || std::size_t(rival) >= um.civs().size()) return false;
+    if (rival == playerId) return false;
+    // Faithful Civ1: peace can only be declared when at war; from NoContact
+    // there's nothing to make peace with yet. We coerce to Peace anyway
+    // (player-initiated handshake — never harmful, always reversible).
+    um.setRelation(playerId, rival, Relation::Peace);
+    lastActionKey_ = "Make Peace";
+    lastCityName_.clear();
+    return true;
+}
+
 bool MiniWorld::startBuildIrrigationAtUnit(int playerId) {
     if (!game_) return false;
     int uid = humanSettlerAtCursor(playerId);
@@ -838,6 +865,33 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
             }
         }
     }
+    // Diplomacy line: show the human's relation with the selected rival
+    // civ (default = civ 1). Format: "外交: <civ-name> <No Contact/Peace/War>"
+    // (or English equivalents when the Translator is off). Drawn before
+    // the Research line so the diplomacy state is always visible on the
+    // bottom HUD strip. Faithful subset of the C# MeetWithKing.cs HUD
+    // tail that shows the player's diplomatic posture vs every met civ;
+    // we collapse it to one selected rival (selectedRivalCiv_) for the
+    // first cut — multi-rival cycling is a future task.
+    if (game_) {
+        const auto& um = game_->unitManagement();
+        const auto& civs = um.civs();
+        int rival = um.selectedRivalCiv();
+        if (rival >= 0 && std::size_t(rival) < civs.size() &&
+            !civs.empty() && rival != 0) {
+            penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  "Diplomacy:", 207);
+            penX3 = fb.drawString(font, penX3, line3Y, " ", 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  civs[std::size_t(rival)].name, 207);
+            penX3 = fb.drawString(font, penX3, line3Y, " ", 207);
+            Relation r = um.getRelation(0, rival);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  relationNameKey(r), 207);
+        }
+    }
+
     // Research line: show the HUMAN civ (civ 0)'s current research target
     // + progress (pts/cost), translated via the Translator. Drawn at the
     // very end of line 3 when TechResearch has been initialised. Mirrors

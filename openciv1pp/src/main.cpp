@@ -2747,6 +2747,22 @@ static int playInteractive(const std::string& assetDir, bool realgen = false) {
                 }
                 break;
             }
+            case SdlPresenter::KeyW: {
+                if (world.declareWarOnRival(0)) {
+                    std::printf("[play] declared war on rival civ %d\n",
+                                g.unitManagement().selectedRivalCiv());
+                    dirty = true;
+                }
+                break;
+            }
+            case SdlPresenter::KeyP: {
+                if (world.makePeaceWithRival(0)) {
+                    std::printf("[play] made peace with rival civ %d\n",
+                                g.unitManagement().selectedRivalCiv());
+                    dirty = true;
+                }
+                break;
+            }
             case SdlPresenter::KeyEsc:   pres.shutdown(); return 0;
             default: break;
         }
@@ -3023,6 +3039,22 @@ static int gameInteractive(const std::string& assetDir) {
                     if (w->startBuildIrrigationAtUnit(0)) {
                         std::printf("[game] start build irrigation at (%d,%d)\n",
                                     w->unitX(), w->unitY());
+                        dirty = true;
+                    }
+                    break;
+                }
+                case SdlPresenter::KeyW: {
+                    if (w->declareWarOnRival(0)) {
+                        std::printf("[game] declared war on rival civ %d\n",
+                                    g.unitManagement().selectedRivalCiv());
+                        dirty = true;
+                    }
+                    break;
+                }
+                case SdlPresenter::KeyP: {
+                    if (w->makePeaceWithRival(0)) {
+                        std::printf("[game] made peace with rival civ %d\n",
+                                    g.unitManagement().selectedRivalCiv());
                         dirty = true;
                     }
                     break;
@@ -3758,6 +3790,13 @@ static int aimovetest() {
         if (hx >= 80) hx = ax - 1;
         int humanMilId = um.addUnit(0, UnitType::Militia, hx, hy);
         chk(humanMilId >= 0, "injected adjacent human Militia");
+        // Diplomacy slice: pre-declare War on the AI Militia's owner civ
+        // (the picked aiUnitId may belong to ANY of civs 1..6) so the AI
+        // step into the human tile resolves as combat. Without this the
+        // moveUnit gate would only flip NoContact -> Peace and refuse
+        // the move (so neither "moved" nor "combat" would happen).
+        int aiCivId = um.units()[std::size_t(aiUnitId)].owner;
+        um.setRelation(0, aiCivId, Relation::War);
         int aliveBefore = 0;
         for (const auto& u : um.units()) if (u.alive) ++aliveBefore;
         // Snapshot AI position + alive states.
@@ -5171,6 +5210,9 @@ static int wondertest() {
             um.buildCity(10, 10, 1, nm);
             if (ownerHasWall)
                 um.civsMut()[1].ownedWonders.insert(WonderType::GreatWall);
+            // Diplomacy slice: pre-declare War so moveUnit goes through
+            // the combat path (not the NoContact->Peace meet-handshake).
+            um.setRelation(0, 1, Relation::War);
             // Use a large trial count so the GW signal exceeds RNG-sample
             // variance (the per-trial seed schedule (0xBEEF0000+i) is
             // identical across the two integrated runs, so the difference
@@ -5329,6 +5371,203 @@ static int wondertest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Diplomacy (--diplomacytest) ---------------------------
+// Verifies the Relation slice end-to-end:
+//   (1) Initial relations after setupCivs(): human (civ 0) vs every AI is
+//       NoContact; diagonal entries are Peace.
+//   (2) meetCheck flips NoContact -> Peace for civ pairs within Chebyshev
+//       distance <= kMeetRange (placed Settlers adjacent to AI civ 1).
+//   (3) At Peace: moveUnit-into-AI Settlers triggers NO combat (refused;
+//       both units alive). At War: same moveUnit triggers combat (one dies).
+//   (4) Save/load v8 round-trip preserves the full relations matrix
+//       including a manually-set War with civ 1.
+//   (5) HUD render: translate-on Chinese vs -off English differ (diplomacy
+//       line shows "外交: ..." vs "Diplomacy: ...").
+static int diplomacytest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // ---- (1) Initial relations: NoContact off-diagonal, Peace diagonal ----
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 6); // 7 civs total
+        chk(um.civs().size() == 7, "(1) 7 civs after setupCivs");
+        chk(um.getRelation(0, 0) == Relation::Peace,
+            "(1) diagonal self-relation is Peace");
+        for (int i = 1; i < 7; ++i) {
+            char b[64];
+            std::snprintf(b, sizeof(b), "(1) human vs AI civ %d == NoContact", i);
+            chk(um.getRelation(0, i) == Relation::NoContact, b);
+        }
+        // Symmetric setter sanity.
+        um.setRelation(0, 1, Relation::War);
+        chk(um.getRelation(0, 1) == Relation::War, "(1) setRelation(0,1,War)");
+        chk(um.getRelation(1, 0) == Relation::War, "(1) symmetric: (1,0)==War");
+        um.setRelation(0, 1, Relation::NoContact); // reset for the next phase
+    }
+
+    // ---- (2) meetCheck flips NoContact -> Peace when Settlers adjacent ----
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(20, 20);
+        um.setupCivs(0, 6);
+        um.addUnit(0, UnitType::Settlers, 10, 10);          // human
+        um.addUnit(1, UnitType::Settlers, 11, 10);          // AI civ 1 adjacent
+        um.addUnit(2, UnitType::Settlers, 18, 18);          // AI civ 2 far away
+        chk(um.getRelation(0, 1) == Relation::NoContact,
+            "(2) pre-check: human vs civ 1 == NoContact");
+        int flipped = um.meetCheck();
+        chk(flipped == 1, "(2) meetCheck flipped exactly 1 pair");
+        chk(um.getRelation(0, 1) == Relation::Peace,
+            "(2) human vs civ 1 -> Peace after meetCheck");
+        chk(um.getRelation(0, 2) == Relation::NoContact,
+            "(2) human vs civ 2 still NoContact (out of range)");
+        chk(um.getRelation(1, 0) == Relation::Peace,
+            "(2) symmetric: (1,0) == Peace too");
+        // Idempotent: re-running meetCheck flips nothing new.
+        chk(um.meetCheck() == 0, "(2) meetCheck idempotent");
+    }
+
+    // ---- (2b) processEndOfTurn calls meetCheck ---------------------------
+    // Use Militia (non-Settlers, non-combat-target for the AI movement pass
+    // which only iterates combat units AWAY from their tile) so neither
+    // unit gets consumed by the AI's auto-found pass. Also give the AI
+    // civ MORE units than the human so the AI war-decision strength gate
+    // (humanUnits > 2*aiUnits) refuses — we want to verify meetCheck in
+    // isolation here.
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        MiniWorld w(20, 20, 4242u);
+        w.attachGame(g);
+        auto& um = g.unitManagement();
+        um.setupCivs(0, 6);
+        // Found cities for both civs first so the AI's auto-build pass
+        // skips civ 1 (it already has a city). Place them far apart so
+        // they don't auto-meet via the city-city distance.
+        std::string nm;
+        um.buildCity(2,  2,  0, nm);
+        um.buildCity(18, 18, 1, nm);
+        // Now place Militia (combat unit, not Settlers) adjacent to each
+        // other to drive the meet detection.
+        um.addUnit(0, UnitType::Militia, 10, 10);
+        um.addUnit(1, UnitType::Militia, 11, 10);
+        // Pad AI's unit count so humanUnits (1) <= 2*aiUnits (>=1).
+        um.addUnit(1, UnitType::Militia, 12, 12);
+        chk(um.getRelation(0, 1) == Relation::NoContact,
+            "(2b) pre-EOT: NoContact");
+        g.checkPlayerTurn().processEndOfTurn();
+        chk(um.getRelation(0, 1) == Relation::Peace,
+            "(2b) processEndOfTurn flips to Peace via meetCheck");
+    }
+
+    // ---- (3) Combat gated on War; refused at Peace -----------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setMapBounds(20, 20);
+        um.setupCivs(0, 6);
+        // Use Cavalry vs Phalanx so combat will definitely produce a death.
+        int atk = um.addUnit(0, UnitType::Cavalry, 5, 5);
+        int def = um.addUnit(1, UnitType::Phalanx, 6, 5);
+        // Force Peace (the meet-then-combat-block path on a NoContact pair
+        // would also work, but Peace is the on-disk verifiable state).
+        um.setRelation(0, 1, Relation::Peace);
+        um.setCombatRngSeed(0x12345678u);
+        bool moved = um.moveUnit(atk, 1, 0);
+        chk(!moved, "(3) Peace: moveUnit returns false (no movement)");
+        chk(um.units()[std::size_t(atk)].alive,
+            "(3) Peace: attacker still alive (combat refused)");
+        chk(um.units()[std::size_t(def)].alive,
+            "(3) Peace: defender still alive (combat refused)");
+        chk(um.units()[std::size_t(atk)].x == 5 &&
+            um.units()[std::size_t(atk)].y == 5,
+            "(3) Peace: attacker stayed at (5,5)");
+        // Now declare War and retry: combat fires, one unit dies.
+        um.setRelation(0, 1, Relation::War);
+        um.setCombatRngSeed(0x12345678u);
+        um.moveUnit(atk, 1, 0);
+        bool atkDead = !um.units()[std::size_t(atk)].alive;
+        bool defDead = !um.units()[std::size_t(def)].alive;
+        chk(atkDead != defDead,
+            "(3) War: combat resolved (exactly one combatant died)");
+    }
+
+    // ---- (4) Save/load v8 round-trip preserves relations + rival ---------
+    {
+        const char* savePath = "/tmp/openciv1pp_diplomacytest.sav";
+        OpenCiv1Game g1; setupGame(g1, 640, 480);
+        FrontEndFlow flow1(g1);
+        flow1.enterTitle();
+        for (int k = 0; k < 6; ++k) flow1.handleKey(MenuBoxDialog::KeyEnter);
+        FrontEndFlow::State s1 = flow1.handleKey(MenuBoxDialog::KeyEnter);
+        chk(s1 == FrontEndFlow::State::PLAYING,
+            "(4) round-trip: reached PLAYING");
+        auto& um1 = g1.unitManagement();
+        // Set a non-trivial relations matrix.
+        um1.setRelation(0, 1, Relation::War);
+        um1.setRelation(0, 2, Relation::Peace);
+        um1.setSelectedRivalCiv(2);
+        bool sok = g1.gameLoadAndSave().saveToFile(savePath, &flow1);
+        chk(sok, "(4) saveToFile (v8) succeeded");
+
+        OpenCiv1Game g2; setupGame(g2, 640, 480);
+        FrontEndFlow flow2(g2);
+        bool lok = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
+        chk(lok, "(4) loadFromFile (v8) succeeded");
+        auto& um2 = g2.unitManagement();
+        chk(um2.getRelation(0, 1) == Relation::War,
+            "(4) War with civ 1 preserved");
+        chk(um2.getRelation(0, 2) == Relation::Peace,
+            "(4) Peace with civ 2 preserved");
+        chk(um2.getRelation(1, 0) == Relation::War,
+            "(4) symmetric: (1,0)==War preserved");
+        chk(um2.getRelation(0, 3) == Relation::NoContact,
+            "(4) untouched pair (0,3) still NoContact");
+        chk(um2.selectedRivalCiv() == 2,
+            "(4) selectedRivalCiv preserved");
+    }
+
+    // ---- (5) HUD: translate-on Chinese vs -off English differ ------------
+    std::size_t diffPixels = 0;
+    auto renderHud = [&](bool translateOn) -> std::vector<uint8_t> {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        Translator::instance().enabled = translateOn;
+        FrontEndFlow flow(g);
+        flow.enterTitle();
+        for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+        // Force a Peace relation so the diplomacy line shows the
+        // "Peace"->"和平" translation (NoContact would skip rendering it
+        // for a clean HUD; Peace forces the visible label).
+        auto& um = g.unitManagement();
+        if (um.civs().size() > 1) {
+            um.setRelation(0, 1, Relation::Peace);
+            um.setSelectedRivalCiv(1);
+        }
+        flow.draw();
+        return g.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> onPx  = renderHud(true);
+    std::vector<uint8_t> offPx = renderHud(false);
+    chk(onPx.size() == offPx.size() && !onPx.empty(),
+        "(5) HUD: both renders produced a buffer");
+    for (std::size_t i = 0; i < onPx.size() && i < offPx.size(); ++i)
+        if (onPx[i] != offPx[i]) ++diffPixels;
+    chk(diffPixels > 0,
+        "(5) HUD: translate-on vs -off pixels DIFFER (Chinese diplomacy text)");
+    Translator::instance().enabled = true;
+
+    if (fail) std::printf("DIPLOMACYTEST: %d failure(s)\n", fail);
+    else      std::printf("DIPLOMACYTEST: all pass (Relation NoContact/Peace/"
+                          "War + meetCheck + Peace gates combat + War allows "
+                          "combat + v8 round-trip; HUD delta=%zu px)\n",
+                          diffPixels);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -5402,6 +5641,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--foodtest")) { return foodtest(); }
         else if (!std::strcmp(argv[i], "--governmenttest")) { return governmenttest(); }
         else if (!std::strcmp(argv[i], "--wondertest")) { return wondertest(); }
+        else if (!std::strcmp(argv[i], "--diplomacytest")) { return diplomacytest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -5467,7 +5707,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest(); f += wondertest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

@@ -386,13 +386,34 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         if (val.empty()) val = "-";
         drawLabelValue(infoY + lineH * 9, "Wonders:", val);
     }
+    {
+        // Diplomacy line: shows the OWNER civ's relations vs every OTHER civ
+        // (e.g. "civ1=和平, civ2=戰爭"). Translator turns "Diplomacy:" ->
+        // "外交: " and "Peace"/"War"/"No Contact" -> "和平"/"戰爭"/"未接觸".
+        // For a clean one-liner we drop the trailing "未接觸" entries.
+        std::string val;
+        const auto& cvs = p.unitManagement().civs();
+        bool first = true;
+        for (std::size_t i = 0; i < cvs.size(); ++i) {
+            if (int(i) == city.owner) continue;
+            Relation r = p.unitManagement().getRelation(city.owner, int(i));
+            if (r == Relation::NoContact) continue; // skip un-met civs
+            if (!first) val += ", ";
+            val += cvs[i].name;
+            val += "=";
+            val += Translator::instance().translate(relationNameKey(r));
+            first = false;
+        }
+        if (val.empty()) val = "-";
+        drawLabelValue(infoY + lineH * 10, "Diplomacy:", val);
+    }
 
     // 5) Population dots — one warm yellow dot per population point, drawn in
     //    a horizontal row below the info block (mirrors the C# pop-sprite row
     //    drawn at (24, 140) in F19_0000_111f_DrawCityPopulation; we use small
     //    coloured dots instead of POP.PIC sprites — see header for the stub).
     {
-        int popY = infoY + lineH * 10 + 2;
+        int popY = infoY + lineH * 11 + 2;
         int popX = infoX;
         for (int i = 0; i < population && i < 24; ++i) {
             screen.fillRect(Rect{popX, popY, 6, 8}, 166);

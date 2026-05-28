@@ -105,7 +105,7 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     // ownedBuildings list} + per-unit veteran flag for the buildings slice.
     // v3 added the improvements grid + per-unit work state.
     // v2 added per-civ tech-tree state; v1 was the pre-tech baseline.
-    os << "OpenCiv1pp savegame v7\n";
+    os << "OpenCiv1pp savegame v8\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -231,6 +231,24 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
         }
     }
 
+    // v8: pairwise relations matrix (NxN, symmetric, diagonal=Peace). One
+    // line per row: 'relations <civId> <r0>,<r1>,...,<r_{N-1}>'. v1..v7
+    // readers skip the 'relations' key entirely (default: NoContact
+    // off-diagonal, Peace on diagonal — what resizeRelations() seeds).
+    {
+        const auto& rel = p.unitManagement().relationsRaw();
+        for (std::size_t i = 0; i < rel.size(); ++i) {
+            os << "relations " << i << " ";
+            for (std::size_t j = 0; j < rel[i].size(); ++j) {
+                if (j) os << ",";
+                os << int(rel[i][j]);
+            }
+            os << "\n";
+        }
+    }
+    // v8: selected rival civ (single integer; -1 means "no selection").
+    os << "rival " << p.unitManagement().selectedRivalCiv() << "\n";
+
     // Terrain bytes (80*50 = 4000 bytes -> 8000 hex chars on one line).
     os << "terrain ";
     writeHex(os, dumpTerrainBytes(const_cast<OpenCiv1Game&>(p)));
@@ -298,7 +316,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         header != "OpenCiv1pp savegame v4" &&
         header != "OpenCiv1pp savegame v5" &&
         header != "OpenCiv1pp savegame v6" &&
-        header != "OpenCiv1pp savegame v7") return false;
+        header != "OpenCiv1pp savegame v7" &&
+        header != "OpenCiv1pp savegame v8") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -337,6 +356,12 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     std::vector<CityWonderRow> cityWonderRows;
     struct WonderOwnerRow { int wonderId; int cityId; };
     std::vector<WonderOwnerRow> wonderOwnerRows;
+    // v8: per-civ relations row (csv of Relation enum ints). Applied after
+    // the civs vector is restored. v1..v7 saves skip this key -> defaults
+    // (NoContact off-diagonal, Peace on diagonal) hold.
+    struct RelationsRow { int civId; std::vector<int> entries; };
+    std::vector<RelationsRow> relationsRows;
+    int rivalCiv = 1; // v8: selected rival civ (default 1)
 
     std::string line;
     while (std::getline(is, line)) {
@@ -445,6 +470,27 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             iss >> r.wonderId >> r.cityId;
             wonderOwnerRows.push_back(r);
         }
+        else if (key == "relations") {
+            RelationsRow r;
+            std::string csv;
+            iss >> r.civId >> csv;
+            if (!csv.empty()) {
+                std::size_t start = 0;
+                while (start <= csv.size()) {
+                    std::size_t comma = csv.find(',', start);
+                    std::string tok = csv.substr(start,
+                        (comma == std::string::npos ? csv.size() : comma) - start);
+                    if (!tok.empty()) {
+                        try { r.entries.push_back(std::stoi(tok)); }
+                        catch (...) { /* skip */ }
+                    }
+                    if (comma == std::string::npos) break;
+                    start = comma + 1;
+                }
+            }
+            relationsRows.push_back(std::move(r));
+        }
+        else if (key == "rival") { iss >> rivalCiv; }
         else if (key == "citybld") {
             CityBldRow r;
             std::string csv;
@@ -588,6 +634,26 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             if (r.wonderId <= 0 || r.wonderId >= kWonderCount) continue;
             p.unitManagement().setWonderOwnerCity(WonderType(r.wonderId), r.cityId);
         }
+    }
+    // v8: pairwise relations matrix. Resize to civ count (seeds the
+    // default NoContact off-diagonal + Peace diagonal), then overlay
+    // any explicit 'relations' rows from disk. Absent in v1..v7 saves
+    // -> the defaults from resizeRelations(numCivs) hold. The matrix is
+    // re-symmetrised via setRelation() during overlay (so a corrupt
+    // half-row in the save doesn't produce an asymmetric matrix).
+    {
+        const int n = int(p.unitManagement().civs().size());
+        p.unitManagement().resizeRelations(n);
+        for (const auto& r : relationsRows) {
+            if (r.civId < 0 || r.civId >= n) continue;
+            for (int j = 0; j < int(r.entries.size()) && j < n; ++j) {
+                int v = r.entries[std::size_t(j)];
+                if (v < 0) v = 0;
+                if (v > 2) v = 2;
+                p.unitManagement().setRelation(r.civId, j, Relation(v));
+            }
+        }
+        p.unitManagement().setSelectedRivalCiv(rivalCiv);
     }
 
     // Restore the terrain grid bytes into VCPU memory (and into MiniWorld's
