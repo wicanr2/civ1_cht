@@ -4,17 +4,19 @@
 
 namespace oc1 {
 
-bool SdlPresenter::init(const char* title, int fbWidth, int fbHeight, int scale) {
+bool SdlPresenter::init(const char* title, int fbWidth, int fbHeight, int winW, int winH) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         std::fprintf(stderr, "[SDL] init failed: %s\n", SDL_GetError());
         return false;
     }
     fbW_ = fbWidth;
     fbH_ = fbHeight;
+    if (winW <= 0) winW = DefaultWindowW;
+    if (winH <= 0) winH = DefaultWindowH;
 
     SDL_Window* win = SDL_CreateWindow(
         title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        fbWidth * scale, fbHeight * scale, SDL_WINDOW_SHOWN);
+        winW, winH, SDL_WINDOW_SHOWN);
     if (!win) { std::fprintf(stderr, "[SDL] window: %s\n", SDL_GetError()); return false; }
     window_ = win;
 

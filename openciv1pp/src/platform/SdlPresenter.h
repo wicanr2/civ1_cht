@@ -13,8 +13,18 @@ namespace oc1 {
 
 class SdlPresenter {
 public:
-    // scale: integer upscale of the palette framebuffer (e.g. 320x200 -> x3).
-    bool init(const char* title, int fbWidth, int fbHeight, int scale);
+    // Default window size: 640x480. The renderer's logical size is set to the
+    // framebuffer's fb (fbWidth x fbHeight) so SDL letterboxes/scales the
+    // palette framebuffer into the window with the correct aspect ratio.
+    static constexpr int DefaultWindowW = 640;
+    static constexpr int DefaultWindowH = 480;
+
+    // fbWidth/fbHeight = framebuffer (logical) size. winW/winH = SDL window
+    // size on screen (defaults to 640x480; pass 0 to fall back to defaults).
+    // scale is retained for backward compatibility — if winW<=0 and scale>0,
+    // window becomes fbWidth*scale x fbHeight*scale.
+    bool init(const char* title, int fbWidth, int fbHeight,
+              int winW = DefaultWindowW, int winH = DefaultWindowH);
     void shutdown();
 
     // Presents one frame from the framebuffer. Returns false on quit request.

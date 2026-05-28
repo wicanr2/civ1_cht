@@ -20,6 +20,7 @@
 #include "game/FrontEndFlow.h"
 #include "game/GameMenus.h"
 #include "game/MainCode.h"
+#include "game/MainIntro.h"
 #include "game/MiniWorld.h"
 #include "localization/Translator.h"
 #include "platform/SdlPresenter.h"
@@ -27,14 +28,22 @@
 #include "resource/TextResource.h"
 #include "vcpu/VCPU.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace oc1;
+
+// SDL window size for all interactive modes. Default 640x480 (the renderer's
+// SDL_RenderSetLogicalSize keeps the in-game framebuffer pixel-correct + the
+// aspect ratio letterboxed). Override with `--window WxH` (e.g. `--window 320x200`).
+static int g_winW = SdlPresenter::DefaultWindowW;
+static int g_winH = SdlPresenter::DefaultWindowH;
 
 // ---------------- demo screen ----------------
 // Rendered through GDriver.drawString (the real engine entry point): translation
@@ -1096,7 +1105,7 @@ static int menuInteractive() {
     GBitmap& fb = g.graphics.screen(0);
 
     SdlPresenter pres;
-    if (!pres.init("OpenCiv1++ Main Menu (zh-TW)", fb.width(), fb.height(), 3)) return 1;
+    if (!pres.init("OpenCiv1++ Main Menu (zh-TW)", fb.width(), fb.height(), g_winW, g_winH)) return 1;
 
     MenuBoxDialog& mb = g.menuBoxDialog();
     mb.setupNav(n, /*disabled*/ 0, /*startIndex*/ 0);
@@ -1358,7 +1367,7 @@ static int newgameInteractive(const std::string& assetDir) {
 
     GBitmap& fb = g.graphics.screen(0);
     SdlPresenter pres;
-    if (!pres.init("OpenCiv1++ New Game (zh-TW)", fb.width(), fb.height(), 3)) return 1;
+    if (!pres.init("OpenCiv1++ New Game (zh-TW)", fb.width(), fb.height(), g_winW, g_winH)) return 1;
 
     FrontEndFlow flow(g);
     flow.enterTitle();              // start at the logo+menu splash.
@@ -1550,7 +1559,7 @@ static int menuflowInteractive() {
 
     GBitmap& fb = g.graphics.screen(0);
     SdlPresenter pres;
-    if (!pres.init("OpenCiv1++ Start (zh-TW)", fb.width(), fb.height(), 3)) return 1;
+    if (!pres.init("OpenCiv1++ Start (zh-TW)", fb.width(), fb.height(), g_winW, g_winH)) return 1;
 
     FrontEndFlow flow(g);
     auto stateName = [](FrontEndFlow::State s) -> const char* {
@@ -1743,7 +1752,7 @@ static int titleInteractive(const std::string& assetDir) {
 
     GBitmap& fb = g.graphics.screen(0);
     SdlPresenter pres;
-    if (!pres.init("OpenCiv1++ Title (zh-TW)", fb.width(), fb.height(), 3)) return 1;
+    if (!pres.init("OpenCiv1++ Title (zh-TW)", fb.width(), fb.height(), g_winW, g_winH)) return 1;
 
     MenuBoxDialog& mb = g.menuBoxDialog();
     mb.setupNav(n, /*disabled*/ 0, /*startIndex*/ 0);
@@ -1782,6 +1791,130 @@ static int titleInteractive(const std::string& assetDir) {
         std::printf("selected: %d (%s)\n", result, items[std::size_t(result)].c_str());
     else
         std::printf("cancelled\n");
+    return 0;
+}
+
+// ---------------- MainIntro (real-asset intro slideshow) ----------------
+// Headless verification of the new MainIntro CodeObject. Two cases:
+//   (a) Without DOS assets: MainIntro::play() must return without crashing
+//       (no-op path); MainIntro::nextFrame(fb) returns false on the first call.
+//   (b) With OPENCIV1_DOS_ASSETS pointing at a directory containing the intro
+//       .PICs: nextFrame(fb) cycles through every planned slide (count > 0),
+//       at least one intermediate slide has the DOS 320x200 dimensions, and
+//       /tmp/intro.ppm is dumped from one frame.
+static int introtest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // (a) No-assets path: play() is a no-op, nextFrame is a no-op.
+    {
+        OpenCiv1Game g;
+        setupGame(g, 320, 200);
+        // Leave g.resourcePath() at its default "." (no LOGO.PIC there).
+        MainIntro& mi = g.mainIntro();
+        chk(!mi.hasAssets(), "no DOS assets at default resourcePath()");
+        mi.play(); // must not crash
+        GBitmap& fb = g.graphics.screen(GDriver::MainScreen);
+        chk(!mi.nextFrame(fb), "nextFrame returns false without assets");
+        chk(mi.slideCount() > 0, "slide list has at least one planned screen");
+    }
+
+    // Static slide list invariants (independent of assets).
+    chk(MainIntro::slides().size() >= 12, "intro plans at least 12 slides (logo+planets+birth0..8+card)");
+    chk(MainIntro::slides().front().picBase == "LOGO.PIC", "first slide is LOGO.PIC");
+
+    // (b) Real-assets sub-check: only when OPENCIV1_DOS_ASSETS points at a dir
+    // with LOGO.PIC. Otherwise skip (the test stays green with no assets).
+    {
+        std::string dir = resolveAssetDir(nullptr); // env only
+        std::error_code ec;
+        if (!dir.empty() &&
+            std::filesystem::exists(std::filesystem::path(dir) / "LOGO.PIC", ec)) {
+            OpenCiv1Game g;
+            setupGame(g, 320, 200);
+            g.setResourcePath(dir);
+            Translator::instance().enabled = true;
+            MainIntro& mi = g.mainIntro();
+            chk(mi.hasAssets(), "hasAssets() true when LOGO.PIC present");
+            mi.play();
+            GBitmap& fb = g.graphics.screen(GDriver::MainScreen);
+
+            int frames = 0;
+            int intermediateW = 0, intermediateH = 0;
+            while (mi.nextFrame(fb)) {
+                ++frames;
+                // Dump one frame partway through for eyeballing.
+                if (frames == 1) dumpPPM(fb, "/tmp/intro.ppm");
+                // Capture an intermediate (mid-sequence) frame's dimensions.
+                if (frames == 3) { intermediateW = fb.width(); intermediateH = fb.height(); }
+            }
+            chk(frames > 0, "nextFrame cycled through > 0 slides with assets");
+            chk(frames == mi.slideCount(),
+                "nextFrame visited every planned slide");
+            chk(intermediateW == 320 && intermediateH == 200,
+                "intermediate intro screen is 320x200 (DOS native fb size)");
+            std::printf("  (intro slideshow %d frames -> /tmp/intro.ppm)\n", frames);
+        } else {
+            std::printf("  (no DOS assets at OPENCIV1_DOS_ASSETS; real-intro sub-check skipped)\n");
+        }
+    }
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail) std::printf("INTROTEST: %d failure(s)\n", fail);
+    else      std::printf("INTROTEST: all pass\n");
+    return fail ? 1 : 0;
+}
+
+// Interactive Chinese MainIntro slideshow (SDL). Uses the default 640x480 window
+// (overridable via --window WxH); the renderer's logical size stays at the
+// intro's native 320x200 framebuffer (letterboxed to keep the aspect ratio).
+// Advances on key/click/timer; ESC quits. Without DOS assets prints a fallback
+// message and returns (no-op).
+static int introInteractive(const std::string& assetDir) {
+    OpenCiv1Game g;
+    setupGame(g, 320, 200);
+    Translator::instance().enabled = true;
+    if (!assetDir.empty()) g.setResourcePath(assetDir);
+
+    MainIntro& mi = g.mainIntro();
+    if (!mi.hasAssets()) {
+        std::printf("[intro] no DOS assets at '%s' — skipping intro (fallback message)\n",
+                    g.resourcePath().c_str());
+        return 0;
+    }
+
+    GBitmap& fb = g.graphics.screen(GDriver::MainScreen);
+    SdlPresenter pres;
+    if (!pres.init("OpenCiv1++ Intro (zh-TW)", fb.width(), fb.height(), g_winW, g_winH)) return 1;
+    mi.play();
+
+    // Draw first frame.
+    if (!mi.nextFrame(fb)) { pres.shutdown(); return 0; }
+
+    using clock = std::chrono::steady_clock;
+    const auto autoAdvanceMs = std::chrono::milliseconds(3000);
+    auto lastAdvance = clock::now();
+    while (true) {
+        if (!pres.present(fb)) break; // window closed / ESC
+        // Drain mouse: any down advances.
+        SdlPresenter::MouseEvent me;
+        bool advance = false;
+        while (pres.pollMouse(me)) {
+            if (!me.motion && me.down) advance = true;
+        }
+        int key = pres.pollKey();
+        if (key != 0 && key != SdlPresenter::KeyEsc) advance = true;
+        if (key == SdlPresenter::KeyEsc) break;
+        if (!advance && (clock::now() - lastAdvance) >= autoAdvanceMs) advance = true;
+        if (advance) {
+            if (!mi.nextFrame(fb)) break; // finished
+            lastAdvance = clock::now();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+    pres.shutdown();
+    std::printf("[intro] done (%d/%d slides)\n", mi.cursor(), mi.slideCount());
     return 0;
 }
 
@@ -2056,7 +2189,7 @@ static int playInteractive(const std::string& assetDir) {
     GBitmap& fb = g.graphics.screen(0);
 
     SdlPresenter pres;
-    if (!pres.init("OpenCiv1++ Play (zh-TW)", fb.width(), fb.height(), 2)) return 1;
+    if (!pres.init("OpenCiv1++ Play (zh-TW)", fb.width(), fb.height(), g_winW, g_winH)) return 1;
 
     world.draw(g.graphics, 1, world.hasTileset() ? 16 : 12);
     while (true) {
@@ -2124,7 +2257,7 @@ static void drawScene(OpenCiv1Game& g) {
 
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
-    bool play = false, title = false, newgame = false;
+    bool play = false, title = false, newgame = false, intro = false;
     const char* dumpPath = nullptr;
     const char* picPath = nullptr;
     const char* gfxDumpPath = nullptr;
@@ -2135,6 +2268,21 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--play")) { play = true; }
         else if (!std::strcmp(argv[i], "--title")) { title = true; }
         else if (!std::strcmp(argv[i], "--newgame")) { newgame = true; }
+        else if (!std::strcmp(argv[i], "--intro")) { intro = true; }
+        else if (!std::strcmp(argv[i], "--window") && i + 1 < argc) {
+            // --window WxH: override the default 640x480 SDL window size. The
+            // renderer's logical size stays at the framebuffer (e.g. 320x200
+            // for the intro / title; 480x300 for MiniWorld) so SDL letterboxes
+            // the fb into the window with the correct aspect ratio.
+            const char* spec = argv[++i];
+            int w = 0, h = 0;
+            if (std::sscanf(spec, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+                g_winW = w; g_winH = h;
+            } else {
+                std::fprintf(stderr, "--window: invalid spec '%s' (expected WxH)\n", spec);
+                return 1;
+            }
+        }
         else if (!std::strcmp(argv[i], "--pic") && i + 1 < argc) picPath = argv[++i];
         else if (!std::strcmp(argv[i], "--gfxdraw") && i + 1 < argc) gfxDumpPath = argv[++i];
         else if (!std::strcmp(argv[i], "--english")) english = true;
@@ -2159,6 +2307,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--titletest")) { return titletest(); }
         else if (!std::strcmp(argv[i], "--newgametest")) { return newgametest(); }
         else if (!std::strcmp(argv[i], "--mousetest")) { return mousetest(); }
+        else if (!std::strcmp(argv[i], "--introtest")) { return introtest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             const char* dir = argv[++i]; const char* out = argv[++i];
@@ -2201,11 +2350,18 @@ int main(int argc, char** argv) {
         return newgameInteractive(resolveAssetDir(assetsDir));
     }
 
+    // --intro: the authentic MainIntro slideshow (LOGO.PIC + PLANET1/2 + BIRTH0..8)
+    // in a 640x480 SDL window (logical 320x200 letterboxed). With no DOS assets
+    // the intro is skipped (fallback message). Advances on key/click/3s timer.
+    if (intro) {
+        return introInteractive(resolveAssetDir(assetsDir));
+    }
+
     // run the whole headless suite; nonzero if any fails (CI entry point)
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
@@ -2269,7 +2425,7 @@ int main(int argc, char** argv) {
     }
 
     SdlPresenter pres;
-    if (!pres.init("OpenCiv1++ (zh-TW)", fb.width(), fb.height(), 3)) return 1;
+    if (!pres.init("OpenCiv1++ (zh-TW)", fb.width(), fb.height(), g_winW, g_winH)) return 1;
     while (pres.present(fb)) { }
     pres.shutdown();
     return 0;

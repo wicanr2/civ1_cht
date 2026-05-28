@@ -7,6 +7,7 @@
 #include "TextBoxDialogs.h"
 #include "GameMenus.h"
 #include "MainCode.h"
+#include "MainIntro.h"
 
 namespace oc1 {
 
@@ -20,6 +21,7 @@ OpenCiv1Game::OpenCiv1Game() {
     textBoxDialogs_ = std::make_unique<TextBoxDialogs>(*this);
     gameMenus_ = std::make_unique<GameMenus>(*this);
     mainCode_ = std::make_unique<MainCode>(*this);
+    mainIntro_ = std::make_unique<MainIntro>(*this);
 }
 OpenCiv1Game::~OpenCiv1Game() = default;
 

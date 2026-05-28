@@ -1,5 +1,6 @@
 #include "MainCode.h"
 #include "ImageTools.h"
+#include "MainIntro.h"
 #include "MenuBoxDialog.h"
 #include "TextBoxDialogs.h"
 #include "CommonTools.h"
@@ -91,10 +92,12 @@ int MainCode::F0_11a8_0486_LogoAndMainGameMenu(int forcedSelection, bool* logoLo
 }
 
 void MainCode::F0_11a8_0008_Main() {
-    // TODO(port): the full entry sequence — MainIntro animation, InitMouse,
-    // NewGameMenu, the GameTurn loop, CloseSound/StopTimer — is not driven by
-    // the port. We expose only the boot-screen build below so a caller can show
-    // the authentic title interactively.
+    // TODO(port): the full entry sequence — InitMouse, NewGameMenu, the GameTurn
+    // loop, CloseSound/StopTimer — is not driven by the port. We do call the
+    // (now-ported) MainIntro slideshow before the logo+menu screen-build so the
+    // authentic intro plays first when DOS assets are available; without assets
+    // mainIntro().play() is a safe no-op.
+    p.mainIntro().play();
     F0_11a8_0486_LogoAndMainGameMenu();
 }
 
