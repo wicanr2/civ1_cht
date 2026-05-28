@@ -410,6 +410,43 @@ int CheckPlayerTurn::processEndOfTurn() {
         }
     }
 
+    // ---- LUXURY allocation (per-civ pre-pass) ----------------------------
+    // Compute per-civ TRADE total (1 baseline + per-city contribution with
+    // Marketplace 1.5x) THEN allocate luxRate/10 of it to a "lux pool" used
+    // BELOW in the happiness pass to reduce unhappy citizens across the
+    // civ's cities (Civ1 manual: 2 luxuries = 1 happy citizen — simplified
+    // here to "every 2 lux reduces 1 unhappy across cities in id order").
+    // Unused lux this turn is DISCARDED (documented simplification — full
+    // Civ1 carries leftover per-city; TODO).
+    //
+    // perCivTradeBase[civId] is reused below by the economy block so we
+    // don't recompute. NOTE: stored as float so the *1.5 Marketplace
+    // factor survives across multiple cities without intermediate rounding.
+    std::vector<float> perCivTradeBase;
+    std::vector<int>   perCivLuxRemaining;
+    {
+        const auto& civs = um.civs();
+        const int nCivs = int(civs.size());
+        perCivTradeBase.assign(std::size_t(nCivs), 1.0f);  // baseline 1
+        perCivLuxRemaining.assign(std::size_t(nCivs), 0);
+        for (const auto& c : cities) {
+            if (c.owner >= 0 && c.owner < nCivs) {
+                float cityTrade = 1.0f;
+                if (c.hasBuilding(BuildingType::Marketplace)) cityTrade *= 1.5f;
+                perCivTradeBase[std::size_t(c.owner)] += cityTrade;
+            }
+        }
+        for (int civId = 0; civId < nCivs; ++civId) {
+            float tradeMul = governmentDefOf(um.effectiveGovernment(civId)).tradeMul;
+            int trade = int(std::floor(perCivTradeBase[std::size_t(civId)] *
+                                       tradeMul));
+            if (trade < 0) trade = 0;
+            int luxRate = civs[std::size_t(civId)].luxRate;
+            int luxGain = trade * luxRate / 10;  // floor(trade * lux/10)
+            perCivLuxRemaining[std::size_t(civId)] = luxGain;
+        }
+    }
+
     // OUTER LOOP: iterate civs (player + AI placeholders). After the AI pass
     // above the cities[] table also contains AI capitals, so the per-civ city
     // pass is now genuinely multi-civ.
@@ -454,6 +491,19 @@ int CheckPlayerTurn::processEndOfTurn() {
                     um.civs()[std::size_t(c.owner)].hasWonder(
                         WonderType::HangingGardens) && u > 0) {
                     u -= 1;
+                }
+                // LUXURY rate (per-civ pool): every 2 luxury points reduce
+                // 1 unhappy citizen across the civ's cities (in id order).
+                // Faithful Civ1: lux turns trade -> happiness; we apply
+                // greedily until the pool is exhausted. Per-city unused
+                // lux is discarded at end of turn (documented).
+                if (c.owner >= 0 && std::size_t(c.owner) < perCivLuxRemaining.size()
+                        && u > 0) {
+                    int& pool = perCivLuxRemaining[std::size_t(c.owner)];
+                    while (pool >= 2 && u > 0) {
+                        pool -= 2;
+                        u -= 1;
+                    }
                 }
                 c.unhappy  = u;
                 c.happy    = 0;
@@ -653,13 +703,17 @@ int CheckPlayerTurn::processEndOfTurn() {
     }
 
     // ---- TECH RESEARCH per-civ points accumulation ------------------------
-    // Faithful early slice: each civ accumulates research points proportional
-    // to its city count (one baseline point per city per turn). The C# path
-    // (F0_*_GetCityResourceCount fan-out + science-rate slider) is out of
-    // scope here; the per-city-baseline shape matches the "more cities ==
-    // more science" character of Civ1's early game. When the accumulated
-    // points cross the current tech's cost, TechResearch::addPoints unlocks
-    // it and auto-picks the cheapest still-reachable next target.
+    // Faithful early slice: each civ accumulates research points from its
+    // SCIENCE share of trade (sciRate/10 of trade), scaled by per-city
+    // Library bonuses (+50%) and per-civ government science multiplier
+    // (Democracy +50%). The C# path (F0_*_GetCityResourceCount fan-out +
+    // science-rate slider) is out of scope here; the per-city-baseline
+    // shape matches the "more cities == more science" character of
+    // Civ1's early game.
+    //
+    // SLIDER WIRE-UP: when the civ's sciRate is 5 (the default), the
+    // result is identical to the prior 50/0/50 implicit split. Raising
+    // sciRate -> faster research; lowering it -> slower.
     {
         auto& tr = p.techResearch();
         // Only run when initCivs() has provisioned per-civ tech state (we
@@ -688,11 +742,20 @@ int CheckPlayerTurn::processEndOfTurn() {
                 // +50% science; others 1.0). Applied AFTER the per-city
                 // Library bonus so the two multipliers stack.
                 float sciMul = 1.0f;
+                int sciShare = 5; // default 50% (matches legacy behaviour)
                 if (civId >= 0 && std::size_t(civId) < um.civs().size()) {
                     Government eg = um.effectiveGovernment(civId);
                     sciMul = governmentDefOf(eg).scienceMul;
+                    sciShare = um.civs()[std::size_t(civId)].sciRate;
                 }
-                int pts = int(std::ceil(perCivBase * sciMul));
+                // Apply the science RATE (sciShare/10) to the trade pool
+                // BEFORE the government multiplier so the slider shows up
+                // as the dominant lever. ceil keeps small allocations from
+                // truncating to 0 (so sci=1 still trickles in 1 point/turn
+                // when cityCount >= 1).
+                float scaled = perCivBase * float(sciShare) / 10.0f * sciMul;
+                int pts = int(std::ceil(scaled));
+                if (sciShare == 0) pts = 0; // hard zero, no ceil rescue
                 // Wonder bonuses (simplified): Hanging Gardens and Colossus
                 // each grant +1 science per city (Civ1: +1 happy citizen
                 // and +1 trade-per-ocean-tile respectively; both proxied
@@ -734,34 +797,36 @@ int CheckPlayerTurn::processEndOfTurn() {
         auto& civs = um.civsMut();
         auto& units = um.unitsMut();
         const int nCivs = int(civs.size());
-        // Per-civ city + unit counts (one pre-pass keeps the per-civ math
-        // O(numCivs + numCities + numUnits) instead of O(numCivs^2)).
-        std::vector<int> cityCount(std::size_t(nCivs), 0);
+        // Per-civ unit count (for upkeep).
         std::vector<int> unitCount(std::size_t(nCivs), 0);
-        // Per-civ pre-government trade contribution sum (1 baseline + per-
-        // city contribution scaled by Marketplace). Float so the *1.5
-        // Marketplace bonus survives across multiple cities without
-        // intermediate rounding (final cast to int via floor below).
-        std::vector<float> tradeBase(std::size_t(nCivs), 0.0f);
-        for (int i = 0; i < nCivs; ++i) tradeBase[std::size_t(i)] = 1.0f; // baseline
-        for (const auto& c : cities) {
-            if (c.owner >= 0 && c.owner < nCivs) {
-                ++cityCount[std::size_t(c.owner)];
-                float cityTrade = 1.0f;
-                if (c.hasBuilding(BuildingType::Marketplace)) cityTrade *= 1.5f;
-                tradeBase[std::size_t(c.owner)] += cityTrade;
-            }
-        }
         for (const auto& u : units) {
             if (!u.alive) continue;
             if (u.owner >= 0 && u.owner < nCivs) ++unitCount[std::size_t(u.owner)];
         }
+        // perCivTradeBase[] was computed at the top of processEndOfTurn
+        // (above the OUTER LOOP) so the LUXURY pre-pass and the GOLD pass
+        // share the same trade source. If for any reason the precomputed
+        // vector wasn't sized to nCivs (legacy / future change), fall back
+        // to recompute defensively.
+        if (int(perCivTradeBase.size()) != nCivs) {
+            perCivTradeBase.assign(std::size_t(nCivs), 1.0f);
+            for (const auto& c : cities) {
+                if (c.owner >= 0 && c.owner < nCivs) {
+                    float cityTrade = 1.0f;
+                    if (c.hasBuilding(BuildingType::Marketplace)) cityTrade *= 1.5f;
+                    perCivTradeBase[std::size_t(c.owner)] += cityTrade;
+                }
+            }
+        }
         for (int civId = 0; civId < nCivs; ++civId) {
             CivState& cv = civs[std::size_t(civId)];
             float tradeMul = governmentDefOf(um.effectiveGovernment(civId)).tradeMul;
-            int trade = int(std::floor(tradeBase[std::size_t(civId)] * tradeMul));
+            int trade = int(std::floor(perCivTradeBase[std::size_t(civId)] *
+                                       tradeMul));
             if (trade < 0) trade = 0;
-            int goldGain = trade / 2;            // floor(trade * 0.5)
+            // GOLD share = taxRate/10 of trade (Civ1 slider). Default
+            // taxRate=5 reproduces the prior 50% gold split.
+            int goldGain = trade * cv.taxRate / 10;
             int upkeep = unitCount[std::size_t(civId)]; // 1 gold/turn each
             cv.upkeepGoldPerTurn = upkeep;
             cv.gold += (goldGain - upkeep);

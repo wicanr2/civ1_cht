@@ -45,7 +45,14 @@ public:
     static constexpr int KeyUp = 1, KeyDown = 2, KeyEnter = 3, KeyEsc = 4,
                          KeyLeft = 5, KeyRight = 6, KeyB = 7, KeyM = 8,
                          KeyR = 9, KeyI = 10, KeyW = 11, KeyP = 12,
-                         KeyF = 13; // SDLK_f — Fortify (+50% defense)
+                         KeyF = 13,  // SDLK_f — Fortify (+50% defense)
+                         // ---- Tax/Luxury/Science rate slider keys ----
+                         // SDLK_t cycles TAX +1 (decrements largest of the
+                         // other two so sum stays 10). SDLK_l cycles LUX +1.
+                         // SDLK_y cycles SCIENCE +1 (Y picked because SDLK_s
+                         // is reserved for future Sentry; matches the
+                         // documented "scYence" mnemonic in the task spec).
+                         KeyT = 14, KeyL = 15, KeyY = 16;
     int pollKey();
 
     // ---- mouse input ----

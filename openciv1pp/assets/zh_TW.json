@@ -1,4 +1,8 @@
 {
+  "Tax:": "稅: ",
+  "Luxury:": "奢: ",
+  "Science:": "科: ",
+  "Rates": "配額",
   "Tax Rate": "稅率",
   "Luxuries Rate": "奢侈品比率",
   "FindCity": "尋找城市",

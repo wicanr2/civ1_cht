@@ -2772,6 +2772,18 @@ static int playInteractive(const std::string& assetDir, bool realgen = false) {
                 }
                 break;
             }
+            case SdlPresenter::KeyT: {
+                if (world.cycleRateTax(0)) { std::printf("[play] tax+1\n"); dirty = true; }
+                break;
+            }
+            case SdlPresenter::KeyL: {
+                if (world.cycleRateLux(0)) { std::printf("[play] lux+1\n"); dirty = true; }
+                break;
+            }
+            case SdlPresenter::KeyY: {
+                if (world.cycleRateSci(0)) { std::printf("[play] sci+1\n"); dirty = true; }
+                break;
+            }
             case SdlPresenter::KeyEsc:   pres.shutdown(); return 0;
             default: break;
         }
@@ -3074,6 +3086,18 @@ static int gameInteractive(const std::string& assetDir) {
                                     w->unitX(), w->unitY());
                         dirty = true;
                     }
+                    break;
+                }
+                case SdlPresenter::KeyT: {
+                    if (w->cycleRateTax(0)) { std::printf("[game] tax+1\n"); dirty = true; }
+                    break;
+                }
+                case SdlPresenter::KeyL: {
+                    if (w->cycleRateLux(0)) { std::printf("[game] lux+1\n"); dirty = true; }
+                    break;
+                }
+                case SdlPresenter::KeyY: {
+                    if (w->cycleRateSci(0)) { std::printf("[game] sci+1\n"); dirty = true; }
                     break;
                 }
                 case SdlPresenter::KeyEsc: {
@@ -4669,8 +4693,9 @@ static int buildingstest2() {
             gg.checkPlayerTurn().processEndOfTurn();
             return trr.civPoints(0);
         };
-        // 2 cities plain: 2.0 base, ceil(2.0*1.0)=2 pts.
-        // 2 cities w/ Libraries: 2*1.5 = 3.0, ceil=3 pts.
+        // SLIDER NOTE: default sciRate=5 -> science is 50% of perCivBase.
+        // 2 cities plain: base=2.0, ceil(2.0*0.5)=1 pts.
+        // 2 cities w/ Libraries: base=3.0, ceil(3.0*0.5)=2 pts.
         int sciPlain = sciDelta(2, false);
         int sciLib   = sciDelta(2, true);
         char buf[160];
@@ -4678,8 +4703,8 @@ static int buildingstest2() {
                       "(2) science/turn WITH Libraries (%d) > baseline (%d)",
                       sciLib, sciPlain);
         chk(sciLib > sciPlain, buf);
-        chk(sciPlain == 2, "(2) baseline 2-city science == 2");
-        chk(sciLib   == 3, "(2) 2-Library science == 3 (50% lift visible)");
+        chk(sciPlain == 1, "(2) baseline 2-city science == 1 (sci=5/10 slider)");
+        chk(sciLib   == 2, "(2) 2-Library science == 2 (50% lift visible)");
     }
 
     // ---- (3) Cathedral: -3 unhappy stacks with Temple ---------------------
@@ -5303,6 +5328,14 @@ static int governmenttest() {
             um.civsMut()[0].govt = g;
             um.civsMut()[0].targetGovt = g;
             um.civsMut()[0].anarchyTurnsLeft = 0;
+            // SLIDER: max science (sci=10) so the Democracy +50% bump is
+            // visible above ceil(0.5*1.5)=ceil(0.75)=1 tie at default sci=5.
+            // Direct-write the rate fields (bypasses setCivRates' max-cap
+            // gate; Despotism caps single rate at 6 but the test pins govt
+            // post-hoc). Sum = 10 invariant still holds.
+            um.civsMut()[0].taxRate = 0;
+            um.civsMut()[0].luxRate = 0;
+            um.civsMut()[0].sciRate = 10;
             auto& cpt = og.checkPlayerTurn();
             // Count total unlocked techs * cost + remaining points: easier
             // proxy is "knowsAlphabet count + leftover points" but cleaner
@@ -7385,6 +7418,242 @@ static int fortifytest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Tax/Luxury/Science slider (--slidertest) ----------------
+// Goal: verify the per-civ TAX/LUX/SCI rate slider end-to-end:
+//   (1) Defaults: tax=5, lux=0, sci=5 (sum=10).
+//   (2) Despotism cap: setCivRates(0, 7, 0, 3) refused (max single rate=6),
+//       setCivRates(0, 6, 0, 4) accepted; bad sums refused.
+//   (3) Science effect: under Democracy with sci=10, research accumulates
+//       FASTER than under Democracy with sci=5 over N turns.
+//   (4) Luxury effect: a civ with high lux rate has FEWER unhappy citizens
+//       than the same configuration with lux=0.
+//   (5) Save/load v13 round-trips per-civ rates; v12 still loads (defaults).
+//   (6) HUD: Chinese pixels DIFFER for the new 稅/奢/科 line.
+static int slidertest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // ---- (1): Defaults -------------------------------------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setupCivs(0, 0);
+        const CivState& c = um.civs()[0];
+        chk(c.taxRate == 5, "(1) default taxRate == 5");
+        chk(c.luxRate == 0, "(1) default luxRate == 0");
+        chk(c.sciRate == 5, "(1) default sciRate == 5");
+        chk(c.taxRate + c.luxRate + c.sciRate == 10,
+            "(1) defaults sum to 10");
+    }
+
+    // ---- (2): Despotism cap + validation -------------------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        auto& um = g.unitManagement();
+        um.setupCivs(0, 0);
+        // Confirm Despotism (the default after setupCivs).
+        chk(um.effectiveGovernment(0) == Government::Despotism,
+            "(2) civ 0 starts in Despotism");
+        chk(UnitManagement::governmentMaxRate(Government::Despotism) == 6,
+            "(2) Despotism max single rate == 6");
+        // tax=7 exceeds Despotism's cap of 6 -> refuse.
+        chk(!um.setCivRates(0, 7, 0, 3),
+            "(2) setCivRates(7,0,3) REFUSED under Despotism (cap=6)");
+        // After refusal the rates stay at defaults.
+        chk(um.civs()[0].taxRate == 5,
+            "(2) post-refusal taxRate still 5");
+        // tax=6 within cap, sum=10 -> accept.
+        chk(um.setCivRates(0, 6, 0, 4),
+            "(2) setCivRates(6,0,4) ACCEPTED under Despotism");
+        chk(um.civs()[0].taxRate == 6 && um.civs()[0].sciRate == 4,
+            "(2) post-accept: tax=6, sci=4");
+        // Bad sum refused (sum != 10).
+        chk(!um.setCivRates(0, 5, 5, 5),
+            "(2) setCivRates(5,5,5) REFUSED (sum=15 != 10)");
+        // Negative refused.
+        chk(!um.setCivRates(0, -1, 5, 6),
+            "(2) setCivRates(-1,5,6) REFUSED (negative)");
+        // Anarchy: cap=0 -> no rate changes allowed.
+        chk(UnitManagement::governmentMaxRate(Government::Anarchy) == 0,
+            "(2) Anarchy max single rate == 0");
+        um.civsMut()[0].anarchyTurnsLeft = 3;
+        chk(!um.setCivRates(0, 5, 0, 5),
+            "(2) any non-zero rate REFUSED during Anarchy");
+        um.civsMut()[0].anarchyTurnsLeft = 0;
+    }
+
+    // ---- (3): sci=10 under Democracy > sci=5 under Democracy ------------
+    {
+        auto runSciN = [&](int sciRate, int nTurns) -> int {
+            OpenCiv1Game g; setupGame(g, 640, 480);
+            auto& um = g.unitManagement();
+            um.setupCivs(0, 0);
+            auto& tr = g.techResearch();
+            tr.initCivs(1);
+            std::string nm;
+            (void)um.buildCity(5, 5, 0, nm);
+            // Pin Democracy directly (skip the 3-turn Anarchy transition).
+            um.civsMut()[0].govt = Government::Democracy;
+            um.civsMut()[0].targetGovt = Government::Democracy;
+            um.civsMut()[0].anarchyTurnsLeft = 0;
+            // Apply the rate. Democracy cap=10 -> sci=10 valid.
+            // We bypass setCivRates' donor math by direct-write.
+            um.civsMut()[0].taxRate = 10 - sciRate;
+            um.civsMut()[0].luxRate = 0;
+            um.civsMut()[0].sciRate = sciRate;
+            // Pin to a tech that takes a few turns so points accumulate
+            // without auto-unlocking + reset (Alphabet cost=10).
+            tr.setCivResearching(0, Tech::Pottery); // cost 20, simple
+            tr.setCivPoints(0, 0);
+            int totalUnlocked = 0;
+            int lastPts = 0;
+            for (int t = 0; t < nTurns; ++t) {
+                int before = tr.civPoints(0);
+                g.checkPlayerTurn().processEndOfTurn();
+                int after = tr.civPoints(0);
+                if (after < before) ++totalUnlocked;
+                lastPts = after;
+            }
+            return totalUnlocked * 20 + lastPts;
+        };
+        int sci10 = runSciN(10, 12);
+        int sci5  = runSciN(5,  12);
+        chk(sci10 > sci5,
+            "(3) Democracy sci=10 research > Democracy sci=5 over 12 turns");
+    }
+
+    // ---- (4): Luxury reduces unhappy citizens --------------------------
+    {
+        // Build a civ with 4 cities all at pop=6 (baseline unhappy=2 each
+        // -> 8 total). Pin Democracy so lux cap=10. Compare lux=0 vs
+        // lux=10. trade = (1 + 4 cities) * 1.75 (Democracy) = 8 (floor);
+        // luxGain at lux=10 = 8 -> 4 unhappy reductions; at lux=0 = 0.
+        auto runUnhappy = [&](int lux) -> int {
+            OpenCiv1Game g; setupGame(g, 640, 480);
+            auto& um = g.unitManagement();
+            um.setMapBounds(40, 40);
+            um.setupCivs(0, 0);
+            // Pin Democracy (cap=10 so lux=10 is legal).
+            um.civsMut()[0].govt = Government::Democracy;
+            um.civsMut()[0].targetGovt = Government::Democracy;
+            um.civsMut()[0].anarchyTurnsLeft = 0;
+            std::string nm;
+            (void)um.buildCity(10, 10, 0, nm);
+            (void)um.buildCity(20, 20, 0, nm);
+            (void)um.buildCity(15, 30, 0, nm);
+            (void)um.buildCity(30, 15, 0, nm);
+            for (int i = 0; i < 4; ++i) {
+                um.citiesMut()[std::size_t(i)].population = 6;
+            }
+            um.civsMut()[0].taxRate = 10 - lux;
+            um.civsMut()[0].luxRate = lux;
+            um.civsMut()[0].sciRate = 0;
+            g.checkPlayerTurn().processEndOfTurn();
+            int total = 0;
+            for (const auto& c : um.cities()) total += c.unhappy;
+            return total;
+        };
+        int u0  = runUnhappy(0);    // lux=0: pool=0, no reduction
+        int u10 = runUnhappy(10);   // lux=10: pool>=2, reduces several
+        chk(u0 == 8, "(4) lux=0: total unhappy across 4 cities == 8 (2x4)");
+        chk(u10 < u0,
+            "(4) lux>0 produces FEWER unhappy citizens than lux=0");
+    }
+
+    // ---- (5): Save/load v13 round-trip ---------------------------------
+    {
+        const char* savePath = "/tmp/openciv1pp_slidertest.sav";
+        OpenCiv1Game g1; setupGame(g1, 640, 480);
+        FrontEndFlow flow1(g1);
+        flow1.enterTitle();
+        for (int k = 0; k < 6; ++k) flow1.handleKey(MenuBoxDialog::KeyEnter);
+        FrontEndFlow::State s1 = flow1.handleKey(MenuBoxDialog::KeyEnter);
+        chk(s1 == FrontEndFlow::State::PLAYING, "(5) reached PLAYING");
+        auto& um1 = g1.unitManagement();
+        // Set non-default rates so the round-trip is meaningful.
+        chk(um1.setCivRates(0, 6, 0, 4),
+            "(5) setCivRates(6,0,4) accepted (within Despotism cap)");
+        bool sok = g1.gameLoadAndSave().saveToFile(savePath, &flow1);
+        chk(sok, "(5) saveToFile (v13) succeeded");
+
+        OpenCiv1Game g2; setupGame(g2, 640, 480);
+        FrontEndFlow flow2(g2);
+        bool lok = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
+        chk(lok, "(5) loadFromFile (v13) succeeded");
+        auto& um2 = g2.unitManagement();
+        chk(!um2.civs().empty(), "(5) post-load: >=1 civ");
+        if (!um2.civs().empty()) {
+            const CivState& c = um2.civs()[0];
+            chk(c.taxRate == 6, "(5) taxRate preserved (6)");
+            chk(c.luxRate == 0, "(5) luxRate preserved (0)");
+            chk(c.sciRate == 4, "(5) sciRate preserved (4)");
+        }
+    }
+
+    // ---- (5b): Older saves (v12) still load -> rates default to 5/0/5 ---
+    {
+        const char* path = "/tmp/openciv1pp_slidertest_v12.sav";
+        FILE* f = std::fopen(path, "w");
+        chk(f != nullptr, "(5b) opened v12 scratch file");
+        if (f) {
+            std::fputs("OpenCiv1pp savegame v12\n"
+                       "turn 1\n"
+                       "year -4000\n"
+                       "difficulty -1\n"
+                       "tribe -1\n"
+                       "seed 0\n"
+                       "name \n"
+                       "state 2\n"
+                       "unitpos 0 0\n"
+                       "civs 1\n"
+                       "civ 0 209 1 Rome\n", f);
+            std::fclose(f);
+        }
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        FrontEndFlow flow(g);
+        bool lok = g.gameLoadAndSave().loadFromFile(path, &flow);
+        chk(lok, "(5b) v12 save still loads (back-compat)");
+        if (lok && !g.unitManagement().civs().empty()) {
+            const CivState& c = g.unitManagement().civs()[0];
+            chk(c.taxRate == 5 && c.luxRate == 0 && c.sciRate == 5,
+                "(5b) v12-loaded civ has default rates (5/0/5)");
+        }
+    }
+
+    // ---- (6): HUD: Chinese pixels DIFFER for 稅/奢/科 line ----------------
+    std::size_t diffPixels = 0;
+    {
+        auto renderHud = [&](bool translateOn) -> std::vector<uint8_t> {
+            OpenCiv1Game g; setupGame(g, 640, 480);
+            Translator::instance().enabled = translateOn;
+            FrontEndFlow flow(g);
+            flow.enterTitle();
+            for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+            flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+            flow.draw();
+            return g.graphics.screen(0).pixels();
+        };
+        std::vector<uint8_t> onPx  = renderHud(true);
+        std::vector<uint8_t> offPx = renderHud(false);
+        chk(onPx.size() == offPx.size() && !onPx.empty(),
+            "(6) HUD: both renders produced a buffer");
+        for (std::size_t i = 0; i < onPx.size() && i < offPx.size(); ++i)
+            if (onPx[i] != offPx[i]) ++diffPixels;
+        chk(diffPixels > 0,
+            "(6) HUD: translate-on vs -off pixels DIFFER (稅/奢/科)");
+        Translator::instance().enabled = true;
+    }
+
+    if (fail) std::printf("SLIDERTEST: %d failure(s)\n", fail);
+    else      std::printf("SLIDERTEST: all pass (defaults 5/0/5; Despotism "
+                          "cap=6 refuses 7; Democracy sci=10 > sci=5; lux>0 "
+                          "reduces unhappy; v13 save/load + v12 back-compat; "
+                          "HUD delta=%zu px)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -7466,6 +7735,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--roadmovetest")) { return roadmovetest(); }
         else if (!std::strcmp(argv[i], "--aiexpandtest")) { return aiexpandtest(); }
         else if (!std::strcmp(argv[i], "--fortifytest")) { return fortifytest(); }
+        else if (!std::strcmp(argv[i], "--slidertest")) { return slidertest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -7531,7 +7801,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

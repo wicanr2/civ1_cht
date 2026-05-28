@@ -270,6 +270,37 @@ bool UnitManagement::changeGovernment(int civId, Government newGovt) {
     return true;
 }
 
+int UnitManagement::governmentMaxRate(Government g) {
+    // Civ1 manual: max single rate per government (tenths).
+    //   Anarchy   = 0  (slider locked during the 3-turn revolution)
+    //   Despotism = 6
+    //   Monarchy  = 7
+    //   Republic  = 8
+    //   Democracy = 10 (no cap)
+    switch (g) {
+        case Government::Anarchy:   return 0;
+        case Government::Despotism: return 6;
+        case Government::Monarchy:  return 7;
+        case Government::Republic:  return 8;
+        case Government::Democracy: return 10;
+    }
+    return 6; // defensive fallback (Despotism)
+}
+
+bool UnitManagement::setCivRates(int civId, int tax, int lux, int sci) {
+    if (civId < 0 || std::size_t(civId) >= civs_.size()) return false;
+    if (tax < 0 || lux < 0 || sci < 0) return false;
+    if (tax + lux + sci != 10) return false;
+    int cap = governmentMaxRate(effectiveGovernment(civId));
+    // Anarchy cap = 0 -> any non-zero rate refused (slider locked).
+    if (tax > cap || lux > cap || sci > cap) return false;
+    CivState& c = civs_[std::size_t(civId)];
+    c.taxRate = tax;
+    c.luxRate = lux;
+    c.sciRate = sci;
+    return true;
+}
+
 Government UnitManagement::effectiveGovernment(int civId) const {
     if (civId < 0 || std::size_t(civId) >= civs_.size())
         return Government::Despotism;

@@ -302,6 +302,58 @@ bool MiniWorld::fortifyAtUnit(int playerId) {
     return false;
 }
 
+// ---- Tax / Luxury / Science slider cycle helpers ------------------------
+// Shared body: try to increase rate[idx] by 1, drawing from the LARGEST of
+// the other two (ties broken in the order tax, lux, sci). Returns true on
+// success (rates written via setCivRates so the government cap is enforced).
+namespace {
+inline bool cycleRateBy(oc1::UnitManagement& um, int civId, int which) {
+    if (civId < 0 || std::size_t(civId) >= um.civs().size()) return false;
+    const oc1::CivState& c = um.civs()[std::size_t(civId)];
+    int r[3] = { c.taxRate, c.luxRate, c.sciRate };
+    if (which < 0 || which > 2) return false;
+    // Pick a donor: the LARGEST of the OTHER two. Skip 0 donors.
+    int donor = -1;
+    int bestVal = 0;
+    for (int i = 0; i < 3; ++i) {
+        if (i == which) continue;
+        if (r[i] > bestVal) { bestVal = r[i]; donor = i; }
+    }
+    if (donor < 0 || bestVal <= 0) return false; // nothing to draw from
+    r[which] += 1;
+    r[donor] -= 1;
+    return um.setCivRates(civId, r[0], r[1], r[2]);
+}
+} // namespace
+
+bool MiniWorld::cycleRateTax(int playerId) {
+    if (!game_) return false;
+    if (cycleRateBy(game_->unitManagement(), playerId, 0)) {
+        lastActionKey_ = "Rates";
+        lastCityName_.clear();
+        return true;
+    }
+    return false;
+}
+bool MiniWorld::cycleRateLux(int playerId) {
+    if (!game_) return false;
+    if (cycleRateBy(game_->unitManagement(), playerId, 1)) {
+        lastActionKey_ = "Rates";
+        lastCityName_.clear();
+        return true;
+    }
+    return false;
+}
+bool MiniWorld::cycleRateSci(int playerId) {
+    if (!game_) return false;
+    if (cycleRateBy(game_->unitManagement(), playerId, 2)) {
+        lastActionKey_ = "Rates";
+        lastCityName_.clear();
+        return true;
+    }
+    return false;
+}
+
 bool MiniWorld::startBuildIrrigationAtUnit(int playerId) {
     if (!game_) return false;
     int uid = humanSettlerAtCursor(playerId);
@@ -890,6 +942,26 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
             penX3 = fb.drawString(font, penX3, line3Y, " ", 207);
             penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
                                   governmentNameKey(g), 207);
+            // ---- Tax / Luxury / Science RATE SLIDER (Civ1 3-way) ----
+            // Format: "稅: T 奢: L 科: S" (Chinese) / "Tax: T Luxury: L
+            // Science: S" (English) — single compact line so it fits
+            // alongside the existing HUD strip. The numeric values are
+            // each 0..10 (one digit) and sum to 10.
+            const auto& human = game_->unitManagement().civs()[0];
+            penX3 = fb.drawString(font, penX3, line3Y, "  ", 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  "Tax:", 207);
+            char rb[8];
+            std::snprintf(rb, sizeof(rb), " %d ", human.taxRate);
+            penX3 = fb.drawString(font, penX3, line3Y, rb, 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  "Luxury:", 207);
+            std::snprintf(rb, sizeof(rb), " %d ", human.luxRate);
+            penX3 = fb.drawString(font, penX3, line3Y, rb, 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  "Science:", 207);
+            std::snprintf(rb, sizeof(rb), " %d", human.sciRate);
+            penX3 = fb.drawString(font, penX3, line3Y, rb, 207);
         }
     }
     if (!lastActionKey_.empty()) {

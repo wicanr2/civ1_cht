@@ -396,6 +396,23 @@ struct CivState {
     // + CheckPlayerTurn/CityWorker per-turn gold accumulation/deduction.
     int gold = 50;                // current treasury (signed; goes <0 only briefly)
     int upkeepGoldPerTurn = 0;    // cached for HUD/CityView display (= unit count)
+
+    // ---- Tax / Luxury / Science RATE SLIDER (Civ1 per-civ 3-way split) ---
+    // Faithful Civ1: each civ allocates trade across THREE buckets per
+    // turn (Tax/Luxury/Science), in units of tenths (each 0..10, summing
+    // to 10). The government caps the MAX single rate:
+    //   Anarchy   : no rate changes allowed (cap = 0, slider locked).
+    //   Despotism : max single rate = 6 (Civ1 manual)
+    //   Monarchy  : max single rate = 7
+    //   Republic  : max single rate = 8
+    //   Democracy : max single rate = 10 (any single allocation)
+    // Default rates: 5 tax / 0 lux / 5 sci (sum=10) — matches the prior
+    // implicit 50/0/50 split shipped before the slider landed. Set via
+    // UnitManagement::setCivRates(civId, t, l, s) which enforces both
+    // the sum==10 invariant and the per-government cap.
+    int taxRate = 5;
+    int luxRate = 0;
+    int sciRate = 5;
 };
 
 struct City {
@@ -572,6 +589,25 @@ public:
     // anarchyTurnsLeft > 0, else the stored govt). Bounds-safe: returns
     // Government::Despotism for an out-of-range civId.
     Government effectiveGovernment(int civId) const;
+
+    // ---- Tax / Luxury / Science RATE SLIDER -----------------------------
+    // Per-government MAX single-rate cap (Civ1 manual values, in tenths):
+    //   Anarchy=0 (no changes allowed) / Despotism=6 / Monarchy=7 /
+    //   Republic=8 / Democracy=10 (no cap). Used by setCivRates() to refuse
+    //   allocations that exceed the cap on ANY single rate.
+    static int governmentMaxRate(Government g);
+
+    // Set civ `civId`'s tax/lux/sci rates. Returns false (no state change)
+    // when:
+    //   * civId out of range,
+    //   * any rate < 0,
+    //   * tax + lux + sci != 10,
+    //   * any single rate > governmentMaxRate(effectiveGovernment(civId))
+    //     (e.g. setting tax=7 under Despotism is refused: cap is 6),
+    //   * civ is mid-Anarchy (max=0 -> any non-zero rate refused;
+    //     functionally a slider lockout during the 3-turn transition).
+    // On success the three rate fields are written atomically.
+    bool setCivRates(int civId, int tax, int lux, int sci);
 
     // ---- Settlers improvement actions (faithful subset of F0_1866_*) ----
     // Work-target ids match the (Road/Irrigation) subset of the C#

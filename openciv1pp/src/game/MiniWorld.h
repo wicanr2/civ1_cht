@@ -171,6 +171,18 @@ public:
     bool startBuildRoadAtUnit(int playerId = 0);
     bool startBuildIrrigationAtUnit(int playerId = 0);
 
+    // ---- Tax/Luxury/Science slider keys (T / L / Y) --------------------
+    // Cycle a rate +1 for the human civ (civ 0), drawing the missing 1
+    // from the LARGEST of the other two so the sum stays == 10. Refuses
+    // (returns false) when the increase would exceed the government's
+    // max-single-rate cap (Despotism 6 / Monarchy 7 / Republic 8 /
+    // Democracy 10 / Anarchy 0) or when no other rate is positive to
+    // draw from. On success the change is applied and lastActionKey is
+    // set to "Rates" so the HUD reflects the change.
+    bool cycleRateTax(int playerId = 0);
+    bool cycleRateLux(int playerId = 0);
+    bool cycleRateSci(int playerId = 0);
+
     // Player-driven Fortify action (F key). Routes to UnitManagement::
     // startFortify on the FIRST alive human-owned unit at the cursor tile
     // (any unit type — Settlers, Militia, Phalanx, ...). Sets lastActionKey

@@ -118,7 +118,10 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     // v12 adds per-unit fortified + fortifying flags (FORTIFY slice).
     // v1..v11 readers default both to false; v12 readers parse the two
     // trailing 0/1 columns appended after movePointsLeft.
-    os << "OpenCiv1pp savegame v12\n";
+    // v13 adds per-civ tax/lux/sci rate slider (default 5/0/5; sum=10).
+    // v1..v12 readers ignore the 'civrates' key (default rates from
+    // CivState struct init).
+    os << "OpenCiv1pp savegame v13\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -272,6 +275,14 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
         os << "civgold " << i << " " << civs[i].gold << "\n";
     }
 
+    // v13: per-civ tax/lux/sci rate slider. One line per civ. v1..v12
+    // readers skip the 'civrates' key entirely (default 5/0/5 from
+    // CivState's struct init).
+    for (std::size_t i = 0; i < civs.size(); ++i) {
+        os << "civrates " << i << " " << civs[i].taxRate << " "
+           << civs[i].luxRate << " " << civs[i].sciRate << "\n";
+    }
+
     // v10: per-city {happy, unhappy, disorder}. One line per city. v1..v9
     // readers skip the 'cityhappy' key entirely (default: happy=0,
     // unhappy=0, disorder=false from City's struct init).
@@ -352,7 +363,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         header != "OpenCiv1pp savegame v9" &&
         header != "OpenCiv1pp savegame v10" &&
         header != "OpenCiv1pp savegame v11" &&
-        header != "OpenCiv1pp savegame v12") return false;
+        header != "OpenCiv1pp savegame v12" &&
+        header != "OpenCiv1pp savegame v13") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -406,6 +418,10 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     // hold (matching City's struct init).
     struct CityHappyRow { int cityId; int happy; int unhappy; int disorder; };
     std::vector<CityHappyRow> cityHappyRows;
+    // v13: per-civ rates (tax/lux/sci). Applied after civs are restored.
+    // v1..v12 saves don't emit this key -> defaults (5/0/5) hold.
+    struct CivRatesRow { int civId; int tax; int lux; int sci; };
+    std::vector<CivRatesRow> civRatesRows;
 
     std::string line;
     while (std::getline(is, line)) {
@@ -564,6 +580,11 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             CivGoldRow r{};
             iss >> r.civId >> r.gold;
             civGoldRows.push_back(r);
+        }
+        else if (key == "civrates") {
+            CivRatesRow r{};
+            iss >> r.civId >> r.tax >> r.lux >> r.sci;
+            civRatesRows.push_back(r);
         }
         else if (key == "cityhappy") {
             CityHappyRow r{};
@@ -741,6 +762,20 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         for (const auto& r : civGoldRows) {
             if (r.civId < 0 || std::size_t(r.civId) >= cv.size()) continue;
             cv[std::size_t(r.civId)].gold = r.gold;
+        }
+    }
+    // v13: apply per-civ tax/lux/sci rates. Absent in v1..v12 saves ->
+    // defaults (5/0/5) hold. Bad rows (sum != 10 or any negative) are
+    // skipped defensively so a corrupt save can't poison the slider.
+    {
+        auto& cv = p.unitManagement().civsMut();
+        for (const auto& r : civRatesRows) {
+            if (r.civId < 0 || std::size_t(r.civId) >= cv.size()) continue;
+            if (r.tax < 0 || r.lux < 0 || r.sci < 0) continue;
+            if (r.tax + r.lux + r.sci != 10) continue;
+            cv[std::size_t(r.civId)].taxRate = r.tax;
+            cv[std::size_t(r.civId)].luxRate = r.lux;
+            cv[std::size_t(r.civId)].sciRate = r.sci;
         }
     }
     // v10: apply per-city {happy, unhappy, disorder}. Absent in v1..v9
