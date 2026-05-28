@@ -407,13 +407,60 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         if (val.empty()) val = "-";
         drawLabelValue(infoY + lineH * 10, "Diplomacy:", val);
     }
+    {
+        // Trade line: simplified per-civ baseline trade attributed to this
+        // city (1 + #cities scaled by Government.tradeMul, evenly split
+        // across owner's cities — first-cut display so the user sees the
+        // per-city trade contribution). Mirrors the Civ1 city-screen TRADE
+        // readout (full per-tile trade pipeline + Tax/Lux/Sci slider TODO).
+        const auto& um = p.unitManagement();
+        int ownerCities = 0;
+        for (const auto& cc : um.cities()) if (cc.owner == city.owner) ++ownerCities;
+        float tradeMul = 1.0f;
+        if (city.owner >= 0 && std::size_t(city.owner) < um.civs().size()) {
+            tradeMul = governmentDefOf(
+                um.effectiveGovernment(city.owner)).tradeMul;
+        }
+        int civTrade = int((1 + ownerCities) * tradeMul);
+        if (civTrade < 0) civTrade = 0;
+        // Per-city share (rounded up so a 1-city civ gets the full baseline).
+        int perCity = (ownerCities > 0) ?
+                      (civTrade + ownerCities - 1) / ownerCities : civTrade;
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%d", perCity);
+        drawLabelValue(infoY + lineH * 11, "Trade:", buf);
+    }
+    {
+        // Upkeep line: owner civ's cached unit upkeep (1 gold/turn each).
+        // Faithful Civ1 readout (City Screen "TREASURY/UPKEEP" panel).
+        const auto& um = p.unitManagement();
+        int up = 0;
+        if (city.owner >= 0 && std::size_t(city.owner) < um.civs().size()) {
+            up = um.civs()[std::size_t(city.owner)].upkeepGoldPerTurn;
+        }
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%d", up);
+        drawLabelValue(infoY + lineH * 12, "Upkeep:", buf);
+    }
+    {
+        // Treasury line: owner civ's current gold. Single source of truth
+        // for the per-civ gold display when more than one city exists.
+        const auto& um = p.unitManagement();
+        int gold = 0;
+        if (city.owner >= 0 && std::size_t(city.owner) < um.civs().size()) {
+            gold = um.civs()[std::size_t(city.owner)].gold;
+        }
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%d", gold);
+        drawLabelValue(infoY + lineH * 13, "Treasury:", buf);
+    }
 
     // 5) Population dots — one warm yellow dot per population point, drawn in
     //    a horizontal row below the info block (mirrors the C# pop-sprite row
     //    drawn at (24, 140) in F19_0000_111f_DrawCityPopulation; we use small
     //    coloured dots instead of POP.PIC sprites — see header for the stub).
     {
-        int popY = infoY + lineH * 11 + 2;
+        int popY = infoY + lineH * 14 + 2;
         int popX = infoX;
         for (int i = 0; i < population && i < 24; ++i) {
             screen.fillRect(Rect{popX, popY, 6, 8}, 166);

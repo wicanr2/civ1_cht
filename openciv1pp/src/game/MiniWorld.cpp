@@ -573,7 +573,32 @@ void MiniWorld::endTurn() {
     ++turn_;
     // When a host game is attached, run the per-turn housekeeping pass
     // (per-civ city loop -> shields/units; then GameData.Year advance).
-    if (game_) game_->checkPlayerTurn().processEndOfTurn();
+    if (game_) {
+        // Snapshot human (civ 0) alive unit count BEFORE the housekeeping
+        // pass, so we can detect ECONOMY bankruptcy (gold went negative
+        // -> CheckPlayerTurn disbanded weakest non-Settlers units to
+        // balance the treasury). When the count drops we surface a
+        // "Bankrupt!" banner on the HUD's lastActionKey_ line — translated
+        // to Chinese "破產!" via the chokepoint Translator.
+        auto& um = game_->unitManagement();
+        int beforeAlive = 0;
+        if (!um.civs().empty()) {
+            for (const auto& u : um.units()) {
+                if (u.alive && u.owner == 0) ++beforeAlive;
+            }
+        }
+        game_->checkPlayerTurn().processEndOfTurn();
+        if (!um.civs().empty()) {
+            int afterAlive = 0;
+            for (const auto& u : um.units()) {
+                if (u.alive && u.owner == 0) ++afterAlive;
+            }
+            if (afterAlive < beforeAlive) {
+                lastActionKey_ = "Bankrupt!";
+                lastCityName_.clear();
+            }
+        }
+    }
 }
 
 bool MiniWorld::setUnitPosition(int x, int y) {
@@ -930,6 +955,31 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
             penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
                                   relationNameKey(r), 207);
         }
+    }
+
+    // Gold line: HUMAN civ (civ 0) treasury + per-turn net delta. Format:
+    // "黃金: <N> (+/-D)" — D = goldGain - upkeep (we recompute on the fly
+    // to keep the HUD in sync the moment the value changes; the cached
+    // CivState.upkeepGoldPerTurn is used for the upkeep half). Mirrors the
+    // Civ1 HUD's treasury readout (CityWorker / Trade Advisor F5 panel).
+    if (game_ && !game_->unitManagement().civs().empty()) {
+        const auto& um = game_->unitManagement();
+        const auto& human = um.civs()[0];
+        // Recompute gain so the delta is fresh even on the first frame
+        // (matches the math in CheckPlayerTurn::processEndOfTurn).
+        int civCities = 0;
+        for (const auto& c : um.cities()) if (c.owner == 0) ++civCities;
+        float tradeMul = governmentDefOf(um.effectiveGovernment(0)).tradeMul;
+        int trade = int((1 + civCities) * tradeMul);
+        if (trade < 0) trade = 0;
+        int gain = trade / 2;
+        int net = gain - human.upkeepGoldPerTurn;
+        penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+        penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                              "Gold:", 207);
+        char gb[40];
+        std::snprintf(gb, sizeof(gb), " %d (%+d)", human.gold, net);
+        penX3 = fb.drawString(font, penX3, line3Y, gb, 207);
     }
 
     // Research line: show the HUMAN civ (civ 0)'s current research target

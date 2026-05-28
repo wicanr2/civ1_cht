@@ -310,6 +310,18 @@ struct CivState {
     bool hasWonder(WonderType w) const {
         return ownedWonders.find(w) != ownedWonders.end();
     }
+
+    // ---- ECONOMY (gold + treasury + unit upkeep) ------------------------
+    // Civ1 standard starting treasury is 50 gold (per StartGameMenu init in
+    // the C# port; matches Civ1 manual). Each city contributes Trade per
+    // turn (simplified: 1 baseline + 1 per city, then * Government.tradeMul),
+    // half of which becomes Gold (3-way tax/lux/sci slider collapsed to a
+    // 50/0/50 implicit split — TODO: full slider). Each unit costs 1 gold/
+    // turn upkeep. When treasury would go negative the civ disbands the
+    // weakest non-Settlers units until balanced. Mirrors C# Player.Treasury
+    // + CheckPlayerTurn/CityWorker per-turn gold accumulation/deduction.
+    int gold = 50;                // current treasury (signed; goes <0 only briefly)
+    int upkeepGoldPerTurn = 0;    // cached for HUD/CityView display (= unit count)
 };
 
 struct City {

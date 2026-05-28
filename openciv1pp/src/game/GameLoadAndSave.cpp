@@ -95,7 +95,11 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     std::ofstream os(path, std::ios::binary);
     if (!os) return false;
 
-    // Header. v7 adds per-civ ownedWonders csv + per-city
+    // Header. v9 adds per-civ gold for the ECONOMY (gold/treasury/upkeep)
+    // slice. v1..v8 readers ignore the v9 'civgold' key (default: gold=50,
+    // matching CivState's initial value).
+    // v8 added the pairwise relations matrix + selected rival civ.
+    // v7 added per-civ ownedWonders csv + per-city
     // productionWonderType + the global owner-city map for the Wonders
     // slice. v1..v6 readers ignore the v7 keys (default: no wonders owned).
     // v6 added per-civ government state for the Government slice.
@@ -105,7 +109,7 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     // ownedBuildings list} + per-unit veteran flag for the buildings slice.
     // v3 added the improvements grid + per-unit work state.
     // v2 added per-civ tech-tree state; v1 was the pre-tech baseline.
-    os << "OpenCiv1pp savegame v8\n";
+    os << "OpenCiv1pp savegame v9\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -249,6 +253,12 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     // v8: selected rival civ (single integer; -1 means "no selection").
     os << "rival " << p.unitManagement().selectedRivalCiv() << "\n";
 
+    // v9: per-civ gold (treasury). One line per civ. v1..v8 readers skip the
+    // 'civgold' key entirely (default: gold=50 from CivState's struct init).
+    for (std::size_t i = 0; i < civs.size(); ++i) {
+        os << "civgold " << i << " " << civs[i].gold << "\n";
+    }
+
     // Terrain bytes (80*50 = 4000 bytes -> 8000 hex chars on one line).
     os << "terrain ";
     writeHex(os, dumpTerrainBytes(const_cast<OpenCiv1Game&>(p)));
@@ -317,7 +327,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         header != "OpenCiv1pp savegame v5" &&
         header != "OpenCiv1pp savegame v6" &&
         header != "OpenCiv1pp savegame v7" &&
-        header != "OpenCiv1pp savegame v8") return false;
+        header != "OpenCiv1pp savegame v8" &&
+        header != "OpenCiv1pp savegame v9") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -362,6 +373,10 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     struct RelationsRow { int civId; std::vector<int> entries; };
     std::vector<RelationsRow> relationsRows;
     int rivalCiv = 1; // v8: selected rival civ (default 1)
+    // v9: per-civ gold. One row per civ; applied after civs are restored.
+    // v1..v8 saves don't emit this key -> default gold=50 from CivState.
+    struct CivGoldRow { int civId; int gold; };
+    std::vector<CivGoldRow> civGoldRows;
 
     std::string line;
     while (std::getline(is, line)) {
@@ -491,6 +506,11 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             relationsRows.push_back(std::move(r));
         }
         else if (key == "rival") { iss >> rivalCiv; }
+        else if (key == "civgold") {
+            CivGoldRow r{};
+            iss >> r.civId >> r.gold;
+            civGoldRows.push_back(r);
+        }
         else if (key == "citybld") {
             CityBldRow r;
             std::string csv;
@@ -654,6 +674,15 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             }
         }
         p.unitManagement().setSelectedRivalCiv(rivalCiv);
+    }
+    // v9: apply per-civ gold. Absent in v1..v8 saves -> default gold=50
+    // (CivState struct init) holds.
+    {
+        auto& cv = p.unitManagement().civsMut();
+        for (const auto& r : civGoldRows) {
+            if (r.civId < 0 || std::size_t(r.civId) >= cv.size()) continue;
+            cv[std::size_t(r.civId)].gold = r.gold;
+        }
     }
 
     // Restore the terrain grid bytes into VCPU memory (and into MiniWorld's
