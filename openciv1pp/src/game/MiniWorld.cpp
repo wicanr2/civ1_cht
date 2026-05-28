@@ -292,10 +292,33 @@ void MiniWorld::renderUnits(GBitmap& screen) const {
         // unit draw still paints the human marker at (unitX_, unitY_).
         if (u.owner == 0 && u.x == unitX_ && u.y == unitY_) continue;
         int inset = std::max(2, tileSize / 4);
-        screen.fillRect(Rect{px + inset, py + inset,
-                             tileSize - 2 * inset, tileSize - 2 * inset}, color);
-        screen.drawRect(Rect{px + inset, py + inset,
-                             tileSize - 2 * inset, tileSize - 2 * inset}, 210);
+        Rect body{px + inset, py + inset,
+                  tileSize - 2 * inset, tileSize - 2 * inset};
+        screen.fillRect(body, color);
+        screen.drawRect(body, 210);
+        // Per-type glyph overlay: distinct shape per UnitType so Settlers /
+        // Militia / Phalanx read at a glance on the world map (no sprite tile
+        // dependency). Drawn in the outline colour (210) for contrast.
+        int cxg = px + tileSize / 2, cyg = py + tileSize / 2;
+        switch (u.type) {
+            case UnitType::Settlers:
+                // small "+" cross (matches the C citizen-of-the-land glyph)
+                screen.drawLine(cxg - inset / 2, cyg, cxg + inset / 2, cyg, 210);
+                screen.drawLine(cxg, cyg - inset / 2, cxg, cyg + inset / 2, 210);
+                break;
+            case UnitType::Militia:
+                // single diagonal slash (the "spear" mark)
+                screen.drawLine(cxg - inset / 2, cyg + inset / 2,
+                                cxg + inset / 2, cyg - inset / 2, 210);
+                break;
+            case UnitType::Phalanx:
+                // X (crossed defenders' shields)
+                screen.drawLine(cxg - inset / 2, cyg - inset / 2,
+                                cxg + inset / 2, cyg + inset / 2, 210);
+                screen.drawLine(cxg - inset / 2, cyg + inset / 2,
+                                cxg + inset / 2, cyg - inset / 2, 210);
+                break;
+        }
     }
 }
 
@@ -318,6 +341,47 @@ bool MiniWorld::moveUnit(int dx, int dy) {
     int nx = std::clamp(unitX_ + dx, 0, w_ - 1);
     int ny = std::clamp(unitY_ + dy, 0, h_ - 1);
     if (nx == unitX_ && ny == unitY_) return false;
+    // When a host game is attached AND we have a tracked human unit in the
+    // multi-civ units table, route through UnitManagement::moveUnit so combat
+    // resolves if an enemy unit occupies the destination tile. The HUD reads
+    // the resulting lastCombatKey() ("Victory"/"Defeat"/"Battle"). When no
+    // host game is attached (legacy single-unit path used by playtest) the
+    // step is a simple position update.
+    if (game_) {
+        auto& um = game_->unitManagement();
+        // Find the human's (owner==0) FIRST alive unit at (unitX_, unitY_) —
+        // that's the cursor-tracked unit. If none, fall back to the legacy
+        // position-only update so the playtest's bare MiniWorld still moves.
+        int humanId = -1;
+        const auto& us = um.units();
+        for (std::size_t i = 0; i < us.size(); ++i) {
+            if (us[i].alive && us[i].owner == 0 &&
+                us[i].x == unitX_ && us[i].y == unitY_) {
+                humanId = int(i); break;
+            }
+        }
+        if (humanId >= 0) {
+            um.setLastCombatKey("");
+            int beforeX = us[std::size_t(humanId)].x;
+            int beforeY = us[std::size_t(humanId)].y;
+            bool survived = um.moveUnit(humanId, nx - beforeX, ny - beforeY);
+            // Mirror the human unit's new position into the cursor (so the
+            // camera + marker follow the result of combat/movement).
+            const Unit& after = um.units()[std::size_t(humanId)];
+            if (survived) {
+                unitX_ = after.x; unitY_ = after.y;
+                // Combat happened only when lastCombatKey was set (Victory).
+                if (!um.lastCombatKey().empty()) {
+                    lastActionKey_ = um.lastCombatKey();
+                    return true;
+                }
+                return (unitX_ != beforeX || unitY_ != beforeY);
+            }
+            // Attacker died: cursor stays put, surface the Defeat banner.
+            lastActionKey_ = um.lastCombatKey();
+            return false;
+        }
+    }
     unitX_ = nx;
     unitY_ = ny;
     return true;

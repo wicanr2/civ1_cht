@@ -116,6 +116,75 @@ int UnitManagement::addUnit(int owner, UnitType type, int x, int y) {
     return idx;
 }
 
+void UnitManagement::setCityProductionType(int cityId, UnitType t) {
+    if (cityId < 0 || std::size_t(cityId) >= cities_.size()) return;
+    cities_[std::size_t(cityId)].productionType = t;
+    cities_[std::size_t(cityId)].production = unitDefOf(t).cost;
+}
+
+// Tiny xorshift32 (deterministic per-seed; we use it as the RNG step for the
+// combat rolls). The world generator's MT19937 has a heavyweight state — for
+// per-roll combat we want a thread-local-feel cheap RNG that's still
+// deterministic for a given seed. xorshift32 is the standard choice.
+static inline uint32_t xorshift32(uint32_t& s) {
+    uint32_t x = s ? s : 0x12345678u;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    s = x;
+    return x;
+}
+
+bool UnitManagement::resolveCombat(Unit& attacker, Unit& defender,
+                                   uint32_t& rngState) {
+    const UnitDef& aDef = unitDefOf(attacker.type);
+    const UnitDef& dDef = unitDefOf(defender.type);
+    int atk = aDef.attack;     if (atk < 0) atk = 0;
+    int def = dDef.defense;    if (def <= 0) def = 1; // guard div-by-zero
+    int attackerRoll = (atk > 0) ? int(xorshift32(rngState) % uint32_t(atk)) : 0;
+    int defenderRoll = int(xorshift32(rngState) % uint32_t(def));
+    // Faithful Civ1: defender wins ties (attackerRoll <= defenderRoll -> lose).
+    if (attackerRoll > defenderRoll) {
+        defender.alive = false;
+        return true;  // attacker survived
+    }
+    attacker.alive = false;
+    return false;     // attacker died
+}
+
+bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
+    if (unitId < 0 || std::size_t(unitId) >= units_.size()) return false;
+    Unit& u = units_[std::size_t(unitId)];
+    if (!u.alive) return false;
+    int nx = u.x + dx, ny = u.y + dy;
+    // Out-of-bounds destinations: no movement, unit still alive.
+    if (nx < 0 || ny < 0 || nx >= mapW_ || ny >= mapH_) return true;
+    // Look for an alive enemy at the destination.
+    int enemyId = -1;
+    for (std::size_t i = 0; i < units_.size(); ++i) {
+        const Unit& o = units_[i];
+        if (!o.alive) continue;
+        if (o.owner == u.owner) continue;
+        if (o.x == nx && o.y == ny) { enemyId = int(i); break; }
+    }
+    if (enemyId >= 0) {
+        Unit& enemy = units_[std::size_t(enemyId)];
+        lastCombatKey_ = "Battle";
+        bool survived = resolveCombat(u, enemy, combatRng_);
+        if (survived) {
+            // attacker wins -> move into the (now-empty) tile
+            u.x = nx; u.y = ny;
+            lastCombatKey_ = "Victory";
+            return true;
+        }
+        lastCombatKey_ = "Defeat";
+        return false;
+    }
+    // No enemy: just move.
+    u.x = nx; u.y = ny;
+    return true;
+}
+
 bool UnitManagement::buildCity(int x, int y, int playerId, std::string& outName) {
     return buildCity(x, y, playerId, 0, outName);
 }

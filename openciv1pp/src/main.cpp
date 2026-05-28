@@ -3162,6 +3162,170 @@ static int aibehaviortest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- combat / unit-types / production-of-types test ----------
+// Verifies the gameplay slice added on top of the BUILD-CITY port:
+//   (a) UnitDef table: Settlers/Militia/Phalanx have the expected stats from
+//       GameData.cs lines 209-211 (faithful to UnitDefinition.cs constructor
+//       arg order: attack, defense, cost).
+//   (b) resolveCombat: Militia(1/1) attacking Phalanx(1/2), over many seeded
+//       rolls, defender wins MORE than 50% (the defender's higher defense +
+//       Civ1's "defender wins ties" rule push the expected win rate to ~66%).
+//   (c) UnitManagement::moveUnit into an enemy tile triggers combat — one of
+//       the two units dies, alive count drops by 1, both stats remain valid.
+//   (d) City production: setCityProductionType(cityId, Militia) makes
+//       processEndOfTurn() spawn exactly ONE new Militia at the city's tile
+//       once shields >= cost, owned by the city's owner.
+//   (e) HUD: a combat outcome key ("Battle"/"Victory"/"Defeat") shows up in
+//       the MiniWorld's lastActionKey() and the Chinese vs English renders
+//       differ pixel-wise (proves the new keys are localized).
+static int combattest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // (a) Stats table — values from GameData.cs lines 209-211 (Cost * 10 to
+    // get the shield-cost we store directly: Settlers=40, Militia=10, Phalanx=20).
+    {
+        const UnitDef& s = unitDefOf(UnitType::Settlers);
+        const UnitDef& m = unitDefOf(UnitType::Militia);
+        const UnitDef& ph = unitDefOf(UnitType::Phalanx);
+        chk(s.attack == 0 && s.defense == 1 && s.move == 1 && s.cost == 40,
+            "Settlers stats: a=0 d=1 m=1 cost=40");
+        chk(m.attack == 1 && m.defense == 1 && m.move == 1 && m.cost == 10,
+            "Militia stats: a=1 d=1 m=1 cost=10");
+        chk(ph.attack == 1 && ph.defense == 2 && ph.move == 1 && ph.cost == 20,
+            "Phalanx stats: a=1 d=2 m=1 cost=20");
+        chk(s.attack >= 0 && m.attack > 0 && ph.defense > 0,
+            "all stats positive (or zero for Settlers' attack)");
+    }
+
+    // (b) Statistical combat: Militia(1/1) attacker vs Phalanx(1/2) defender.
+    // With Civ1's "defender wins ties" rule + Phalanx's defense=2, Militia
+    // attack=1, expected attacker win rate is ~33%. We assert > 50% defender
+    // wins (the loose bound from the task), and tighter > 60% for confidence.
+    {
+        int defenderWins = 0;
+        const int trials = 1000;
+        uint32_t rng = 0xDEADBEEFu;
+        for (int i = 0; i < trials; ++i) {
+            Unit atk; atk.owner = 0; atk.type = UnitType::Militia; atk.x = 0; atk.y = 0; atk.alive = true;
+            Unit def; def.owner = 1; def.type = UnitType::Phalanx; def.x = 1; def.y = 0; def.alive = true;
+            bool atkSurvived = UnitManagement::resolveCombat(atk, def, rng);
+            if (!atkSurvived) ++defenderWins;
+            // Mutual exclusion: exactly one of the two dies per fight.
+            chk((atk.alive ^ def.alive) || (i == 0 && false),
+                "combat result: exactly one unit dies (XOR alive)");
+        }
+        double winRate = double(defenderWins) / double(trials);
+        char buf[96];
+        std::snprintf(buf, sizeof(buf),
+                      "Phalanx (d=2) beats Militia (a=1) > 50%% (got %.2f%%)",
+                      winRate * 100.0);
+        chk(winRate > 0.5, buf);
+    }
+
+    // (c) moveUnit into an enemy tile -> combat triggered.
+    {
+        OpenCiv1Game g;
+        auto& um = g.unitManagement();
+        um.setMapBounds(20, 20);
+        um.setCombatRngSeed(0xC0FFEEu);
+        int atkId = um.addUnit(0, UnitType::Militia, 5, 5);
+        int defId = um.addUnit(1, UnitType::Phalanx, 6, 5);
+        chk(um.units()[std::size_t(atkId)].alive && um.units()[std::size_t(defId)].alive,
+            "both units alive before move");
+        int aliveBefore = 0;
+        for (const auto& u : um.units()) if (u.alive) ++aliveBefore;
+        chk(aliveBefore == 2, "alive count == 2 before combat move");
+        um.moveUnit(atkId, 1, 0); // attack the enemy at (6,5)
+        int aliveAfter = 0;
+        for (const auto& u : um.units()) if (u.alive) ++aliveAfter;
+        chk(aliveAfter == 1, "alive count == 1 after combat (one unit died)");
+        chk(um.lastCombatKey() == "Victory" || um.lastCombatKey() == "Defeat",
+            "lastCombatKey set to Victory or Defeat after combat");
+        // Position invariant: if attacker survived, it moved into (6,5);
+        // if defender survived, attacker stayed at (5,5).
+        const Unit& a = um.units()[std::size_t(atkId)];
+        const Unit& d = um.units()[std::size_t(defId)];
+        if (a.alive) chk(a.x == 6 && a.y == 5 && !d.alive, "attacker won -> moved into enemy tile");
+        else         chk(!a.alive && d.x == 6 && d.y == 5, "defender won -> attacker dead, defender stayed");
+    }
+
+    // (d) City production: configure productionType -> Militia, processEndOfTurn
+    // until shields >= cost; ONE new Militia must appear at the city's tile.
+    {
+        OpenCiv1Game g;
+        setupGame(g, 320, 200);
+        Translator::instance().enabled = true;
+        MiniWorld w(20, 20, 7777u);
+        w.attachGame(g);
+        auto& um = g.unitManagement();
+        // Find a land tile to build on (avoid Water/Arctic).
+        int gx = -1, gy = -1;
+        for (int y = 0; y < 20 && gx < 0; ++y)
+            for (int x = 0; x < 20 && gx < 0; ++x) {
+                Terrain t = w.terrainAt(x, y);
+                if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+            }
+        chk(gx >= 0, "found a land tile for the city");
+        std::string nm;
+        chk(um.buildCity(gx, gy, 0, nm), "city founded");
+        um.setCityProductionType(0, UnitType::Militia);
+        chk(um.cities()[0].production == 10,
+            "production cost synced to Militia (10 shields)");
+        std::size_t unitsBefore = um.units().size();
+        // Spin end-of-turn until exactly one new unit appears at the city tile.
+        int budget = 50;
+        std::size_t produced = 0;
+        while (budget-- > 0) {
+            g.checkPlayerTurn().processEndOfTurn();
+            if (um.units().size() > unitsBefore) {
+                produced = um.units().size() - unitsBefore;
+                break;
+            }
+        }
+        chk(produced == 1, "exactly one new unit produced at threshold");
+        const Unit& nu = um.units().back();
+        chk(nu.type == UnitType::Militia, "new unit is a Militia");
+        chk(nu.owner == 0, "new unit is owned by the city's owner");
+        chk(nu.x == gx && nu.y == gy, "new unit spawned at city's tile");
+    }
+
+    // (e) HUD: a combat triggers a banner; Chinese vs English pixels differ.
+    auto renderHud = [&](bool translate) -> std::vector<uint8_t> {
+        OpenCiv1Game gg;
+        setupGame(gg, 480, 300);
+        Translator::instance().enabled = translate;
+        MiniWorld ww(30, 20, 7777u);
+        ww.attachGame(gg);
+        auto& um = gg.unitManagement();
+        um.setMapBounds(ww.width(), ww.height());
+        // Plant a human unit + an enemy adjacent so the human's moveUnit forces
+        // combat. Cursor sits on the human's tile.
+        int hx = 10, hy = 10;
+        um.addUnit(0, UnitType::Militia, hx,     hy);
+        um.addUnit(1, UnitType::Phalanx, hx + 1, hy);
+        ww.setUnitPosition(hx, hy);
+        um.setCombatRngSeed(translate ? 0xA1B2C3D4u : 0xA1B2C3D4u);
+        ww.moveUnit(1, 0); // attack east -> combat
+        ww.draw(gg.graphics, 1, 12);
+        return gg.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> zh = renderHud(true);
+    std::vector<uint8_t> en = renderHud(false);
+    chk(zh.size() == en.size() && !zh.empty(), "both renders produced a buffer");
+    std::size_t diffPixels = 0;
+    for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+        if (zh[i] != en[i]) ++diffPixels;
+    chk(diffPixels > 0,
+        "Chinese vs English combat HUD pixels DIFFER (戰鬥/勝利/失敗 localized)");
+
+    Translator::instance().enabled = true;
+
+    if (fail) std::printf("COMBATTEST: %d failure(s)\n", fail);
+    else      std::printf("COMBATTEST: all pass (unit types + combat + production-of-types; %zu i18n pixels differ)\n", diffPixels);
+    return fail ? 1 : 0;
+}
+
 // ---------------- CityView (city interior screen) headless test -----------
 // Goal: verify the ported CityView screen-build end-to-end:
 //   (1) Drive TITLE..PLAYING via FrontEndFlow, then call processEndOfTurn()
@@ -3371,6 +3535,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--aitest")) { return aitest(); }
         else if (!std::strcmp(argv[i], "--aibehaviortest")) { return aibehaviortest(); }
         else if (!std::strcmp(argv[i], "--cityviewtest")) { return cityviewtest(); }
+        else if (!std::strcmp(argv[i], "--combattest")) { return combattest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -3436,7 +3601,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

@@ -35,11 +35,42 @@ namespace oc1 {
 class OpenCiv1Game;
 
 // ---- AI / multi-civ slice ----
-// A unit on the world map. Mirrors a SUBSET of GameData.Players[i].Units[j]
-// (Position + TypeID + alive flag). Only Settlers are modelled here — the
-// other unit types are part of the deeper UnitGoTo / combat port. AI behaviour
-// is stubbed (units don't move yet); the win is a populated world.
-enum class UnitType : uint8_t { Settlers = 0 };
+// Unit types — a faithful SUBSET of C# UnitTypeEnum (UnitTypeEnum.cs lines
+// 9-41). Settlers/Militia/Phalanx cover the early-era handful the gameplay
+// slice needs (founder + cheap attacker + cheap defender). Numeric values
+// are kept 1:1 with the C# enum so save/load round-trip is straight-through
+// when the deeper port lands.
+enum class UnitType : uint8_t { Settlers = 0, Militia = 1, Phalanx = 2 };
+
+// A unit's fixed stats — faithful subset of UnitDefinition.cs (only the
+// fields actually consumed by the combat / cost / movement paths in this
+// slice). `cost` is the SHIELD threshold (C# stores Cost as 10s, multiplied
+// by local_4a in CityWorker.cs ~line 838; we store the EFFECTIVE shield cost
+// directly so end-of-turn comparisons stay simple — e.g. Militia=10 shields).
+struct UnitDef {
+    const char* name;     // English key (Translator turns it into Chinese)
+    int attack;           // AttackStrength (UnitDefinition.cs line 14)
+    int defense;          // DefenseStrength (UnitDefinition.cs line 15)
+    int move;             // MoveCount (line 12)
+    int cost;             // shield cost (Cost * local_4a, line 838)
+};
+
+// Faithful UnitDef table for the early-era handful. Index by UnitType.
+// Values mirror GameData.cs lines 209-211:
+//   Settlers: attack=0, defense=1, move=1, cost=4*10 = 40
+//   Militia:  attack=1, defense=1, move=1, cost=1*10 = 10
+//   Phalanx:  attack=1, defense=2, move=1, cost=2*10 = 20
+inline const UnitDef& unitDefOf(UnitType t) {
+    static const UnitDef kDefs[3] = {
+        {"Settlers", 0, 1, 1, 40},
+        {"Militia",  1, 1, 1, 10},
+        {"Phalanx",  1, 2, 1, 20},
+    };
+    int i = int(t);
+    if (i < 0 || i > 2) i = 0;
+    return kDefs[i];
+}
+
 struct Unit {
     int owner = 0;            // civ index into UnitManagement::civs()
     int x = 0, y = 0;         // Position (matches C# GPoint)
@@ -66,13 +97,14 @@ struct City {
     int foundedTurn = 0;      // founding turn (derived from the world's turn)
 
     // Per-turn production state (mirrors City.ShieldsCount + the
-    // Units[CurrentProductionID].Cost threshold in CityWorker.cs). `production`
-    // is the cost to complete the currently-built unit (default 10 — a
-    // Settlers/Militia-class cost). `units` is the running count of units
-    // produced by this city (the visible-side Player.Units[] table wire-up is
-    // a TODO; see CheckPlayerTurn.cpp).
+    // Units[CurrentProductionID].Cost threshold in CityWorker.cs). `productionType`
+    // is the unit type currently being built (mirrors City.CurrentProductionID
+    // in C# CityWorker.cs ~line 836); `production` caches its UnitDef.cost so
+    // the end-of-turn pass stays a single comparison. `units` is the running
+    // count of units produced by this city.
+    UnitType productionType = UnitType::Militia;  // default = cheapest defender
     int shields = 0;
-    int production = 10;
+    int production = 10;  // unitDefOf(productionType).cost, kept in sync
     int units = 0;
 };
 
@@ -151,6 +183,57 @@ public:
     const std::vector<Unit>& units() const { return units_; }
     std::vector<Unit>& unitsMut() { return units_; }
 
+    // Set a city's current production type AND sync the cached `production`
+    // shield cost from the UnitDef table (so the end-of-turn threshold uses
+    // the freshly-picked unit's cost without the caller doing it manually).
+    // Mirrors the C# CityWorker.cs path that updates City.CurrentProductionID
+    // and re-reads Units[ID].Cost on the next end-of-turn pass.
+    void setCityProductionType(int cityId, UnitType t);
+
+    // ---- COMBAT (faithful Civ1 formula) -----------------------------------
+    // The reference combat path in C# is buried in Segment_25fb (the AI unit
+    // dispatcher) and the per-unit move handler — too obfuscated for a 1:1
+    // port. We use the well-documented Civ1 roll formula (Sid Meier interview
+    // / Civ1 manual / community traces of the original asm):
+    //     attackerRoll = rng() % attackerDef.attack
+    //     defenderRoll = rng() % defenderDef.defense
+    //     if attackerRoll > defenderRoll: defender dies, attacker survives
+    //     else                          : attacker dies (defender wins ties)
+    // The roll inputs use the same MT19937 source the world generator uses
+    // (RandomMT19937 / IRB.RNG.RandomMT19937) so results are deterministic
+    // for a given seed. Returns true when the attacker survives (and should
+    // be moved into the defender's tile by the caller); false when defender
+    // wins (attacker.alive = false, attacker stays put). Both units' .alive
+    // flags are updated in place.
+    //
+    // Edge cases (faithful): attack==0 always loses (attackerRoll forced to
+    // 0, but defenderRoll >= 0 -> defender wins ties). defense==0 is treated
+    // as 1 to avoid div-by-zero (Civ1 has no 0-defense units; Settlers' 0
+    // attack is the only zero stat in this slice).
+    static bool resolveCombat(Unit& attacker, Unit& defender,
+                              uint32_t& rngState);
+
+    // moveUnit: move a unit by (dx,dy) by ONE step. When the destination tile
+    // has an enemy alive unit, runs combat instead of moving (see resolveCombat).
+    // Returns the new alive state of the moving unit (true == survived). Out-of-
+    // bounds destinations are a no-op (returns true, unit not moved). Combat
+    // outcome side-effects:
+    //   - attacker wins -> defender.alive = false; attacker moves into the tile
+    //   - defender wins -> attacker.alive = false; attacker stays put
+    bool moveUnit(int unitId, int dx, int dy);
+
+    // The last combat outcome (English key for the HUD): "" / "Victory" /
+    // "Defeat" / "Battle" (in-progress). MiniWorld reads this for the HUD line.
+    const std::string& lastCombatKey() const { return lastCombatKey_; }
+    void setLastCombatKey(std::string k) { lastCombatKey_ = std::move(k); }
+
+    // Deterministic RNG state for combat rolls (seeded from the world seed in
+    // FrontEndFlow::enterPlaying; tests inject a known seed via setCombatRngSeed
+    // so the win-rate statistics are reproducible). Public so tests can read
+    // the post-roll state for assertions.
+    uint32_t combatRngState() const { return combatRng_; }
+    void setCombatRngSeed(uint32_t s) { combatRng_ = s ? s : 1u; }
+
 private:
     OpenCiv1Game& p;
     std::vector<City> cities_;
@@ -160,6 +243,8 @@ private:
     int chosenTribe_ = -1;
     std::function<Terrain(int, int)> terrainAt_;
     int year_ = -4000; // StartGameMenu.cs line 124: GameData.Year = -4000
+    uint32_t combatRng_ = 0xCAFEBABEu; // tests override via setCombatRngSeed
+    std::string lastCombatKey_;        // "" / "Victory" / "Defeat"
 };
 
 } // namespace oc1

@@ -120,14 +120,19 @@ int CheckPlayerTurn::processEndOfTurn() {
             c.shields += shieldYield(adjGood);
 
             // Threshold-triggered unit production. C# does the same with
-            // Units[ProductionID].Cost * local_4a; we use the per-city
-            // `production` cost (default 10 == a Settlers/Militia-class unit).
-            // The produced unit is tracked as a per-city counter (units++);
-            // wiring it into a visible Player.Units[] table is out of scope
-            // (stubbed — see UnitManagement.h // TODO(port) for the deeper port).
-            if (c.production > 0 && c.shields >= c.production) {
-                c.shields -= c.production;
+            // Units[ProductionID].Cost * local_4a; we read the cost from the
+            // UnitDef table for the city's currently-built type, then spawn an
+            // ACTUAL Unit of that type at the city's tile (so it appears in
+            // units() and is visible on the world map / combat-eligible).
+            // Mirrors CityWorker.cs lines 836-855 (the shield threshold pass)
+            // followed by F0_1866_0cf5_CreateUnit (UnitManagement.cs ~line 603,
+            // the per-civ Units[] table insert).
+            int needed = unitDefOf(c.productionType).cost;
+            if (c.production != needed) c.production = needed; // keep in sync
+            if (needed > 0 && c.shields >= needed) {
+                c.shields -= needed;
                 c.units += 1;
+                um.addUnit(c.owner, c.productionType, c.x, c.y);
             }
         }
     }
