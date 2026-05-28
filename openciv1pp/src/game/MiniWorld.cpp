@@ -3,6 +3,7 @@
 #include "OpenCiv1Game.h"
 #include "UnitManagement.h"
 #include "CheckPlayerTurn.h"
+#include "CityView.h"
 #include "../resource/PicLoader.h"
 #include <algorithm>
 #include <cstdint>
@@ -170,13 +171,33 @@ bool MiniWorld::screenToTile(int fbX, int fbY, int& tileX, int& tileY) const {
     return true;
 }
 
+int MiniWorld::cityIdAt(int tileX, int tileY) const {
+    if (!game_) return -1;
+    const auto& cities = game_->unitManagement().cities();
+    for (std::size_t i = 0; i < cities.size(); ++i) {
+        if (cities[i].x == tileX && cities[i].y == tileY) return int(i);
+    }
+    return -1;
+}
+
+bool MiniWorld::handleMapClick(int tileX, int tileY) {
+    // City takes priority over movement: if the click hits a founded city's
+    // tile AND a host game is attached, open the city view instead of moving.
+    int cid = cityIdAt(tileX, tileY);
+    if (cid >= 0 && game_) {
+        game_->cityView().open(cid);
+        return true;
+    }
+    int dx = (tileX > unitX_) - (tileX < unitX_); // sign in {-1,0,+1}
+    int dy = (tileY > unitY_) - (tileY < unitY_);
+    if (dx == 0 && dy == 0) return false; // click on the unit itself
+    return moveUnit(dx, dy);
+}
+
 bool MiniWorld::handleMouseClick(int fbX, int fbY) {
     int tx = 0, ty = 0;
     if (!screenToTile(fbX, fbY, tx, ty)) return false; // HUD / off-map: no move
-    int dx = (tx > unitX_) - (tx < unitX_); // sign in {-1,0,+1}
-    int dy = (ty > unitY_) - (ty < unitY_);
-    if (dx == 0 && dy == 0) return false; // click on the unit itself
-    return moveUnit(dx, dy);
+    return handleMapClick(tx, ty);
 }
 
 void MiniWorld::attachGame(OpenCiv1Game& g) {

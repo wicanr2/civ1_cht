@@ -25,6 +25,7 @@
 #include "game/MapManagement.h"
 #include "game/UnitManagement.h"
 #include "game/CheckPlayerTurn.h"
+#include "game/CityView.h"
 #include "localization/Translator.h"
 #include "platform/SdlPresenter.h"
 #include "resource/PicLoader.h"
@@ -2802,13 +2803,47 @@ static int gameInteractive(const std::string& assetDir) {
             // --- Live playable map. Drive MiniWorld directly. ---
             MiniWorld* w = flow.miniWorld();
             if (!w) break;
+
+            // If the CityView is open, route input to IT (ESC/click-outside
+            // closes; click-inside is consumed). Render via cityView until
+            // closed; then resume MiniWorld rendering.
+            if (g.cityView().isOpen()) {
+                bool dirty = false;
+                SdlPresenter::MouseEvent me;
+                while (pres.pollMouse(me)) {
+                    if (!me.motion && me.down && me.button == 1) {
+                        if (g.cityView().handleClick(me.x, me.y)) dirty = true;
+                    }
+                }
+                int key = pres.pollKey();
+                if (key == SdlPresenter::KeyEsc) {
+                    g.cityView().close(); dirty = true;
+                }
+                if (g.cityView().isOpen()) {
+                    g.cityView().draw(fb, 1);
+                } else if (dirty) {
+                    flow.draw(); // restore the map render
+                }
+                if (!dirty) {
+                    // Still draw at least once so the SDL window updates.
+                    g.cityView().draw(fb, 1);
+                }
+                continue;
+            }
+
             bool dirty = false;
-            // Mouse: left-click on a tile -> move one step toward it.
+            // Mouse: left-click on a tile -> move one step toward it OR open
+            // city view if the tile has a city.
             SdlPresenter::MouseEvent me;
             while (pres.pollMouse(me)) {
                 if (!me.motion && me.down && me.button == 1) {
                     if (w->handleMouseClick(me.x, me.y)) dirty = true;
                 }
+            }
+            // If a city view got opened by a click, draw it and continue.
+            if (g.cityView().isOpen()) {
+                g.cityView().draw(fb, 1);
+                continue;
             }
             int key = pres.pollKey();
             switch (key) {
@@ -3127,6 +3162,152 @@ static int aibehaviortest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- CityView (city interior screen) headless test -----------
+// Goal: verify the ported CityView screen-build end-to-end:
+//   (1) Drive TITLE..PLAYING via FrontEndFlow, then call processEndOfTurn()
+//       once so the 6 AI civs found their capitals (the existing aibehaviortest
+//       proves this; here we reuse it as setup).
+//   (2) Open the cityView for one AI city and render to a screen. Assert
+//       non-zero ink AND the city panel contains the city's name (verified by
+//       re-rendering with name overridden and checking the buffers differ).
+//   (3) Render twice with Translator ON vs OFF; pixels MUST differ (Chinese
+//       labels: "City"/"Population:"/"Founded:"/"Owner:"/"Tiles:").
+//   (4) close() returns isOpen() == false.
+//   (5) Click-outside-panel closes the view; click-inside leaves it open.
+//   (6) MiniWorld::handleMapClick on a city tile opens the cityView.
+// With OPENCIV1_DOS_ASSETS env set, also dump /tmp/cityview.ppm.
+static int cityviewtest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // (1) Set up integrated PLAYING + one end-of-turn pass (AI founds capitals).
+    OpenCiv1Game g;
+    setupGame(g, 480, 300);
+    Translator::instance().enabled = true;
+    // Honor OPENCIV1_DOS_ASSETS for the optional CBACK*.PIC backdrop.
+    if (const char* env = std::getenv("OPENCIV1_DOS_ASSETS"); env && *env) {
+        g.setResourcePath(resolveAssetDir(env));
+    }
+    FrontEndFlow flow(g);
+    flow.enterTitle();
+    flow.handleKey(MenuBoxDialog::KeyEnter); // -> MAIN_MENU
+    flow.handleKey(MenuBoxDialog::KeyEnter); // -> DIFFICULTY
+    flow.handleKey(MenuBoxDialog::KeyEnter); // -> TRIBE
+    flow.handleKey(MenuBoxDialog::KeyEnter); // -> NAME
+    flow.handleKey(MenuBoxDialog::KeyEnter); // -> STARTING
+    State s = flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+    chk(s == State::PLAYING, "flow reached PLAYING");
+    g.checkPlayerTurn().processEndOfTurn();
+    auto& um = g.unitManagement();
+    chk(um.cityCount() == 6, "6 AI capitals founded after one end-of-turn pass");
+
+    // Pick the FIRST AI city (owner > 0).
+    int aiCityId = -1;
+    for (std::size_t i = 0; i < um.cities().size(); ++i)
+        if (um.cities()[i].owner > 0) { aiCityId = int(i); break; }
+    chk(aiCityId >= 0, "found an AI city to view");
+
+    // (2) Open + render -> non-zero ink.
+    auto& cv = g.cityView();
+    chk(!cv.isOpen(), "cityView starts closed");
+    chk(cv.open(aiCityId), "cityView.open(aiCityId) succeeds");
+    chk(cv.isOpen(), "cityView.isOpen() reports true after open");
+    chk(cv.cityId() == aiCityId, "cityView.cityId() matches");
+
+    auto renderCv = [&](bool translate, int overrideCityId = -1,
+                        const char* overrideName = nullptr) -> std::vector<uint8_t> {
+        // Build a fresh game each call so we get an independent render state.
+        OpenCiv1Game gg;
+        setupGame(gg, 480, 300);
+        Translator::instance().enabled = translate;
+        FrontEndFlow f2(gg);
+        f2.enterTitle();
+        for (int k = 0; k < 6; ++k) f2.handleKey(MenuBoxDialog::KeyEnter);
+        gg.checkPlayerTurn().processEndOfTurn();
+        int cid = (overrideCityId >= 0) ? overrideCityId : aiCityId;
+        if (cid < 0 || std::size_t(cid) >= gg.unitManagement().cityCount()) cid = 0;
+        if (overrideName)
+            gg.unitManagement().citiesMut()[std::size_t(cid)].name = overrideName;
+        gg.cityView().open(cid);
+        gg.cityView().draw(gg.graphics.screen(0), 1);
+        return gg.graphics.screen(0).pixels();
+    };
+
+    std::vector<uint8_t> baseBuf = renderCv(true);
+    std::size_t inkBase = 0;
+    for (auto px : baseBuf) if (px) ++inkBase;
+    chk(inkBase > 1000, "cityView render produced substantial ink (> 1000 px)");
+
+    // Override the name and re-render: the buffers must differ (city name
+    // contributes ink at the title bar). This proves the city name string
+    // actually appears in the output.
+    std::vector<uint8_t> overrideBuf = renderCv(true, aiCityId, "ZZZZZZZZ");
+    std::size_t nameDiff = 0;
+    for (std::size_t i = 0; i < baseBuf.size() && i < overrideBuf.size(); ++i)
+        if (baseBuf[i] != overrideBuf[i]) ++nameDiff;
+    chk(nameDiff > 0, "city name appears in render (override changes pixels)");
+
+    // (3) Translation pixel-diff: Chinese vs English labels MUST differ.
+    std::vector<uint8_t> zhBuf = renderCv(true);
+    std::vector<uint8_t> enBuf = renderCv(false);
+    chk(zhBuf.size() == enBuf.size() && !zhBuf.empty(),
+        "both translate-on and translate-off renders produced a buffer");
+    std::size_t i18nDiff = 0;
+    for (std::size_t i = 0; i < zhBuf.size() && i < enBuf.size(); ++i)
+        if (zhBuf[i] != enBuf[i]) ++i18nDiff;
+    chk(i18nDiff > 0,
+        "Chinese vs English render pixels DIFFER (labels are translated)");
+
+    // (4) close() puts the view in the closed state.
+    cv.close();
+    chk(!cv.isOpen(), "close() -> isOpen() == false");
+    chk(cv.cityId() == -1, "close() resets cityId()");
+
+    // (5) Click-outside the panel closes; click-inside leaves it open.
+    cv.open(aiCityId);
+    chk(cv.handleClick(0, 0), "click outside panel handled");
+    chk(!cv.isOpen(), "click outside panel closed the view");
+    cv.open(aiCityId);
+    chk(cv.handleClick(160, 100), "click inside panel handled");
+    chk(cv.isOpen(), "click inside panel does NOT close the view");
+    // Esc key closes.
+    chk(cv.handleKey(SdlPresenter::KeyEsc), "Esc key handled");
+    chk(!cv.isOpen(), "Esc key closed the view");
+
+    // (6) MiniWorld::handleMapClick opens cityView when the click hits a city.
+    {
+        MiniWorld* w = flow.miniWorld();
+        chk(w != nullptr, "FrontEndFlow exposes the MiniWorld");
+        if (w) {
+            const auto& cAi = um.cities()[std::size_t(aiCityId)];
+            chk(w->handleMapClick(cAi.x, cAi.y),
+                "handleMapClick on the city tile is handled");
+            chk(g.cityView().isOpen(),
+                "handleMapClick on a city tile OPENED the cityView");
+            chk(g.cityView().cityId() == aiCityId,
+                "cityView opened for the clicked city");
+            g.cityView().close();
+        }
+    }
+
+    // Dump a visual when OPENCIV1_DOS_ASSETS is present (extra debug aid).
+    if (const char* env = std::getenv("OPENCIV1_DOS_ASSETS"); env && *env) {
+        GBitmap fb(480, 300);
+        fb.pixelsMut() = zhBuf;
+        dumpPPM(fb, "/tmp/cityview.ppm");
+    }
+
+    Translator::instance().enabled = true; // restore default
+
+    if (fail)
+        std::printf("CITYVIEWTEST: %d failure(s)\n", fail);
+    else
+        std::printf("CITYVIEWTEST: all pass (cityView panel + %zu name-ink + "
+                    "%zu i18n pixels differ)\n", nameDiff, i18nDiff);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -3189,6 +3370,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--gameflowtest")) { return gameflowtest(); }
         else if (!std::strcmp(argv[i], "--aitest")) { return aitest(); }
         else if (!std::strcmp(argv[i], "--aibehaviortest")) { return aibehaviortest(); }
+        else if (!std::strcmp(argv[i], "--cityviewtest")) { return cityviewtest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -3254,7 +3436,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

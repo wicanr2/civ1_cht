@@ -83,8 +83,18 @@ public:
     // tileX-unitX / tileY-unitY, clamped to {-1,0,1} on each axis (so this
     // composes with the existing moveUnit(dx,dy) step model). Returns true if
     // the unit actually moved. Clicks on the HUD or on the unit's own tile
-    // return false (no movement).
+    // return false (no movement). When the click HITS a tile with a founded
+    // city AND a host game is attached, the city view is opened instead and
+    // the unit does not move.
     bool handleMouseClick(int fbX, int fbY);
+
+    // Tile-coords variant of handleMouseClick — exposed so the integrated
+    // game loop / tests can drive the click logic without going through the
+    // framebuffer math. Returns the same true/false as handleMouseClick.
+    bool handleMapClick(int tileX, int tileY);
+
+    // Returns the cityId at (tileX,tileY) when a city is there, else -1.
+    int cityIdAt(int tileX, int tileY) const;
 
     // ---- real-asset tileset (optional) ----
     bool loadTileset(const std::string& dosAssetDir);

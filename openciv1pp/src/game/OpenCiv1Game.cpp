@@ -11,6 +11,7 @@
 #include "MapManagement.h"
 #include "UnitManagement.h"
 #include "CheckPlayerTurn.h"
+#include "CityView.h"
 
 namespace oc1 {
 
@@ -28,6 +29,7 @@ OpenCiv1Game::OpenCiv1Game() {
     mapManagement_ = std::make_unique<MapManagement>(*this);
     unitManagement_ = std::make_unique<UnitManagement>(*this);
     checkPlayerTurn_ = std::make_unique<CheckPlayerTurn>(*this);
+    cityView_ = std::make_unique<CityView>(*this);
 }
 OpenCiv1Game::~OpenCiv1Game() = default;
 
