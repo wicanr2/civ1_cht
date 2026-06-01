@@ -413,6 +413,17 @@ struct CivState {
     int taxRate = 5;
     int luxRate = 0;
     int sciRate = 5;
+
+    // ---- BARBARIANS (Civ1 hostile NPC civ) -------------------------------
+    // Faithful Civ1: civ id 7 (the 8th slot) is reserved for the BARBARIAN
+    // civ — a permanent NPC always at War with every other civ. Spawned with
+    // setupCivs() AFTER the 7 normal civs (human + AI). isBarbarian=true
+    // marks this civ for the barbarian-spawn pass in CheckPlayerTurn (and
+    // tells MiniWorld to render its units in the dedicated red color).
+    // Subset: Civ1's full Barbarian Leader / ransom mechanic + the goodie-
+    // hut barbarian uprising spawn variant + era-appropriate unit types
+    // beyond Militia/Legion are STUBS — see commit message TODOs.
+    bool isBarbarian = false;
 };
 
 struct City {
@@ -561,6 +572,15 @@ public:
     // others). The deeper Players[] init (Diplomacy/Treasury/Tech/ ...) stays
     // a STUB — only the {tribeIdx, color, name, isHuman} subset is materialised.
     void setupCivs(int humanTribe, int numAi);
+    // BARBARIANS: civ id of the dedicated barbarian civ (-1 when not present).
+    // Returns the index of the first civ flagged isBarbarian; by convention
+    // setupCivs() places it at the end (civs.size()-1 = 7 for the standard
+    // 1 human + 6 AI + 1 barb arrangement).
+    int barbarianCivId() const {
+        for (std::size_t i = 0; i < civs_.size(); ++i)
+            if (civs_[i].isBarbarian) return int(i);
+        return -1;
+    }
     const std::vector<CivState>& civs() const { return civs_; }
     // Direct-write access used by GameLoadAndSave to restore civs from disk.
     std::vector<CivState>& civsMut() { return civs_; }

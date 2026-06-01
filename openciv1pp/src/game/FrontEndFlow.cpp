@@ -93,7 +93,11 @@ void FrontEndFlow::enterPlaying() {
     // Wire the per-civ tech tree (Alphabet as the canonical first research
     // target for every civ). Mirrors the C# GameData init where every
     // Players[i].TechnologyAdvances[] starts empty.
-    p.techResearch().initCivs(1 + kNumAi);
+    // BARBARIANS: setupCivs added an 8th civ (civ id 7) for the barbarian
+    // NPC slot — initCivs needs the matching extra entry so per-civ tech
+    // lookups by barb civId don't go out of bounds. The barb civ never
+    // researches, but its slot must exist.
+    p.techResearch().initCivs(int(p.unitManagement().civs().size()));
     std::vector<std::pair<int,int>> starts;
     placeStartingPositions(p.mapManagement(), 1 + kNumAi,
                            seed ^ 0xA17C1051u, starts, /*minDistance*/ 10);

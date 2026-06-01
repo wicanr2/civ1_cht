@@ -422,6 +422,9 @@ void MiniWorld::renderUnits(GBitmap& screen) const {
     screen.palette.set(224, 120, 250, 120); // civ 5 light green
     screen.palette.set(225, 200, 180, 255); // civ 6 lavender
     screen.palette.set(226, 255, 255,  80); // civ 7 (reserved)
+    // BARBARIANS: dedicated red, distinct from human's marker red at 209.
+    // Used by the barbarian civ (id 7 in the standard 1H+6AI arrangement).
+    screen.palette.set(227, 200,  20,  20); // barbarian red
     screen.palette.set(210,   0,   0,   0); // outline
 
     const int tileSize = lastTileSize_;
@@ -668,19 +671,31 @@ void MiniWorld::endTurn() {
         // to Chinese "破產!" via the chokepoint Translator.
         auto& um = game_->unitManagement();
         int beforeAlive = 0;
+        // BARBARIANS: snapshot pre-EOT barbarian unit count so we can
+        // detect a spawn this turn and surface "Barbarian Uprising!" on
+        // the HUD's lastActionKey_ line (translated to "野蠻人入侵!").
+        int barbId = um.barbarianCivId();
+        int beforeBarbs = 0;
         if (!um.civs().empty()) {
             for (const auto& u : um.units()) {
                 if (u.alive && u.owner == 0) ++beforeAlive;
+                if (u.alive && barbId >= 0 && u.owner == barbId) ++beforeBarbs;
             }
         }
         game_->checkPlayerTurn().processEndOfTurn();
         if (!um.civs().empty()) {
             int afterAlive = 0;
+            int afterBarbs = 0;
             for (const auto& u : um.units()) {
                 if (u.alive && u.owner == 0) ++afterAlive;
+                if (u.alive && barbId >= 0 && u.owner == barbId) ++afterBarbs;
             }
             if (afterAlive < beforeAlive) {
                 lastActionKey_ = "Bankrupt!";
+                lastCityName_.clear();
+            } else if (afterBarbs > beforeBarbs) {
+                // New barbarian(s) spawned this turn -> banner.
+                lastActionKey_ = "Barbarian Uprising!";
                 lastCityName_.clear();
             }
         }

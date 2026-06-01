@@ -130,9 +130,93 @@ int CheckPlayerTurn::cityFoodGross(int cx, int cy) const {
     return gross;
 }
 
+// ---- BARBARIANS (Civ1 hostile NPC spawn pass) ---------------------------
+// Faithful Civ1 simplified rule (see header comment for the full doc):
+//   * Deterministic xorshift32 seeded from `turn`.
+//   * Probability cap grows with the turn (10/17/25% across early/mid/late).
+//   * Pick a random valid LAND tile at Chebyshev distance >= 5 from every
+//     existing city; if no such tile exists in 64 sampled attempts, give up
+//     this turn.
+//   * Spawn 1 unit owned by the barbarian civ. Militia early; Legion when
+//     turn > 30 (faithful Civ1 era-toughening, simplified subset).
+//
+// The hostile-to-everyone behaviour falls out for free: setupCivs() already
+// set relations between the barbarian civ and every other civ to War, so
+// the existing UnitManagement::moveUnit combat path handles attacks.
+int CheckPlayerTurn::spawnBarbariansForTurn(int turn) {
+    auto& um = p.unitManagement();
+    int barbId = um.barbarianCivId();
+    if (barbId < 0) return -1; // no barbarian civ -> no spawns
+    // Roll for the spawn this turn.
+    uint32_t s = uint32_t(turn) * 0x9E3779B1u + 0xBA0BACE5u;
+    s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+    int roll = int(s % 100u); // 0..99
+    int threshold = 10;       // ~10% baseline
+    if (turn > 15) threshold = 17;
+    if (turn > 30) threshold = 25;
+    if (roll >= threshold) return -1; // missed roll
+    // Pick a valid land tile far from every city (Chebyshev >= 5).
+    // Use a separate xorshift step so the pick is independent of the roll.
+    uint32_t pickS = s ^ 0xCAFEF00Du;
+    constexpr int kMinCityDist = 5;
+    constexpr int kAttempts    = 64;
+    const auto& tprov = um.terrainProvider();
+    const auto& cities = um.cities();
+    auto& mm = p.mapManagement();
+    int W = MapManagement::kWidth, H = MapManagement::kHeight;
+    int spawnX = -1, spawnY = -1;
+    for (int attempt = 0; attempt < kAttempts; ++attempt) {
+        pickS ^= pickS << 13; pickS ^= pickS >> 17; pickS ^= pickS << 5;
+        int x = int(pickS % uint32_t(W));
+        pickS ^= pickS << 13; pickS ^= pickS >> 17; pickS ^= pickS << 5;
+        int y = int(pickS % uint32_t(H));
+        // Land-only: reject Water + Arctic.
+        Terrain t = tprov ? tprov(x, y) : mm.GetTerrainType(x, y);
+        if (t == Terrain::Water || t == Terrain::Arctic) continue;
+        // Reject when any city is within kMinCityDist.
+        bool tooClose = false;
+        for (const auto& cc : cities) {
+            int dxx = x > cc.x ? x - cc.x : cc.x - x;
+            int dyy = y > cc.y ? y - cc.y : cc.y - y;
+            int d = dxx > dyy ? dxx : dyy;
+            if (d < kMinCityDist) { tooClose = true; break; }
+        }
+        if (tooClose) continue;
+        // Reject when any unit (any owner) already occupies the tile.
+        bool occupied = false;
+        for (const auto& uu : um.units()) {
+            if (!uu.alive) continue;
+            if (uu.x == x && uu.y == y) { occupied = true; break; }
+        }
+        if (occupied) continue;
+        spawnX = x; spawnY = y;
+        break;
+    }
+    if (spawnX < 0) return -1; // no valid tile in budget
+    UnitType type = (turn > 30) ? UnitType::Legion : UnitType::Militia;
+    return um.addUnit(barbId, type, spawnX, spawnY);
+}
+
 int CheckPlayerTurn::processEndOfTurn() {
     auto& um = p.unitManagement();
     auto& cities = um.citiesMut();
+
+    // ---- BARBARIANS: spawn pass at the TOP of EOT -----------------------
+    // Faithful Civ1: barb uprisings roll BEFORE the AI movement pass so a
+    // freshly-spawned barb gets a chance to act this turn (the AI movement
+    // pass below already iterates all non-human civs, which includes the
+    // barbarian civ — its units walk toward the Chebyshev-nearest enemy
+    // via the same greedy aiStep path).
+    // The turn we seed with is the year-derived proxy (faithful: year
+    // ticks monotonically with the turn counter in CheckPlayerTurn).
+    // Documented: an explicit per-civ turn counter would be more precise,
+    // but the (year + 4000) / 20 estimate stays deterministic across saves
+    // (year is persisted) so headless tests reproduce.
+    {
+        int seedTurn = (um.year() + 4000) / 20;
+        if (seedTurn < 1) seedTurn = 1;
+        (void)spawnBarbariansForTurn(seedTurn);
+    }
 
     // ---- FORTIFY slice: promote fortifying -> fortified at top of turn ---
     // Civ1: issuing Fortify takes 1 turn to fully engage. The unit becomes

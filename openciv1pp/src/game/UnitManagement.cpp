@@ -242,9 +242,37 @@ void UnitManagement::setupCivs(int humanTribe, int numAi) {
         a.isHuman = false;
         civs_.push_back(std::move(a));
     }
+    // ---- BARBARIANS: append the dedicated NPC civ ------------------------
+    // Civ id = current civs_.size() (i.e. 7 for the standard 1 human + 6 AI
+    // arrangement). The barbarian civ:
+    //   * tribeIdx = 255 (sentinel — not a real tribe; first-city-naming
+    //     paths fall back to "Capital" for tribeIdx >= 14).
+    //   * color = 227 (dedicated palette index; MiniWorld installs it as a
+    //     bright red so barb units are visually distinct from civs 1..6 at
+    //     220..226 and from the human's marker red at 209).
+    //   * name = "Barbarians" (Translator -> "野蠻人").
+    //   * isHuman = false (never input-routed).
+    //   * isBarbarian = true (gates the barb-spawn pass in CheckPlayerTurn).
+    {
+        CivState b;
+        b.tribeIdx = 255;
+        b.color = 227;
+        b.name = "Barbarians";
+        b.isHuman = false;
+        b.isBarbarian = true;
+        civs_.push_back(std::move(b));
+    }
     // Reshape pairwise relations to match the new civ count. Diagonal Peace,
     // all off-diagonals NoContact (faithful Civ1: civs haven't met at start).
     resizeRelations(int(civs_.size()));
+    // BARBARIANS: relations[barb][others] = War (faithful Civ1: barbs are
+    // ALWAYS at war with every civ, no NoContact phase, no peace possible).
+    {
+        int barbId = int(civs_.size()) - 1;
+        for (int i = 0; i < barbId; ++i) {
+            setRelation(barbId, i, Relation::War);
+        }
+    }
 }
 
 bool UnitManagement::changeGovernment(int civId, Government newGovt) {

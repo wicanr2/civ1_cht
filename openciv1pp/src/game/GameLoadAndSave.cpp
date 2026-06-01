@@ -125,7 +125,12 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     // bytes, 1 = hut present, 0 = none). v1..v13 readers ignore the 'huts'
     // key entirely (default: empty huts grid, matching MapManagement's
     // clearAllHuts() reset on world re-gen).
-    os << "OpenCiv1pp savegame v14\n";
+    // v15 adds per-civ isBarbarian flag (BARBARIANS slice). Appended as
+    // 'civbarb <i> <0|1>' lines, one per civ. v1..v14 readers skip the
+    // 'civbarb' key entirely (default: isBarbarian=false from CivState's
+    // struct init). The barbarian civ unit's owner field already round-
+    // trips via the regular 'unit' line so barbarian units survive load.
+    os << "OpenCiv1pp savegame v15\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -287,6 +292,15 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
            << civs[i].luxRate << " " << civs[i].sciRate << "\n";
     }
 
+    // v15: per-civ isBarbarian flag. One line per civ. v1..v14 readers skip
+    // the 'civbarb' key entirely (default: isBarbarian=false). Persisting
+    // explicitly so a save made AFTER setupCivs (which marks civ N as barb)
+    // round-trips the flag — fresh post-load setupCivs would also re-mark
+    // it, but loaders skip setupCivs and restore civs verbatim.
+    for (std::size_t i = 0; i < civs.size(); ++i) {
+        os << "civbarb " << i << " " << (civs[i].isBarbarian ? 1 : 0) << "\n";
+    }
+
     // v10: per-city {happy, unhappy, disorder}. One line per city. v1..v9
     // readers skip the 'cityhappy' key entirely (default: happy=0,
     // unhappy=0, disorder=false from City's struct init).
@@ -388,7 +402,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         header != "OpenCiv1pp savegame v11" &&
         header != "OpenCiv1pp savegame v12" &&
         header != "OpenCiv1pp savegame v13" &&
-        header != "OpenCiv1pp savegame v14") return false;
+        header != "OpenCiv1pp savegame v14" &&
+        header != "OpenCiv1pp savegame v15") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -448,6 +463,10 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     // v1..v12 saves don't emit this key -> defaults (5/0/5) hold.
     struct CivRatesRow { int civId; int tax; int lux; int sci; };
     std::vector<CivRatesRow> civRatesRows;
+    // v15: per-civ isBarbarian. Applied after civs are restored. v1..v14
+    // saves don't emit this key -> default (false) holds.
+    struct CivBarbRow { int civId; int isBarbarian; };
+    std::vector<CivBarbRow> civBarbRows;
 
     std::string line;
     while (std::getline(is, line)) {
@@ -611,6 +630,11 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             CivRatesRow r{};
             iss >> r.civId >> r.tax >> r.lux >> r.sci;
             civRatesRows.push_back(r);
+        }
+        else if (key == "civbarb") {
+            CivBarbRow r{};
+            iss >> r.civId >> r.isBarbarian;
+            civBarbRows.push_back(r);
         }
         else if (key == "cityhappy") {
             CityHappyRow r{};
@@ -811,6 +835,15 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             cv[std::size_t(r.civId)].taxRate = r.tax;
             cv[std::size_t(r.civId)].luxRate = r.lux;
             cv[std::size_t(r.civId)].sciRate = r.sci;
+        }
+    }
+    // v15: apply per-civ isBarbarian flag. Absent in v1..v14 saves -> all
+    // civs default isBarbarian=false (the legacy behaviour pre-BARBARIANS).
+    {
+        auto& cv = p.unitManagement().civsMut();
+        for (const auto& r : civBarbRows) {
+            if (r.civId < 0 || std::size_t(r.civId) >= cv.size()) continue;
+            cv[std::size_t(r.civId)].isBarbarian = (r.isBarbarian != 0);
         }
     }
     // v10: apply per-city {happy, unhappy, disorder}. Absent in v1..v9

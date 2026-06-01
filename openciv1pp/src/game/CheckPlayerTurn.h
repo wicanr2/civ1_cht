@@ -88,6 +88,19 @@ public:
     // Returns sum-of-food (BEFORE subtracting population*2).
     int cityFoodGross(int cx, int cy) const;
 
+    // ---- BARBARIANS (Civ1 hostile NPC spawn pass) -----------------------
+    // Civ1 standard: every turn the engine rolls for a barbarian uprising;
+    // on hit it spawns a Barbarian unit (Militia early, Legion mid-game) on
+    // a random unoccupied LAND tile at Chebyshev distance >= 5 from any
+    // city. Roll probability grows with the turn (faithful Civ1 "as time
+    // passes the barbarians get more aggressive"): ~10% turns 1..15,
+    // ~17% turns 16..30, ~25% turns 31+. Deterministic xorshift32 seeded
+    // from the turn so headless tests can reproduce the spawn pattern.
+    // Returns the unit index of the newly spawned barbarian, or -1 when
+    // (a) no barbarian civ exists, (b) the roll missed, or (c) no valid
+    // spawn tile was found this turn.
+    int spawnBarbariansForTurn(int turn);
+
 private:
     OpenCiv1Game& p;
 };
