@@ -121,7 +121,11 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     // v13 adds per-civ tax/lux/sci rate slider (default 5/0/5; sum=10).
     // v1..v12 readers ignore the 'civrates' key (default rates from
     // CivState struct init).
-    os << "OpenCiv1pp savegame v13\n";
+    // v14 adds the Goodie Huts grid (parallel to improvements: 80*50 hex
+    // bytes, 1 = hut present, 0 = none). v1..v13 readers ignore the 'huts'
+    // key entirely (default: empty huts grid, matching MapManagement's
+    // clearAllHuts() reset on world re-gen).
+    os << "OpenCiv1pp savegame v14\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -315,6 +319,25 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
         os << "\n";
     }
 
+    // v14: Goodie Huts grid (80*50 = 4000 bytes -> 8000 hex chars). Same
+    // row-major byte-per-tile layout as terrain/improvements. 1 = hut, 0 =
+    // none. v1..v13 readers skip the 'huts' key entirely (defaults: empty).
+    {
+        std::vector<uint8_t> hutBytes;
+        hutBytes.resize(std::size_t(MapManagement::kWidth) *
+                        MapManagement::kHeight);
+        const auto& mm = p.mapManagement();
+        for (int y = 0; y < MapManagement::kHeight; ++y) {
+            for (int x = 0; x < MapManagement::kWidth; ++x) {
+                hutBytes[std::size_t(y) * MapManagement::kWidth + x] =
+                    mm.getHutByte(x, y);
+            }
+        }
+        os << "huts ";
+        writeHex(os, hutBytes);
+        os << "\n";
+    }
+
     // Per-civ tech state. One techcsv line per civ; the techCsv tail is the
     // comma-separated list of Tech enum ids the civ knows ("" when none).
     const auto& tr = p.techResearch();
@@ -364,7 +387,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         header != "OpenCiv1pp savegame v10" &&
         header != "OpenCiv1pp savegame v11" &&
         header != "OpenCiv1pp savegame v12" &&
-        header != "OpenCiv1pp savegame v13") return false;
+        header != "OpenCiv1pp savegame v13" &&
+        header != "OpenCiv1pp savegame v14") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -377,6 +401,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     std::vector<City> cities;
     std::vector<uint8_t> terrain;
     std::vector<uint8_t> improvements;
+    // v14: Goodie Huts grid. v1..v13 readers default to empty (clearAllHuts).
+    std::vector<uint8_t> huts;
     // Per-civ tech state we'll restore after the main vectors are applied.
     struct TechRow { int civId; int researching; int points; std::vector<int> known; };
     std::vector<TechRow> techRows;
@@ -629,6 +655,15 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
                 return false;
             }
         }
+        else if (key == "huts") {
+            std::string hex;
+            iss >> hex;
+            if (!parseHex(hex, huts)) return false;
+            if (huts.size() != std::size_t(MapManagement::kWidth) *
+                               MapManagement::kHeight) {
+                return false;
+            }
+        }
         else if (key == "techcivs") { iss >> techCivsCount; }
         else if (key == "techcsv") {
             TechRow r;
@@ -812,6 +847,21 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             }
         } else {
             mm.clearImprovements();
+        }
+        // v14: Goodie Huts grid. Absent in v1..v13 saves -> clear (defensive;
+        // the world re-gen during rebuildPlayingShell already left the grid
+        // empty for legacy files since placeHuts only runs in v14+ flows that
+        // call MapManagement::generate -> placeHuts).
+        if (!huts.empty()) {
+            mm.clearAllHuts();
+            for (int y = 0; y < MapManagement::kHeight; ++y) {
+                for (int x = 0; x < MapManagement::kWidth; ++x) {
+                    if (huts[std::size_t(y) * MapManagement::kWidth + x])
+                        mm.placeHut(x, y);
+                }
+            }
+        } else {
+            mm.clearAllHuts();
         }
     }
 

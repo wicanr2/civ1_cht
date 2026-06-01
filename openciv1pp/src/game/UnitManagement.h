@@ -851,6 +851,25 @@ public:
     const std::string& lastCombatKey() const { return lastCombatKey_; }
     void setLastCombatKey(std::string k) { lastCombatKey_ = std::move(k); }
 
+    // ---- Goodie Huts -----------------------------------------------------
+    // visitHut: deterministic reward roll when civ `civId`'s unit enters a
+    // hut tile at (x,y). Picks one of 4 outcomes from a mix() seed derived
+    // from (civId, x, y, totalUnitsProduced) so the same hut at the same
+    // turn always yields the same reward (reproducible for tests + faithful
+    // to the C# F0_*_VisitMinorTribeHut deterministic-roll path):
+    //   roll 0 -> +50 gold to civ (lastHutKey_ = "Found Gold!")
+    //   roll 1 -> free random unknown tech whose prereq is known
+    //             (lastHutKey_ = "Found Tech!"; falls through to gold when
+    //              no such tech exists for this civ)
+    //   roll 2 -> spawn a free Militia at (x,y) owned by civ
+    //             (lastHutKey_ = "Found Unit!")
+    //   roll 3 -> nothing (lastHutKey_ = "Hut")
+    // ALWAYS clears the hut (consumed on visit, single-shot). Subsequent
+    // entries into the same tile by any civ are no-ops.
+    void visitHut(int civId, int x, int y);
+    const std::string& lastHutKey() const { return lastHutKey_; }
+    void setLastHutKey(std::string k) { lastHutKey_ = std::move(k); }
+
     // ---- DIPLOMACY (faithful subset of GameData.Diplomacy[N,N]) ---------
     // Pairwise relations matrix, sized NxN where N = civs_.size(). Initialised
     // to NoContact off-diagonal, Peace on the diagonal (a civ is never at war
@@ -902,6 +921,7 @@ private:
     int year_ = -4000; // StartGameMenu.cs line 124: GameData.Year = -4000
     uint32_t combatRng_ = 0xCAFEBABEu; // tests override via setCombatRngSeed
     std::string lastCombatKey_;        // "" / "Victory" / "Defeat"
+    std::string lastHutKey_;           // "" / "Found Gold!" / ... (Goodie Huts)
     // Per-wonder owner cityId. -1 means "unowned (any civ may build it)".
     // Index 0 (WonderType::None) is unused but kept for indexing parity with
     // the enum's numeric values.

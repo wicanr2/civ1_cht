@@ -135,6 +135,25 @@ public:
     // byte-for-byte from a hex dump (see kImprovement* bitflags above).
     void    setImprovementsRaw(int x, int y, uint8_t bits);
 
+    // ---- Goodie Huts (minor tribe villages) ------------------------------
+    // A parallel uint8_t grid (sized kWidth*kHeight, default 0) holding the
+    // per-tile "hut present" flag (1 = hut, 0 = none). Faithful to Civ1's
+    // Goodie Hut feature (the C# MinorTribeHut placement loop in
+    // MapManagement.cs F0_*_PlaceMinorTribeHuts): ~20 huts scattered on valid
+    // land tiles at world-gen time, kept at minimum Chebyshev distance >= 4
+    // so the rewards aren't clustered. generate() places huts AFTER the
+    // rivers stage (so all terrain is final). Visiting (any civ's unit
+    // entering a hut tile) yields a deterministic reward and clears the hut
+    // (see UnitManagement::visitHut). placeHuts is deterministic: same seed
+    // -> same hut layout.
+    bool    hasHut(int x, int y) const;
+    void    clearHut(int x, int y);
+    void    placeHut(int x, int y);  // direct write (used by load + tests)
+    int     hutCount() const;
+    void    placeHuts(int count, uint32_t seed);
+    void    clearAllHuts();
+    uint8_t getHutByte(int x, int y) const { return hasHut(x, y) ? 1 : 0; }
+
     // TODO(port): LoadEarthMap — needs the bundled map.pic asset, not part of
     // the generator path.
 
@@ -145,6 +164,9 @@ private:
     // from the VCPU layer to keep the terrain memory layout 1:1 with the
     // C# pixel-encoded map. Sized kWidth*kHeight, row-major (y*kWidth+x).
     std::vector<uint8_t> improvements_;
+    // Goodie Huts grid (parallel to improvements_); 1 = hut present.
+    // Sized kWidth*kHeight, row-major. See placeHuts() / hasHut().
+    std::vector<uint8_t> huts_;
 
     static const int kTerrainToPixel[12];
     static const int8_t kPixelToTerrain[16];

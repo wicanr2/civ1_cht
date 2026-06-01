@@ -836,6 +836,19 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
                     fb.setPixel(px + q,             py + tileSize - q,  219);
                     fb.setPixel(px + tileSize - q,  py + tileSize - q,  219);
                 }
+                // GOODIE HUT marker: a small 4x4 yellow square in the
+                // tile's center. Faithful Civ1 minor-tribe village glyph
+                // (Civ1 uses a tiny hut sprite — we ship a simple
+                // distinctive coloured marker so the player can see the
+                // hut tile at a glance). Palette index 220 = bright
+                // golden yellow (distinct from road yellow at 218).
+                if (game_->mapManagement().hasHut(mx, my)) {
+                    fb.palette.set(220, 255, 220, 60); // hut golden yellow
+                    int hutSz = std::max(2, std::min(4, tileSize / 3));
+                    int hx = px + (tileSize - hutSz) / 2;
+                    int hy = py + (tileSize - hutSz) / 2;
+                    fb.fillRect(Rect{hx, hy, hutSz, hutSz}, 220);
+                }
             }
             if (mx == unitX_ && my == unitY_) {
                 if (useTiles && sprites_) {
@@ -974,6 +987,19 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
             // entry for it (e.g. "Capital" -> "首都").
             gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
                           lastCityName_, 207);
+        }
+    }
+    // GOODIE HUT event: when a hut was just visited, show the reward key
+    // ("Found Gold!" / "Found Tech!" / "Found Unit!" / "Hut") translated to
+    // Chinese on the HUD line. Routed through the chokepoint Translator
+    // (e.g. "Found Gold!" -> "獲得黃金!") so translate-on vs -off changes
+    // the rendered pixels (huttest verifies this).
+    if (game_) {
+        const std::string& hutKey = game_->unitManagement().lastHutKey();
+        if (!hutKey.empty()) {
+            penX3 = fb.drawString(font, penX3, line3Y, "   ", 207);
+            penX3 = gd.drawString(GDriver::MainScreen, font, penX3, line3Y,
+                                  hutKey, 207);
         }
     }
     // Working: <remaining> — when the human's Settlers at the cursor tile

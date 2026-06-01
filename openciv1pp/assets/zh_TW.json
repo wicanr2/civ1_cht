@@ -267,6 +267,11 @@
   "Fortified": "防守中",
   "Fortifying": "防守中...",
   "Terrain bonus": "地形加成",
+  "Hut": "村莊",
+  "Goodie Hut": "幸運村莊",
+  "Found Gold!": "獲得黃金!",
+  "Found Tech!": "獲得科技!",
+  "Found Unit!": "獲得單位!",
   "format": "string (utf-8, will be encoded to cp950 by patcher)",
   "policy": " delimiters (menu group separator), %s %d ^0 ^1 format placeholders, leading/trailing spaces, and punctuation",
   "to open a saved game?": "開啟存檔嗎?"

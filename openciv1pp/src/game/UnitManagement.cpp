@@ -710,6 +710,13 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
             u.fortified = false;
             u.fortifying = false;
             lastCombatKey_ = "Victory";
+            // GOODIE HUT: visit-on-entry (combat-into-vacancy still counts
+            // as entering the tile — faithful Civ1: the hut is consumed
+            // the moment any unit lands on it). visitHut is a no-op for
+            // non-hut tiles, so this is safe regardless.
+            if (p.mapManagement().hasHut(nx, ny)) {
+                visitHut(u.owner, nx, ny);
+            }
             return true;
         }
         lastCombatKey_ = "Defeat";
@@ -722,6 +729,10 @@ bool UnitManagement::moveUnit(int unitId, int dx, int dy) {
     // FORTIFY: clear dig-in flags whenever the unit actually steps.
     u.fortified = false;
     u.fortifying = false;
+    // GOODIE HUT: visit-on-entry (any civ's unit triggers the reward).
+    if (p.mapManagement().hasHut(nx, ny)) {
+        visitHut(u.owner, nx, ny);
+    }
     return true;
 }
 
@@ -978,6 +989,95 @@ bool UnitManagement::buildCity(int x, int y, int playerId, int turn,
     cities_.push_back(std::move(c));
     outName = cities_.back().name;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// visitHut — Goodie Hut reward dispatcher.
+// Deterministic-seeded roll on mix(civId, x, y, totalUnitsProduced) so the
+// same hut visited by the same civ at the same global unit-count yields the
+// same reward across runs (tests need this for assertions; faithful Civ1
+// also uses a deterministic seeded roll from the game RNG state). Picks one
+// of 4 rewards (gold / tech / unit / nothing); clears the hut on the way out
+// so re-entry is a no-op.
+//
+// NOTE: the C# F0_*_VisitMinorTribeHut path also has a BARBARIAN UPRISING
+// reward (small chance of hostile units spawning around the hut) and an
+// ADVANCED-TRIBE reward (a free city). Those are STUBs here — we ship the
+// 4-outcome subset documented above.
+void UnitManagement::visitHut(int civId, int x, int y) {
+    auto& mm = p.mapManagement();
+    if (!mm.hasHut(x, y)) return;        // already consumed (defensive)
+    if (civId < 0 || std::size_t(civId) >= civs_.size()) {
+        // Out-of-range civ: still consume the hut to keep the world clean,
+        // but no reward is granted.
+        mm.clearHut(x, y);
+        lastHutKey_ = "Hut";
+        return;
+    }
+    // mix(civId, x, y, totalUnitsProduced) — splitmix64-ish; cheap + good
+    // enough for the 4-way pick. The unit-count term breaks ties between
+    // multiple visits in the same game (so a save/load + walk-into doesn't
+    // always roll the same thing on the very first hut).
+    uint32_t s = uint32_t(civId) * 0x9e3779b9u
+               ^ uint32_t(x) * 0x85ebca6bu
+               ^ uint32_t(y) * 0xc2b2ae35u
+               ^ uint32_t(totalUnitsProduced()) * 0x27d4eb2fu
+               ^ 0xCAFED00Du;
+    s ^= s >> 16; s *= 0x7feb352du;
+    s ^= s >> 15; s *= 0x846ca68bu;
+    s ^= s >> 16;
+    int roll = int(s & 0x3); // 0..3
+
+    // Consume hut FIRST so reward side-effects can't be re-triggered by a
+    // recursive visit (defensive — no current code path recurses, but the
+    // invariant matters for tests).
+    mm.clearHut(x, y);
+
+    CivState& civ = civs_[std::size_t(civId)];
+    switch (roll) {
+        case 0:
+            // +50 gold (Civ1 standard "tribe offers gold" reward).
+            civ.gold += 50;
+            lastHutKey_ = "Found Gold!";
+            break;
+        case 1: {
+            // Free random unknown tech with a known prereq. When no such
+            // tech exists (civ already knows everything reachable), fall
+            // through to the gold reward — same logic the C# uses when
+            // there are no candidate techs.
+            auto& tr = p.techResearch();
+            std::vector<Tech> candidates;
+            for (int i = 0; i < TechResearch::techCount(); ++i) {
+                const TechDef& d = TechResearch::techByIndex(i);
+                if (tr.civKnows(civId, d.id)) continue;
+                // Require the (single) prereq to be Tech::None OR known.
+                if (d.prereq != Tech::None && !tr.civKnows(civId, d.prereq))
+                    continue;
+                candidates.push_back(d.id);
+            }
+            if (candidates.empty()) {
+                civ.gold += 50;
+                lastHutKey_ = "Found Gold!";
+            } else {
+                Tech t = candidates[std::size_t(s % candidates.size())];
+                tr.setCivKnows(civId, t, true);
+                lastHutKey_ = "Found Tech!";
+            }
+            break;
+        }
+        case 2:
+            // Free Militia at (x,y), owned by civ. The unit is appended via
+            // addUnit so move-points + def fields are initialised consistently
+            // with cities producing units.
+            addUnit(civId, UnitType::Militia, x, y);
+            lastHutKey_ = "Found Unit!";
+            break;
+        case 3:
+        default:
+            // Nothing (the village is abandoned / hostile-but-no-hit).
+            lastHutKey_ = "Hut";
+            break;
+    }
 }
 
 } // namespace oc1

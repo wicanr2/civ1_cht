@@ -110,6 +110,7 @@ const int8_t MapManagement::kPixelToTerrain[16] = {
 // ---------------------------------------------------------------------------
 MapManagement::MapManagement(OpenCiv1Game& parent) : p_(parent), cpu_(parent.cpu) {
     improvements_.assign(std::size_t(kWidth) * kHeight, 0);
+    huts_.assign(std::size_t(kWidth) * kHeight, 0);
     CreateNewEmptyMap();
 }
 
@@ -139,6 +140,92 @@ void MapManagement::setImprovementsRaw(int x, int y, uint8_t bits) {
 
 void MapManagement::clearImprovements() {
     std::fill(improvements_.begin(), improvements_.end(), uint8_t(0));
+}
+
+// ---- Goodie Huts ----------------------------------------------------------
+// Faithful Civ1 minor-tribe villages. We model them as a separate 1-bit
+// (stored as uint8_t for simplicity / direct hex serialisation) grid parallel
+// to the terrain. Huts live ONLY on valid land tiles (Water/Arctic refused)
+// and are kept at Chebyshev distance >= 4 from each other so the rewards
+// aren't clustered.
+bool MapManagement::hasHut(int x, int y) const {
+    if (x < 0 || y < 0 || x >= kWidth || y >= kHeight) return false;
+    return huts_[std::size_t(y) * kWidth + x] != 0;
+}
+void MapManagement::clearHut(int x, int y) {
+    if (x < 0 || y < 0 || x >= kWidth || y >= kHeight) return;
+    huts_[std::size_t(y) * kWidth + x] = 0;
+}
+void MapManagement::placeHut(int x, int y) {
+    if (x < 0 || y < 0 || x >= kWidth || y >= kHeight) return;
+    huts_[std::size_t(y) * kWidth + x] = 1;
+}
+int MapManagement::hutCount() const {
+    int n = 0;
+    for (uint8_t b : huts_) if (b) ++n;
+    return n;
+}
+void MapManagement::clearAllHuts() {
+    std::fill(huts_.begin(), huts_.end(), uint8_t(0));
+}
+void MapManagement::placeHuts(int count, uint32_t seed) {
+    // Deterministic local MT19937 — independent stream from the generator's
+    // RNG so callers can reproduce the layout regardless of the generator
+    // RNG's post-stage-5 state.
+    RandomMT19937 rng{int32_t(seed)};
+    const int minDistance = 4;
+    // Inset margins skip the polar Arctic ring (y < 4 / y >= H-4) so huts
+    // never sit on guaranteed-Arctic tiles. Matches the C# placement guard
+    // that rejects polar tiles for minor-tribe villages.
+    const int yLo = 4, yHi = kHeight - 4;
+    int placed = 0;
+    int tries = 0;
+    // Cap the attempts so a degenerate (mostly-Water) world doesn't loop
+    // forever. ~2000 tries per requested hut is plenty.
+    const int maxTries = count * 2000 + 4000;
+    while (placed < count && tries < maxTries) {
+        ++tries;
+        int x = rng.Next(kWidth);
+        int y = yLo + rng.Next(yHi - yLo);
+        if (x < 0 || x >= kWidth) continue;
+        Terrain t = GetTerrainType(x, y);
+        if (t == Terrain::Water || t == Terrain::Arctic) continue;
+        if (huts_[std::size_t(y) * kWidth + x]) continue;
+        // Chebyshev-distance reject against existing huts.
+        bool tooClose = false;
+        for (int yy = std::max(0, y - minDistance);
+             yy <= std::min(kHeight - 1, y + minDistance) && !tooClose; ++yy) {
+            for (int xx = std::max(0, x - minDistance);
+                 xx <= std::min(kWidth - 1, x + minDistance); ++xx) {
+                if (huts_[std::size_t(yy) * kWidth + xx]) { tooClose = true; break; }
+            }
+        }
+        if (tooClose) continue;
+        huts_[std::size_t(y) * kWidth + x] = 1;
+        ++placed;
+    }
+    // Best-effort fallback: if we ran out of tries, do a deterministic
+    // linear sweep so SOMETHING is placed (mostly land + minDistance>=2).
+    if (placed < count) {
+        for (int y = yLo; y < yHi && placed < count; ++y) {
+            for (int x = 0; x < kWidth && placed < count; ++x) {
+                Terrain t = GetTerrainType(x, y);
+                if (t == Terrain::Water || t == Terrain::Arctic) continue;
+                if (huts_[std::size_t(y) * kWidth + x]) continue;
+                bool near = false;
+                for (int yy = std::max(0, y - 2);
+                     yy <= std::min(kHeight - 1, y + 2) && !near; ++yy) {
+                    for (int xx = std::max(0, x - 2);
+                         xx <= std::min(kWidth - 1, x + 2); ++xx) {
+                        if (huts_[std::size_t(yy) * kWidth + xx]) { near = true; break; }
+                    }
+                }
+                if (near) continue;
+                huts_[std::size_t(y) * kWidth + x] = 1;
+                ++placed;
+            }
+        }
+    }
 }
 
 int MapManagement::AdjustXPosition(int xPos) const {
@@ -188,6 +275,7 @@ void MapManagement::generate(const GenSettings& s) {
 
     CreateNewEmptyMap();
     clearImprovements();
+    clearAllHuts();
 
     // ---- Stage 1: Generate continents ----
     {
@@ -432,6 +520,13 @@ void MapManagement::generate(const GenSettings& s) {
     // is not ported. The generator layer above (terrain types) is what
     // MiniWorld renders; the group bookkeeping is a deep dependency of the AI
     // city-placement / pathfinding code, none of which is ported yet.
+
+    // ---- Goodie Huts (minor-tribe villages) ------------------------------
+    // ~20 huts on valid land tiles AFTER all terrain stages are final
+    // (rivers especially — we don't want huts placed on what becomes River).
+    // Deterministic per seed: seed ^ 0xCAFEBABE so the hut layout is its own
+    // reproducible stream (independent of the generator's MT state mid-call).
+    placeHuts(20, uint32_t(s.seed) ^ 0xCAFEBABEu);
 }
 
 // ---------------------------------------------------------------------------

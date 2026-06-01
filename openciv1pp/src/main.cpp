@@ -7654,6 +7654,249 @@ static int slidertest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Goodie Huts (--huttest) --------------------------------
+// Exercises minor-tribe villages end-to-end:
+//   (1) After MapManagement::generate(seed=12345), hutCount() is in [10..30].
+//   (2) Place a hut at the human Settlers' adjacent tile; moveUnit there
+//       clears the hut and yields ONE of the reward types (gold +50 /
+//       free random tech / free Militia / nothing). Civ state mutated
+//       accordingly.
+//   (3) Walking back into the same (now-empty) tile = no hut event
+//       (lastHutKey unchanged by a second visit).
+//   (4) v14 save round-trip: huts grid preserved across save/load.
+//   (5) Chinese HUD pixel diff (translate-on vs -off) when a hut event
+//       happened — verifies the HUD line is routed through Translator.
+static int huttest() {
+    using State = FrontEndFlow::State;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // ---- (1): generate(seed=12345) places 10..30 huts on land tiles ----
+    {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        g.mapManagement().generate(12345);
+        int n = g.mapManagement().hutCount();
+        chk(n >= 10 && n <= 30,
+            "(1) hutCount() after generate(12345) is in [10..30]");
+        // All huts must sit on valid land (not Water, not Arctic).
+        int badTerrain = 0;
+        for (int y = 0; y < MapManagement::kHeight; ++y) {
+            for (int x = 0; x < MapManagement::kWidth; ++x) {
+                if (!g.mapManagement().hasHut(x, y)) continue;
+                Terrain t = g.mapManagement().GetTerrainType(x, y);
+                if (t == Terrain::Water || t == Terrain::Arctic) ++badTerrain;
+            }
+        }
+        chk(badTerrain == 0, "(1) every hut sits on a valid land tile");
+        // Determinism: a second generate(12345) yields the SAME hut count.
+        g.mapManagement().generate(12345);
+        chk(g.mapManagement().hutCount() == n,
+            "(1) generate(12345) is deterministic (same hut count)");
+    }
+
+    // ---- (2)+(3): visit a hut + re-entry no-op ----
+    bool hutEventHappened = false;
+    {
+        OpenCiv1Game g;
+        setupGame(g, 640, 480);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow(g);
+        flow.enterTitle();
+        for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+        State s1 = flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+        chk(s1 == State::PLAYING, "(2) reached PLAYING");
+        MiniWorld* w = flow.miniWorld();
+        chk(w != nullptr, "(2) MiniWorld exists");
+        if (!w) {
+            if (fail) std::printf("HUTTEST: %d failure(s)\n", fail);
+            return fail ? 1 : 0;
+        }
+        auto& um = g.unitManagement();
+        // Find human Settlers (owner 0).
+        int hid = -1;
+        for (std::size_t i = 0; i < um.units().size(); ++i) {
+            if (um.units()[i].owner == 0 &&
+                um.units()[i].type == UnitType::Settlers) {
+                hid = int(i); break;
+            }
+        }
+        chk(hid >= 0, "(2) human Settlers found");
+        if (hid < 0) {
+            std::printf("HUTTEST: setup failure\n");
+            return 1;
+        }
+        // Pick an adjacent land tile (not Water/Arctic) and force-place a
+        // hut there. We try the 8 neighbours; fall back to relocating both
+        // the unit and a fresh adjacent tile if none worked.
+        const Unit& hu = um.units()[std::size_t(hid)];
+        int ux = hu.x, uy = hu.y;
+        int hx = -1, hy = -1;
+        const int dirs[8][2] = { {1,0},{-1,0},{0,1},{0,-1},
+                                 {1,1},{-1,-1},{1,-1},{-1,1} };
+        for (int d = 0; d < 8 && hx < 0; ++d) {
+            int nx = ux + dirs[d][0], ny = uy + dirs[d][1];
+            if (nx < 0 || ny < 0 ||
+                nx >= w->width() || ny >= w->height()) continue;
+            Terrain t = w->terrainAt(nx, ny);
+            if (t == Terrain::Water || t == Terrain::Arctic) continue;
+            // Clear any pre-existing enemy on that tile so the hop is a
+            // pure-movement (not a combat) test.
+            bool blocked = false;
+            for (const auto& o : um.units()) {
+                if (!o.alive) continue;
+                if (o.x == nx && o.y == ny) { blocked = true; break; }
+            }
+            if (blocked) continue;
+            hx = nx; hy = ny;
+        }
+        chk(hx >= 0, "(2) found adjacent land tile for hut");
+        if (hx < 0) {
+            std::printf("HUTTEST: no adjacent land tile\n");
+            return 1;
+        }
+        // Make sure no OTHER hut is at that tile already (clear) then plant.
+        g.mapManagement().clearAllHuts();
+        g.mapManagement().placeHut(hx, hy);
+        chk(g.mapManagement().hasHut(hx, hy),
+            "(2) hut planted at adjacent tile");
+        // Snapshot civ state BEFORE the visit.
+        int goldBefore  = um.civs()[0].gold;
+        std::size_t unitsBefore = um.units().size();
+        int techBefore = 0;
+        for (int i = 0; i < TechResearch::techCount(); ++i) {
+            if (g.techResearch().civKnows(0, TechResearch::techByIndex(i).id))
+                ++techBefore;
+        }
+        // Reset the hut key so we can observe a fresh value.
+        um.setLastHutKey("");
+        // Step the human onto the hut tile. moveUnit will call visitHut
+        // and clear the hut.
+        int dx = hx - ux, dy = hy - uy;
+        bool moved = um.moveUnit(hid, dx, dy);
+        chk(moved, "(2) moveUnit onto hut tile succeeded");
+        chk(!g.mapManagement().hasHut(hx, hy),
+            "(2) hut consumed (cleared) after visit");
+        const std::string& key = um.lastHutKey();
+        chk(!key.empty(), "(2) lastHutKey populated after visit");
+        // Reward must match one of the 4 outcomes.
+        bool foundGold = (key == "Found Gold!" && um.civs()[0].gold == goldBefore + 50);
+        int techAfter = 0;
+        for (int i = 0; i < TechResearch::techCount(); ++i) {
+            if (g.techResearch().civKnows(0, TechResearch::techByIndex(i).id))
+                ++techAfter;
+        }
+        bool foundTech = (key == "Found Tech!" && techAfter == techBefore + 1);
+        bool foundUnit = false;
+        if (key == "Found Unit!" && um.units().size() == unitsBefore + 1) {
+            const Unit& last = um.units().back();
+            foundUnit = (last.owner == 0 && last.type == UnitType::Militia &&
+                         last.x == hx && last.y == hy && last.alive);
+        }
+        bool foundNothing = (key == "Hut" &&
+                             um.civs()[0].gold == goldBefore &&
+                             um.units().size() == unitsBefore &&
+                             techAfter == techBefore);
+        chk(foundGold || foundTech || foundUnit || foundNothing,
+            "(2) reward is one of {+50 gold, free tech, free Militia, nothing}");
+        hutEventHappened = !key.empty();
+
+        // (3) re-entry: walk OFF the hut tile, then back ON. Second visit
+        // should NOT trigger a hut event (the key remains the same as it
+        // was set on the first visit; no new reward applied).
+        int goldMid  = um.civs()[0].gold;
+        std::size_t unitsMid = um.units().size();
+        std::string keyMid = um.lastHutKey();
+        // Walk back to the original tile.
+        bool moveBack = um.moveUnit(hid, -dx, -dy);
+        // Then forward again. Independent of moveBack success, the second
+        // forward step (when it lands on the now-cleared tile) must NOT
+        // change gold/units (no hut reward).
+        if (moveBack) {
+            um.moveUnit(hid, dx, dy);
+        }
+        chk(um.civs()[0].gold == goldMid,
+            "(3) re-entry: gold unchanged (no second reward)");
+        chk(um.units().size() == unitsMid,
+            "(3) re-entry: unit count unchanged (no second Militia spawn)");
+        // lastHutKey shouldn't go BACK to empty (a hut event already
+        // happened) but it also can't gain a new "Found ..." event without
+        // a hut on the tile.
+        chk(!g.mapManagement().hasHut(hx, hy),
+            "(3) hut still consumed after re-entry");
+        (void)keyMid;
+    }
+
+    // ---- (4): v14 save round-trip preserves huts grid ----
+    {
+        const char* path = "/tmp/openciv1pp_huttest.sav";
+        OpenCiv1Game g1;
+        setupGame(g1, 640, 480);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow1(g1);
+        flow1.enterTitle();
+        for (int k = 0; k < 6; ++k) flow1.handleKey(MenuBoxDialog::KeyEnter);
+        flow1.handleKey(MenuBoxDialog::KeyEnter);
+        int hcBefore = g1.mapManagement().hutCount();
+        chk(hcBefore > 0, "(4) pre-save: huts present on the world");
+        // Sample positions of the first few huts.
+        std::vector<std::pair<int,int>> hutPos;
+        for (int y = 0; y < MapManagement::kHeight && hutPos.size() < 5; ++y)
+            for (int x = 0; x < MapManagement::kWidth && hutPos.size() < 5; ++x)
+                if (g1.mapManagement().hasHut(x, y))
+                    hutPos.emplace_back(x, y);
+
+        bool sok = g1.gameLoadAndSave().saveToFile(path, &flow1);
+        chk(sok, "(4) save v14 succeeded");
+        OpenCiv1Game g2;
+        setupGame(g2, 640, 480);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow2(g2);
+        bool lok = g2.gameLoadAndSave().loadFromFile(path, &flow2);
+        chk(lok, "(4) load v14 succeeded");
+        int hcAfter = g2.mapManagement().hutCount();
+        chk(hcAfter == hcBefore, "(4) hutCount preserved across v14 round-trip");
+        for (auto& p : hutPos) {
+            chk(g2.mapManagement().hasHut(p.first, p.second),
+                "(4) sampled hut position preserved across save/load");
+        }
+    }
+
+    // ---- (5): Chinese HUD pixel diff when a hut event happened ----------
+    if (hutEventHappened) {
+        auto renderWithHut = [&](bool translateOn) -> std::vector<uint8_t> {
+            OpenCiv1Game g; setupGame(g, 640, 480);
+            Translator::instance().enabled = translateOn;
+            FrontEndFlow flow(g);
+            flow.enterTitle();
+            for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+            flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+            // Force-set a hut event so the HUD has the Chinese line. We
+            // bypass actual movement so the renders match in everything
+            // except the translated hut-event line.
+            g.unitManagement().setLastHutKey("Found Gold!");
+            flow.draw();
+            return g.graphics.screen(0).pixels();
+        };
+        std::vector<uint8_t> onPx  = renderWithHut(true);
+        std::vector<uint8_t> offPx = renderWithHut(false);
+        chk(onPx.size() == offPx.size() && !onPx.empty(),
+            "(5) both renders produced buffers");
+        std::size_t diff = 0;
+        for (std::size_t i = 0; i < onPx.size() && i < offPx.size(); ++i)
+            if (onPx[i] != offPx[i]) ++diff;
+        chk(diff > 0,
+            "(5) translate-on vs -off pixels DIFFER on hut HUD line");
+        Translator::instance().enabled = true;
+    }
+
+    if (fail) std::printf("HUTTEST: %d failure(s)\n", fail);
+    else      std::printf("HUTTEST: all pass\n");
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -7736,6 +7979,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--aiexpandtest")) { return aiexpandtest(); }
         else if (!std::strcmp(argv[i], "--fortifytest")) { return fortifytest(); }
         else if (!std::strcmp(argv[i], "--slidertest")) { return slidertest(); }
+        else if (!std::strcmp(argv[i], "--huttest")) { return huttest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -7801,7 +8045,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
