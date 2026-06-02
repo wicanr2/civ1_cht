@@ -2891,12 +2891,24 @@ static int shotCity(const std::string& assetDir, const char* ppmPath) {
     int cid = 0;
     for (std::size_t i = 0; i < g.unitManagement().cities().size(); ++i)
         if (g.unitManagement().cities()[i].owner > 0) { cid = int(i); break; }
+    // Fixture: if the FrontEndFlow walkthrough above did not actually found a
+    // city (cities() is empty), set up a minimal civ and plant one by hand so
+    // CityView::open()'s CBACK loader path runs (otherwise open() returns false
+    // before the backdrop-load block and shotCity captures a blank fillRect).
+    if (g.unitManagement().cities().empty()) {
+        g.unitManagement().setupCivs(/*humanTribe=*/0, /*numAi=*/0);
+        g.unitManagement().setMapBounds(80, 50);
+        std::string outName;
+        if (g.unitManagement().buildCity(10, 10, /*playerId=*/0, outName))
+            cid = 0;
+    }
     g.cityView().open(cid);
     g.cityView().draw(g.graphics.screen(0), 1);
     if (!dumpPPM(g.graphics.screen(0), ppmPath)) {
         std::fprintf(stderr, "shotCity: cannot write %s\n", ppmPath); return 1;
     }
-    std::printf("[shotCity] wrote %s\n", ppmPath);
+    std::printf("[shotCity] wrote %s (cities=%zu)\n", ppmPath,
+                g.unitManagement().cities().size());
     return 0;
 }
 

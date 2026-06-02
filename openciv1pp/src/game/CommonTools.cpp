@@ -1,5 +1,6 @@
 #include "CommonTools.h"
 #include "../graphics/GDriver.h"
+#include <SDL.h>
 
 namespace oc1 {
 
@@ -136,9 +137,13 @@ void CommonTools::F0_1000_033e_ResetWaitTimer() {
 }
 
 void CommonTools::F0_1182_0134_WaitTimer(int waitTime) {
-    // TODO(port): WaitTimer — the C# sleeps max(waitTime*12, 1) ms then DoEvents().
-    // Headless: reset the tick count only (no real-time wait).
-    (void)waitTime;
+    // C# F0_1182_0134_WaitTimer sleeps max(waitTime*12, 1) ms then DoEvents().
+    // 12 ms per unit is the original IRB tick rate. SDL_Delay is portable and
+    // skipped when SDL was never initialised (headless tests still run fast
+    // because SDL_Delay's busy-wait is short and the caller mostly passes 0).
+    int ms = waitTime * 12;
+    if (ms < 1) ms = 1;
+    SDL_Delay(static_cast<Uint32>(ms));
     F0_1000_033e_ResetWaitTimer();
 }
 
