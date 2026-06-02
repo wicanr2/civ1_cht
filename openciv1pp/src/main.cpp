@@ -2911,6 +2911,20 @@ static int shotCity(const std::string& assetDir, const char* ppmPath) {
     }
     std::printf("[shotCity] wrote %s (cities=%zu)\n", ppmPath,
                 g.unitManagement().cities().size());
+    // Palette audit (R2 follow-up): print CBACK palette colors at the key
+    // VGA-standard slots we draw against. This confirms that index 1 is NOT
+    // the dark blue we assumed (so the solid pre-fills were wrong) and that
+    // 0/9/12/14/15 carry the expected black/blue/red/yellow/white shades.
+    {
+        const auto& pal = g.graphics.screen(0).palette;
+        const int idx[] = {0, 1, 9, 10, 12, 14, 15};
+        std::printf("[shotCity] CBACK palette audit:\n");
+        for (int n : idx) {
+            const auto& c = pal.colors[std::size_t(n)];
+            std::printf("  [%2d] = (%3u,%3u,%3u)\n",
+                        n, unsigned(c.r), unsigned(c.g), unsigned(c.b));
+        }
+    }
     return 0;
 }
 

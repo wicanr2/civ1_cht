@@ -218,11 +218,11 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
     //  All coords here come straight from CityWorker.cs (DOS coords).
     // =====================================================================
 
-    // (a) Top header strip (2,1)-(208,21): DOS uses FillRectangleWithPattern.
-    // We approximate the pattern as a 1px black border + dark-blue fill so
-    // the city-name text reads against it.
-    screen.fillRect(Rect{2, 1, 208, 21}, 1);   // color 1 = dark blue
-    screen.drawRect(Rect{2, 1, 208, 21}, 0);   // color 0 = black border
+    // (a) Top header strip (2,1)-(208,21): DOS uses FillRectangleWithPattern
+    // over the CBACK cloud stipple already baked into the backdrop. Rather
+    // than overlay a solid color (which clobbered the cloud pattern in R2),
+    // we leave CBACK's stipple visible and only draw the city-name text on
+    // top in (b) below.
 
     // (b) City name centered at DOS (104, 2), white (color 15).
     //     Format: "{中文城市名} (人口: {N})". We use Translator for
@@ -246,14 +246,40 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         screen.drawString(font, tx, ty, title, titleCol);
     }
 
-    // (c) Resources sub-panel at (2, 23, 122, 9), fill color 1, label
-    //     "City Resources" at (8, 24) color 15. (DOS draws the label INSIDE
-    //     the strip; we use y=24 so the 16px font fits roughly.)
-    screen.fillRect(Rect{2, 23, 122, 9}, 1);
+    // (c) Resources sub-panel at (2, 23, 122, 9): same story as (a) — DOS
+    //     uses FillRectangleWithPattern, and CBACK already carries the
+    //     stippled cloud pattern at these pixels. We leave the CBACK pixels
+    //     intact and only paint the "City Resources" label on top.
     {
         std::string lbl = Translator::instance().translate("City Resources");
         screen.drawString(font, 9, 25, lbl, 0);   // shadow
         screen.drawString(font, 8, 24, lbl, 15);  // white
+    }
+
+    // (c2) Citizen rate row at DOS y=106..114, 4 zones of 33w × 9h each.
+    //      Per CityWorker.cs L1380-1389: zone bg is color 9 (bright blue);
+    //      DOS centers a short label (Trade/Lux/Sci/Tax style) on each zone
+    //      then runs a color-swap 9<->15 animation over the active citizen
+    //      drag. We render the static row (no swap animation): four labelled
+    //      tiles 貿易 / 奢侈 / 科學 / 稅收 in white text on color-9 bg.
+    {
+        struct Zone { int x; int w; const char* en; };
+        static const Zone zones[4] = {
+            {  95, 34, "Trade"   },
+            { 129, 32, "Luxury"  },
+            { 161, 33, "Science" },
+            { 194, 33, "Tax"     },
+        };
+        for (const Zone& z : zones) {
+            screen.fillRect(Rect{z.x, 106, z.w, 9}, 9);
+            std::string lbl = Translator::instance().translate(z.en);
+            Size sz = measureString(font, lbl);
+            int tx = z.x + (z.w - sz.w) / 2;
+            int ty = 106 + (9 - font.pixelHeight) / 2;
+            if (ty < 106) ty = 106;
+            screen.drawString(font, tx + 1, ty + 1, lbl, 0);
+            screen.drawString(font, tx, ty, lbl, 15);
+        }
     }
 
     // (d) Worked-tile grid: 21 tiles centered around (160, 56). For each
@@ -444,10 +470,11 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
     // =====================================================================
 
     // HUD uses CBACK's standard VGA 0..15 — index 8 (dark grey) for fill,
-    // 15 (white) for border, 0 (black) for shadow, 15 (white) for text.
+    // 0 (black) for a single soft border to match DOS aesthetics (the old
+    // double white border was visually too harsh per the R2 city-screen
+    // color audit).
     screen.fillRect(Rect{kPanelX, kPanelY, kPanelW, kPanelH}, 8);
-    screen.drawRect(Rect{kPanelX, kPanelY, kPanelW, kPanelH}, 15);
-    screen.drawRect(Rect{kPanelX + 1, kPanelY + 1, kPanelW - 2, kPanelH - 2}, 15);
+    screen.drawRect(Rect{kPanelX, kPanelY, kPanelW, kPanelH}, 0);
 
     // (DOS title at (104,2) is the canonical title — bottom HUD starts
     //  directly with the label/value stack, no duplicate "City:" line.)
