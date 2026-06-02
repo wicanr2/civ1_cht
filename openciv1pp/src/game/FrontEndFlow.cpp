@@ -18,11 +18,10 @@ FrontEndFlow::FrontEndFlow(OpenCiv1Game& parent) : p(parent) {
 }
 
 const std::vector<std::string>& FrontEndFlow::mainMenuItems() {
-    static const std::vector<std::string> items = {
-        "Start a New Game", "Load a Saved Game", "Play on EARTH",
-        "Customize World", "View Hall of Fame", "Quit",
-    };
-    return items;
+    // Delegate to the DOS-faithful definition in MainCode (5 items, no "Quit"
+    // — ESC is the cancel/quit path, matching MainCode.cs:191). Removing the
+    // duplicate 6-item list also drops the bogus "Play on EARTH" string.
+    return MainCode::mainMenuItems();
 }
 
 const std::vector<std::string>& FrontEndFlow::difficultyItems() {
@@ -198,13 +197,14 @@ FrontEndFlow::State FrontEndFlow::handleKey(int navKey) {
         case State::MAIN_MENU: {
             int r = mb.navStep(navKey);
             if (r == MenuBoxDialog::NavCancel) {
-                // ESC at the top level acts like "Quit".
+                // ESC at the top level acts like "Quit" (the DOS menu has no
+                // "Quit" item — ESC/cancel is the only quit path).
                 state_ = State::QUIT;
             } else if (r >= 0) {
-                // ENTER on an item: index 0 starts a new game; the last item quits.
+                // ENTER on an item: index 0 starts a new game. Other items
+                // (Load / EARTH / Customize / Hall of Fame) are not wired in
+                // this slice — stay on the menu.
                 if (r == 0) enterDifficulty();
-                else if (r == int(mainMenuItems().size()) - 1) state_ = State::QUIT;
-                // Other items are not wired in this slice: stay on the menu.
             }
             break;
         }
@@ -285,7 +285,17 @@ void FrontEndFlow::draw() {
             p.mainCode().F0_11a8_0486_LogoAndMainGameMenu(mb.highlight, nullptr);
             break;
         }
-        case State::MAIN_MENU:
+        case State::MAIN_MENU: {
+            // Same render path as TITLE — LOGO.PIC backdrop + the DOS-faithful
+            // main menu at MainCode's mapped (220, 250). Removing the local
+            // (60, 40) hardcode unifies the menu with MainCode and ensures the
+            // logo always appears (matching the original DOS boot screen).
+            fb.clear(1);
+            mb.defaultOptionIndex = mb.highlight;
+            mb.forcedSelection = mb.highlight;
+            p.mainCode().F0_11a8_0486_LogoAndMainGameMenu(mb.highlight, nullptr);
+            break;
+        }
         case State::DIFFICULTY:
         case State::TRIBE: {
             fb.clear(1);
@@ -295,10 +305,7 @@ void FrontEndFlow::draw() {
             // 640x480 native: shift menus down + right so they sit comfortably
             // in the upper-left quadrant rather than hugging the corner. The
             // old (30, 20) on 320x200 maps to roughly (60, 40) on 640x480.
-            if (state_ == State::MAIN_MENU) {
-                mb.F0_2d05_0031_ShowMenuBox(mainMenuItems(), 60, 40,
-                                            /*windowFrame*/ true, /*helpOption*/ false);
-            } else if (state_ == State::DIFFICULTY) {
+            if (state_ == State::DIFFICULTY) {
                 mb.F0_2d05_0031_ShowMenuBox(difficultyItems(), 60, 40,
                                             /*windowFrame*/ true, /*helpOption*/ false);
             } else {

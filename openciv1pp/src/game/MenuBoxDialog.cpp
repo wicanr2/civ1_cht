@@ -1,5 +1,6 @@
 #include "MenuBoxDialog.h"
 #include "DrawTools.h"
+#include "../localization/Translator.h"
 #include <algorithm>
 
 namespace oc1 {
@@ -26,6 +27,35 @@ std::vector<std::string> splitMenuItems(const std::string& s) {
     if (!cur.empty()) out.push_back(cur);
     return out;
 }
+
+// GameMenus builds items as `" Build Road \x8fr"` etc. — the `\x8f` marker is
+// the hotkey glyph prefix the C# embeds before the shortcut letter (one or
+// more chars to end-of-line). Translator::translate() never matches the
+// concatenated form, so we peel the suffix off, translate the label only, and
+// re-attach the original marker+hotkey. The drawn pixel layout still includes
+// the hotkey marker — only the LABEL half goes through the lookup table.
+std::string localizeMenuLabel(const std::string& item) {
+    std::size_t markerPos = item.find('\x8f');
+    if (markerPos == std::string::npos) return item; // no hotkey suffix.
+    // Split into (leadingSpace, label, suffix). The leading space is the C#
+    // "selectable option" marker — it MUST survive verbatim so the option-row
+    // detection in F0_2d05_0031_ShowMenuBox still flags this line. The suffix
+    // is the `\x8f<hotkey>...` glyph the C# embeds for the keyboard shortcut.
+    std::string suffix = item.substr(markerPos);
+    std::string head   = item.substr(0, markerPos);
+    // Preserve any leading whitespace and any trailing space the C# inserts
+    // between the label and the marker; translate only the inner label so the
+    // zh_TW.json lookup (which keys on the bare English noun) hits.
+    std::size_t lead = 0;
+    while (lead < head.size() && head[lead] == ' ') ++lead;
+    std::size_t tail = head.size();
+    while (tail > lead && head[tail - 1] == ' ') --tail;
+    std::string prefix = head.substr(0, lead);
+    std::string inner  = head.substr(lead, tail - lead);
+    std::string spacer = head.substr(tail);
+    std::string translated = Translator::instance().translate(inner);
+    return prefix + translated + spacer + suffix;
+}
 } // namespace
 
 MenuBoxDialog::MenuBoxDialog(OpenCiv1Game& parent) : p(parent), cpu(parent.cpu) {}
@@ -50,6 +80,16 @@ int MenuBoxDialog::F0_2d05_0031_ShowMenuBox(const std::string& menuString, int x
     // windowFrame menu with no message-box style. menuString is used as-is.
 
     std::vector<std::string> menuItems = splitMenuItems(menuString);
+
+    // Pre-split the `\x8f<hotkey>` suffix used by GameMenus (Orders/Options/etc.)
+    // and translate ONLY the label half. GDriver::drawString / getDrawStringSize
+    // run Translator again, but the already-translated Chinese label has no
+    // entry in zh_TW.json so the second pass returns it unchanged. Plain items
+    // (no `\x8f`) pass through unchanged; the existing GDriver translation
+    // chokepoint handles them.
+    if (Translator::instance().enabled) {
+        for (std::string& mi : menuItems) mi = localizeMenuLabel(mi);
+    }
 
     const int screenW = p.graphics.screen(p.var_aa.screenID).width();
     const int screenH = p.graphics.screen(p.var_aa.screenID).height();

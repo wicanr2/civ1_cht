@@ -1209,14 +1209,12 @@ static int flowtest() {
         chk(s == State::MAIN_MENU, "ESC in DIFFICULTY -> MAIN_MENU");
     }
 
-    // 3) MAIN_MENU: ENTER on the last item ("Quit") -> QUIT.
+    // 3) MAIN_MENU: ESC -> QUIT (the DOS menu has no "Quit" item; ESC is the
+    //    only quit path, matching MainCode.cs:191's 5-item menu).
     {
         FrontEndFlow flow(g);
-        flow.handleKey(MenuBoxDialog::KeyUp); // wraps/clamps onto item 0
-        for (int i = 0; i < int(FrontEndFlow::mainMenuItems().size()) - 1; ++i)
-            flow.handleKey(MenuBoxDialog::KeyDown);          // walk to "Quit"
-        State s = flow.handleKey(MenuBoxDialog::KeyEnter);
-        chk(s == State::QUIT, "ENTER on \"Quit\" -> QUIT");
+        State s = flow.handleKey(MenuBoxDialog::KeyEsc);
+        chk(s == State::QUIT, "ESC on MAIN_MENU -> QUIT");
     }
 
     // 4) Localization proof: the DIFFICULTY menu must render different pixels
@@ -2902,24 +2900,22 @@ static int shotCity(const std::string& assetDir, const char* ppmPath) {
     return 0;
 }
 
-// Dump the main-menu MenuBoxDialog (Chinese items, highlighted bar).
-static int shotMenu(const char* ppmPath) {
+// Dump the main-menu MenuBoxDialog (Chinese items, highlighted bar) ON TOP OF
+// the real LOGO.PIC backdrop — the same path the interactive --title screen and
+// the integrated --game flow use. Routes through MainCode so the menu items
+// and anchor match the DOS 5-item list at the mapped (220, 250) anchor.
+static int shotMenu(const std::string& assetDir, const char* ppmPath) {
     OpenCiv1Game g;
     setupGame(g, 640, 480);
     Translator::instance().enabled = true;
+    if (!assetDir.empty()) g.setResourcePath(assetDir);
     g.graphics.screen(0).clear(1);
-    const std::vector<std::string> items = {
-        "Start a New Game", "Load a Saved Game", "Play on EARTH",
-        "Customize World", "View Hall of Fame", "Quit",
-    };
-    MenuBoxDialog& mb = g.menuBoxDialog();
-    mb.forcedSelection = 0;
-    mb.F0_2d05_0031_ShowMenuBox(items, /*x*/ 30, /*y*/ 20,
-                                /*windowFrame*/ true, /*helpOption*/ false);
+    bool logo = false;
+    g.mainCode().F0_11a8_0486_LogoAndMainGameMenu(/*forcedSelection*/ 0, &logo);
     if (!dumpPPM(g.graphics.screen(0), ppmPath)) {
         std::fprintf(stderr, "shotMenu: cannot write %s\n", ppmPath); return 1;
     }
-    std::printf("[shotMenu] wrote %s\n", ppmPath);
+    std::printf("[shotMenu] wrote %s (logo=%s)\n", ppmPath, logo ? "real" : "fallback");
     return 0;
 }
 
@@ -8629,7 +8625,7 @@ int main(int argc, char** argv) {
             return shotCity(resolveAssetDir(assetsDir), argv[++i]);
         }
         else if (!std::strcmp(argv[i], "--shotMenu") && i + 1 < argc) {
-            return shotMenu(argv[++i]);
+            return shotMenu(resolveAssetDir(assetsDir), argv[++i]);
         }
     }
 
