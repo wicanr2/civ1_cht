@@ -28,6 +28,8 @@
 #include "game/CityView.h"
 #include "game/GameLoadAndSave.h"
 #include "game/TechResearch.h"
+#include "game/Civilopedia.h"
+#include "game/HallOfFame.h"
 #include "localization/Translator.h"
 #include "platform/SdlPresenter.h"
 #include "resource/PicLoader.h"
@@ -8516,6 +8518,195 @@ static int morewonderstest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Civilopedia (--civtest) -------------------------------
+// Verifies the Civilopedia (in-game encyclopedia) C++ port:
+//   (1) categoryLabels() returns the documented 8 categories.
+//   (2) entriesOf(Units) is non-empty and contains Settlers.
+//   (3) selectCategory(Units) + selectEntry(0) -> currentEntryLabel == Settlers.
+//   (4) descriptionOf("Settlers") with translation ON returns the Chinese
+//       description (translated, != the English key "Settlers desc").
+//   (5) draw() renders ink onto screen 0 (the localized title bar + columns
+//       produce non-zero pixels).
+//   (6) selecting an invalid category clears the selection.
+static int civtest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+    Civilopedia c(g);
+
+    // (1) category labels.
+    const auto& cats = Civilopedia::categoryLabels();
+    chk(cats.size() == 8, "(1) categoryLabels().size() == 8");
+    chk(cats[0] == "Units", "(1) categoryLabels[0] == Units");
+
+    // (2) Units entries contain Settlers.
+    const auto& units = Civilopedia::entriesOf(CivilopediaCategory::Units);
+    chk(!units.empty(), "(2) Units entries non-empty");
+    bool foundSettlers = false;
+    for (const auto& e : units) if (e == "Settlers") { foundSettlers = true; break; }
+    chk(foundSettlers, "(2) Units entries include Settlers");
+
+    // (3) navigation: select Units / Settlers -> currentEntryLabel.
+    c.selectCategory(int(CivilopediaCategory::Units));
+    c.selectEntry(0);
+    chk(c.selectedCategory() == int(CivilopediaCategory::Units),
+        "(3) selectedCategory == Units");
+    chk(c.selectedEntry() == 0, "(3) selectedEntry == 0");
+    chk(c.currentEntryLabel() == "Settlers",
+        "(3) currentEntryLabel == Settlers");
+
+    // (4) description lookup returns the Chinese translation, not the EN key.
+    std::string desc = c.descriptionOf("Settlers");
+    chk(desc != "Settlers desc", "(4) descriptionOf(Settlers) translated (!= EN key)");
+    chk(desc.find("\xe6") != std::string::npos || desc.find("\xe5") != std::string::npos
+        || desc.find("\xe7") != std::string::npos,
+        "(4) descriptionOf(Settlers) contains UTF-8 CJK byte (0xE5-0xE7)");
+    // Specifically, the canon Civ1 settlers description we registered.
+    chk(desc.find("\xe6\x8b\x93\xe8\x8d\x92") != std::string::npos,
+        "(4) descriptionOf(Settlers) contains '拓荒' (UTF-8)");
+
+    // (5) draw() produces non-zero ink on screen 0.
+    c.draw();
+    std::size_t ink = 0;
+    for (auto px : g.graphics.screen(0).pixels()) if (px && px != 1) ++ink;
+    chk(ink > 0, "(5) draw() rendered ink on screen 0");
+
+    // (6) Test a Wonders entry's description (Pyramids canon line).
+    c.selectCategory(int(CivilopediaCategory::Wonders));
+    bool foundPyr = false;
+    int  pyrIdx   = -1;
+    const auto& wonders = Civilopedia::entriesOf(CivilopediaCategory::Wonders);
+    for (std::size_t i = 0; i < wonders.size(); ++i) {
+        if (wonders[i] == "Pyramids") { foundPyr = true; pyrIdx = int(i); break; }
+    }
+    chk(foundPyr, "(6) Wonders entries include Pyramids");
+    if (foundPyr) {
+        c.selectEntry(pyrIdx);
+        std::string pdesc = c.descriptionOf("Pyramids");
+        chk(pdesc != "Pyramids desc", "(6) descriptionOf(Pyramids) translated");
+        // "金字塔" UTF-8: e9 87 91 e5 ad 97 e5 a1 94
+        chk(pdesc.find("\xe9\x87\x91\xe5\xad\x97\xe5\xa1\x94") != std::string::npos,
+            "(6) descriptionOf(Pyramids) contains '金字塔' (UTF-8)");
+    }
+
+    // (7) invalid category index clears selection.
+    c.selectCategory(99);
+    chk(c.selectedCategory() == -1 && c.selectedEntry() == -1,
+        "(7) selectCategory(99) clears selection to (-1,-1)");
+
+    if (fail) std::printf("CIVTEST: %d failure(s)\n", fail);
+    else      std::printf("CIVTEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
+// ---------------- Hall of Fame (--halltest) -----------------------------
+// Verifies the HallOfFame end-of-game ranking table:
+//   (1) computeScore: Conquest baseline / Space doubled / Defeat halved.
+//   (2) addRecord -> automatic sort by score DESC.
+//   (3) Save to /tmp/.../halloffame.json, clear in-memory, load() restores
+//       the same records and order.
+//   (4) Localized UI strings ("Hall of Fame", "Rank", "Defeat") translate
+//       to Chinese (UTF-8 multi-byte present).
+//   (5) draw() renders non-zero ink to screen 0 with three records + header.
+static int halltest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+
+    // (1) score formula behaviour.
+    int sConq  = HallOfFame::computeScore(40, 3, 12, 25, HallOfFameResult::Conquest);
+    int sSpace = HallOfFame::computeScore(40, 3, 12, 25, HallOfFameResult::Space);
+    int sDef   = HallOfFame::computeScore(40, 3, 12, 25, HallOfFameResult::Defeat);
+    // base = 40 + 6 + 12 + 25 = 83. Conquest=83, Space=166, Defeat=41.
+    chk(sConq == 83,  "(1) Conquest score == 83");
+    chk(sSpace == 166,"(1) Space score == 166 (2x)");
+    chk(sDef == 41,   "(1) Defeat score == 41 (halved)");
+
+    // (2) addRecord auto-sorts by score DESC.
+    HallOfFame h(g);
+    h.setStorageDir("/tmp/openciv1pp_halltest");
+    // Clean up any stale storage from a previous run.
+    {
+        std::error_code ec;
+        std::filesystem::remove_all("/tmp/openciv1pp_halltest", ec);
+        std::filesystem::create_directories("/tmp/openciv1pp_halltest", ec);
+    }
+    HallOfFameRecord r1{"Caesar",      "Romans",     sConq,  1850, HallOfFameResult::Conquest, "2026-06-03"};
+    HallOfFameRecord r2{"Abe Lincoln", "Americans",  sSpace, 2020, HallOfFameResult::Space,    "2026-06-03"};
+    HallOfFameRecord r3{"Genghis Khan","Mongols",    sDef,   1240, HallOfFameResult::Defeat,   "2026-06-03"};
+    // Append OUT of score order; verify sort places Space (166) first.
+    h.addRecord(r1);
+    h.addRecord(r3);
+    h.addRecord(r2);
+    chk(h.records().size() == 3, "(2) records().size() == 3");
+    chk(h.records()[0].score == sSpace, "(2) sort places Space (166) at #1");
+    chk(h.records()[1].score == sConq,  "(2) Conquest (83) at #2");
+    chk(h.records()[2].score == sDef,   "(2) Defeat (41) at #3");
+
+    // (3) save -> clear -> load round-trip.
+    chk(h.save(), "(3) save() succeeds");
+    h.clear();
+    chk(h.records().empty(), "(3) clear() empties the in-memory table");
+    chk(h.load(), "(3) load() succeeds");
+    chk(h.records().size() == 3, "(3) load() restores 3 records");
+    chk(h.records()[0].name == "Abe Lincoln" && h.records()[0].score == sSpace,
+        "(3) loaded #1 == Abe Lincoln / 166");
+    chk(h.records()[2].result == HallOfFameResult::Defeat,
+        "(3) loaded #3 result == Defeat");
+    chk(h.records()[2].year == 1240, "(3) loaded #3 year == 1240");
+
+    // (4) localized UI strings translate (UTF-8 CJK present).
+    auto hasCjk = [](const std::string& s) {
+        for (unsigned char c : s) if (c >= 0xE0) return true;
+        return false;
+    };
+    chk(hasCjk(Translator::instance().translate("Hall of Fame")),
+        "(4) 'Hall of Fame' translated to UTF-8 CJK");
+    chk(hasCjk(Translator::instance().translate("Rank")),
+        "(4) 'Rank' translated to UTF-8 CJK");
+    chk(hasCjk(Translator::instance().translate(HallOfFame::resultKey(HallOfFameResult::Defeat))),
+        "(4) Defeat result key translated to UTF-8 CJK");
+    chk(hasCjk(Translator::instance().translate(HallOfFame::resultKey(HallOfFameResult::Conquest))),
+        "(4) Conquest result key translated to UTF-8 CJK");
+    chk(hasCjk(Translator::instance().translate(HallOfFame::resultKey(HallOfFameResult::Space))),
+        "(4) Space result key translated to UTF-8 CJK");
+
+    // (5) draw() renders non-zero ink on screen 0.
+    g.graphics.screen(0).clear(0);
+    h.draw();
+    std::size_t ink = 0;
+    for (auto px : g.graphics.screen(0).pixels()) if (px && px != 1) ++ink;
+    chk(ink > 0, "(5) draw() with 3 records produced ink");
+
+    // (6) draw() with empty table renders 'No records yet' message (ink > 0).
+    h.clear();
+    g.graphics.screen(0).clear(0);
+    h.draw();
+    std::size_t inkEmpty = 0;
+    for (auto px : g.graphics.screen(0).pixels()) if (px && px != 1) ++inkEmpty;
+    chk(inkEmpty > 0, "(6) draw() with empty table still draws headers + 'No records'");
+
+    // Tidy up the temp storage dir.
+    {
+        std::error_code ec;
+        std::filesystem::remove_all("/tmp/openciv1pp_halltest", ec);
+    }
+
+    if (fail) std::printf("HALLTEST: %d failure(s)\n", fail);
+    else      std::printf("HALLTEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -8602,6 +8793,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--barbtest")) { return barbtest(); }
         else if (!std::strcmp(argv[i], "--spacetest")) { return spacetest(); }
         else if (!std::strcmp(argv[i], "--morewonderstest")) { return morewonderstest(); }
+        else if (!std::strcmp(argv[i], "--civtest")) { return civtest(); }
+        else if (!std::strcmp(argv[i], "--halltest")) { return halltest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -8684,7 +8877,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

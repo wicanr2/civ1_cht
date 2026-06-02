@@ -42,6 +42,8 @@ add_executable(openciv1pp
   src/game/CityView.cpp
   src/game/GameLoadAndSave.cpp
   src/game/TechResearch.cpp
+  src/game/Civilopedia.cpp
+  src/game/HallOfFame.cpp
 )
 
 target_include_directories(openciv1pp PRIVATE
@@ -56,7 +58,7 @@ target_compile_options(openciv1pp PRIVATE ${SDL2_CFLAGS_OTHER} ${FREETYPE_CFLAGS
 
 # Headless self-tests as CTest cases (run: ctest --test-dir build --output-on-failure)
 enable_testing()
-foreach(t selftest restest gfxtest gdtest compositetest paltest drawtest imgtest langtest txttest menutest navtest commontest textboxtest flowtest gamemenutest playtest maptest titletest newgametest mousetest introtest realgentest citytest turntest gameflowtest aitest aibehaviortest cityviewtest combattest aimovetest savetest techtest minimaptest improvementtest buildingtest buildingstest2 foodtest governmenttest wondertest diplomacytest moreunitstest goldtest happinesstest roadmovetest aiexpandtest fortifytest slidertest huttest barbtest spacetest morewonderstest)
+foreach(t selftest restest gfxtest gdtest compositetest paltest drawtest imgtest langtest txttest menutest navtest commontest textboxtest flowtest gamemenutest playtest maptest titletest newgametest mousetest introtest realgentest citytest turntest gameflowtest aitest aibehaviortest cityviewtest combattest aimovetest savetest techtest minimaptest improvementtest buildingtest buildingstest2 foodtest governmenttest wondertest diplomacytest moreunitstest goldtest happinesstest roadmovetest aiexpandtest fortifytest slidertest huttest barbtest spacetest morewonderstest civtest halltest)
   add_test(NAME ${t} COMMAND openciv1pp --${t})
   # tests load assets/zh_TW.json by relative path -> run them from the project root
   set_tests_properties(${t} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
