@@ -1,6 +1,6 @@
 ---
 name: civ1-cht
-description: 接續 1993 Sid Meier 文明帝國 1 Windows 版 (MicroProse Civilization for Windows) 繁體中文化專案。當使用者提到 Civ1、Civilization 1、文明帝國 1、CIV.EXE、CIVFONTS.FON、CIVTIMES12/24、CIVDIALOG、EDILZSS2、EDI Install Pro、MicroProse 1993 安裝器，或想擴充 Civ1 翻譯 (Batch B/C/D/E)、打包 Win10 portable、回頭做 256-color shim、處理 14 文明領袖名 (Solomon/Augustus/Charlemagne/Jefferson/...)、24 個 RT_DIALOG patch、或 inline string slot-length 約束時觸發。**主動觸發**: 即使使用者只說「繼續做 Civ1」「補譯」「打包文明」也要套用。也涵蓋同類技術 — MicroProse 1992-1995 自家 EDILZSS2 壓縮格式 (Master of Magic、M1 Tank Platoon II 等都用)、Win16 NE inline ASCII 字串 in-place patch、Win16 RT_DIALOG walker null-terminated 約束、wine font subst CHINESEBIG5_CHARSET 路線。
+description: 接續 1993 Sid Meier 文明帝國 1 Windows 版 (MicroProse Civilization for Windows) 繁體中文化專案。當使用者提到 Civ1、Civilization 1、文明帝國 1、CIV.EXE、CIVFONTS.FON、CIVTIMES12/24、CIVDIALOG、EDILZSS2、EDI Install Pro、MicroProse 1993 安裝器，或想擴充 Civ1 翻譯 (Batch B/C/D/E)、打包 Win10 portable、回頭做 256-color shim、處理 14 文明領袖名 (Solomon/Augustus/Charlemagne/Jefferson/...)、24 個 RT_DIALOG patch、或 inline string slot-length 約束時觸發。**主動觸發**: 即使使用者只說「繼續做 Civ1」「補譯」「打包文明」也要套用。也涵蓋同類技術 — MicroProse 1992-1995 自家 EDILZSS2 壓縮格式 (Master of Magic、M1 Tank Platoon II 等都用)、Win16 NE inline ASCII 字串 in-place patch、Win16 RT_DIALOG walker null-terminated 約束、wine font subst CHINESEBIG5_CHARSET 路線。**也涵蓋 Track B：把 OpenCiv1（1991 DOS Civ 的 C#/Avalonia 重寫）改寫成 C++ + SDL2 並原生中文化（`openciv1pp/` 子專案）** — 當使用者提到 openciv1pp、OpenCiv1 C++ 移植、SDL2、VCPU、CodeObject 移植、GBitmap/GDriver、CjkGlyphCache、FreeType MONO 字模、`--menuflow`、或「繼續移植 CodeObject / 改版 OpenCiv1」時觸發。
 ---
 
 # 文明帝國 1 (1993 Civilization for Windows) 繁體中文化
@@ -261,3 +261,25 @@ Batch A 主要術語（`data/inline_translations.json`）：
 - 「文明 1 中文化」
 
 當使用者談到任何 **MicroProse 1992-1995 同期遊戲** 的 EDILZSS2 解壓或 Win16 NE 字串 patch 時也適用。
+
+---
+
+## Track B — C++/SDL2 原生重寫（openciv1pp/）
+
+把 OpenCiv1（1991 DOS Civ 的 C# 重寫，MIT）改寫成 **C++17 + SDL2** 並原生中文化。與 Track A 是不同路線（Track A patch 1993 Win16 binary；Track B 重寫 1991 DOS 邏輯）；共用翻譯內容。**先讀 `docs/PROJECT_MEMORY.md` 的 Track B 章節 + `openciv1pp/README.md` 確認現況。**
+
+### 現況（ctest 16/16 全綠）
+引擎全完成（VCPU 全指令集 / GBitmap+繪圖原語 / GDriver 多螢幕+合成 / .pic codec / .txt / Translator+FreeType MONO CJK / SDL+輸入）；8 個 CodeObjects 已移植（DrawTools/ImageTools/LanguageTools/CommonTools/MenuBoxDialog/TextBoxDialogs/GameMenus + FrontEndFlow）。`./build/openciv1pp --menuflow` = 全中文可操作前端流程。
+
+### 移植下一個 CodeObject 的 SOP
+1. 用 **sub-agent 委派**（避免主上下文 prompt too long）：給它確切的現有 C++ API + DrawTools/ImageTools 模式。
+2. 讀 `OpenCiv1/src/Game/CodeObjects/<Name>.cs` → 在 `openciv1pp/src/game/<Name>.{h,cpp}` 開類別取 `OpenCiv1Game&`，保留 `F0_*` 名，用 cpu/graphics/var_aa 照抄。
+3. 文字必須走 DrawTools / GDriver.drawString(CRectangle)（會翻譯）——非 GBitmap 層。
+4. 加 `--xxxtest`（含 translate-on vs -off 像素差證明中文）→ 註冊進 CMakeLists `foreach` + main.cpp `--test` 聚合器。
+5. 雷區：CJK 用 FreeType MONO；ctest 靠 WORKING_DIRECTORY 找 assets。
+
+### 雷區速查
+- CJK glyph：FreeType `FT_LOAD_TARGET_MONO`，不要灰階+門檻。
+- 翻譯 chokepoint：`GDriver::drawString` / `DrawTools::F0_1182_*`。
+- 字型 uming.ttc：`/usr/share/fonts/truetype/arphic/uming.ttc`。
+- 剩餘大宗：模擬主體 ~30+ CodeObjects + boot path + 使用者正版 DOS 資產。
