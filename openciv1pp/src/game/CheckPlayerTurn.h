@@ -58,6 +58,11 @@ public:
     //
     // Returns the new turn number (== oldTurn + 1).
     int processEndOfTurn();
+    // Same as above, but takes an explicit `currentTurn` value used for
+    // the SPACE RACE launch + arrival checks (Civ1 endgame). The no-arg
+    // overload derives the turn from um.year() as a back-compat path
+    // (legacy callers / tests that don't track an explicit turn counter).
+    int processEndOfTurn(int currentTurn);
 
     // ---- year math (ported 1:1 from Segment_1238.cs lines 268-305) ----
     // Civ1 stores Year as a signed int: negative = BC (Year = -4000 at game

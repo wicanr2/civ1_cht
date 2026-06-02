@@ -8164,6 +8164,128 @@ static int barbtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- Apollo + Space Race (--spacetest) ---------------------
+// Verifies the SPACE RACE endgame slice end-to-end:
+//   (1) Build Apollo for civ 0 -> apolloBuilt=true, mapRevealed=true.
+//   (2) Bump per-civ spaceship counters to 10/8/4 (threshold).
+//   (3) launchSpaceshipIfReady(0, 100) -> launchTurn == 100, victoryCiv
+//       still -1 (arrival not yet).
+//   (4) processEndOfTurn(119) -> no victory yet.
+//   (5) processEndOfTurn(120) -> victoryCiv == 0 (arrival at launch+20).
+//   (6) Save+load v16 round-trip: apolloBuilt + spaceship counters +
+//       launchTurn persist across the snapshot.
+static int spacetest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // ---- (1)+(2)+(3): Apollo, parts, launch ------------------------------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        Translator::instance().enabled = true;
+        auto& um = g.unitManagement();
+        um.setMapBounds(20, 20);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 1);
+        g.techResearch().initCivs(int(um.civs().size()));
+        // Found a city so the wonder home-city map can record something.
+        std::string nm;
+        chk(um.buildCity(5, 5, 0, nm), "(1) civ 0 city founded");
+        // Apollo built: directly record the wonder completion (faster than
+        // accumulating 600 shields). The recordWonderCompletion side-effect
+        // must flip apolloBuilt + mapRevealed.
+        um.recordWonderCompletion(0, 0, WonderType::Apollo);
+        chk(um.civs()[0].apolloBuilt,
+            "(1) civ 0 apolloBuilt == true after Apollo completion");
+        chk(um.civs()[0].mapRevealed,
+            "(1) civ 0 mapRevealed == true (Apollo reveals the map)");
+        chk(um.wonderOwner(WonderType::Apollo) == 0,
+            "(1) wonderOwner(Apollo) == 0");
+
+        // (2) Bump counters directly (spec says this is fine).
+        um.civsMut()[0].spaceshipStructural = 10;
+        um.civsMut()[0].spaceshipComponent  = 8;
+        um.civsMut()[0].spaceshipModule     = 4;
+        chk(um.civs()[0].spaceshipStructural == 10 &&
+            um.civs()[0].spaceshipComponent  == 8 &&
+            um.civs()[0].spaceshipModule     == 4,
+            "(2) per-civ spaceship counters bumped to 10/8/4");
+
+        // (3) Launch.
+        bool launched = um.launchSpaceshipIfReady(0, 100);
+        chk(launched, "(3) launchSpaceshipIfReady returned true at turn 100");
+        chk(um.civs()[0].spaceshipLaunchTurn == 100,
+            "(3) civ 0 spaceshipLaunchTurn == 100");
+        // Calling again returns false (already launched).
+        chk(!um.launchSpaceshipIfReady(0, 101),
+            "(3) second launch call refused (already launched)");
+        chk(g.victoryCiv < 0,
+            "(3) victoryCiv still -1 immediately after launch (arrival pending)");
+
+        // (4) processEndOfTurn at turn 119 -> NO victory yet (need >= 120).
+        g.checkPlayerTurn().processEndOfTurn(119);
+        chk(g.victoryCiv < 0,
+            "(4) victoryCiv still -1 at turn 119 (launch+19 < launch+20)");
+
+        // (5) processEndOfTurn at turn 120 -> victoryCiv == 0 (arrived).
+        g.checkPlayerTurn().processEndOfTurn(120);
+        chk(g.victoryCiv == 0,
+            "(5) victoryCiv == 0 at turn 120 (launch+20 arrival)");
+        // Victory banner surfaces via UnitManagement::lastCombatKey.
+        chk(um.lastCombatKey() == "Spaceship arrived at Alpha Centauri!",
+            "(5) lastCombatKey holds the victory banner string");
+    }
+
+    // ---- (6): Save+load v16 round-trip -----------------------------------
+    {
+        const char* savePath = "/tmp/openciv1pp_spacetest.sav";
+        OpenCiv1Game g1; setupGame(g1, 640, 480);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow1(g1);
+        flow1.enterTitle();
+        for (int k = 0; k < 6; ++k) flow1.handleKey(MenuBoxDialog::KeyEnter);
+        flow1.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+        auto& um1 = g1.unitManagement();
+        // Flip Apollo on civ 0 and stamp ship counters + a launch turn.
+        chk(!um1.civs().empty(), "(6) civs provisioned post-PLAYING");
+        if (um1.civs().empty()) return 1;
+        um1.civsMut()[0].apolloBuilt = true;
+        um1.civsMut()[0].mapRevealed = true;
+        um1.civsMut()[0].spaceshipStructural = 7;
+        um1.civsMut()[0].spaceshipComponent  = 5;
+        um1.civsMut()[0].spaceshipModule     = 2;
+        um1.civsMut()[0].spaceshipLaunchTurn = 42;
+        bool sok = g1.gameLoadAndSave().saveToFile(savePath, &flow1);
+        chk(sok, "(6) save v16 succeeded");
+
+        OpenCiv1Game g2; setupGame(g2, 640, 480);
+        Translator::instance().enabled = true;
+        FrontEndFlow flow2(g2);
+        bool lok = g2.gameLoadAndSave().loadFromFile(savePath, &flow2);
+        chk(lok, "(6) load v16 succeeded");
+        auto& um2 = g2.unitManagement();
+        chk(!um2.civs().empty(), "(6) civs restored post-load");
+        if (!um2.civs().empty()) {
+            chk(um2.civs()[0].apolloBuilt,
+                "(6) apolloBuilt persists across save/load");
+            chk(um2.civs()[0].mapRevealed,
+                "(6) mapRevealed persists across save/load");
+            chk(um2.civs()[0].spaceshipStructural == 7,
+                "(6) spaceshipStructural persists");
+            chk(um2.civs()[0].spaceshipComponent  == 5,
+                "(6) spaceshipComponent persists");
+            chk(um2.civs()[0].spaceshipModule     == 2,
+                "(6) spaceshipModule persists");
+            chk(um2.civs()[0].spaceshipLaunchTurn == 42,
+                "(6) spaceshipLaunchTurn persists");
+        }
+    }
+
+    if (fail) std::printf("SPACETEST: %d failure(s)\n", fail);
+    else      std::printf("SPACETEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -8248,6 +8370,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--slidertest")) { return slidertest(); }
         else if (!std::strcmp(argv[i], "--huttest")) { return huttest(); }
         else if (!std::strcmp(argv[i], "--barbtest")) { return barbtest(); }
+        else if (!std::strcmp(argv[i], "--spacetest")) { return spacetest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -8313,7 +8436,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

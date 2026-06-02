@@ -196,9 +196,19 @@ enum class BuildingType : uint8_t {
     // growth past population 8 — without one, the food box does not
     // advance toward a pop-9 growth (population caps at 8).
     Aqueduct    = 8,
+    // ---- SPACESHIP parts (post-Apollo) -----------------------------------
+    // Civ1's endgame: cities of an Apollo-built civ may produce spaceship
+    // parts (Structural / Component / Module) to launch a colony ship to
+    // Alpha Centauri. Costs are the Civ1 manual values (80/160/320 shields).
+    // The build gate is enforced by pickAiCityProduction + the player-side
+    // production-selection helper (only offered when civs[owner].apolloBuilt
+    // == true). Each completed part bumps the matching CivState counter.
+    SpaceshipStructural = 9,
+    SpaceshipComponent  = 10,
+    SpaceshipModule     = 11,
 };
 // Count of BuildingType values shipped (including None at 0).
-static constexpr int kBuildingTypeCount = 9;
+static constexpr int kBuildingTypeCount = 12;
 
 // A building's fixed stats — faithful subset of the C# CityImprovement
 // definition table. `cost` is the SHIELD threshold (Civ1 standard values).
@@ -232,6 +242,13 @@ inline const BuildingDef& buildingDefOf(BuildingType t) {
         {"Library",     80,  Tech::Writing},     // +50% science contribution
         {"Cathedral",   160, Tech::Mysticism},   // -3 unhappy citizens (stacks w/ Temple)
         {"Aqueduct",    120, Tech::Construction},// gates city growth past pop 8
+        // SPACESHIP parts (Civ1 manual costs: 80 / 160 / 320 shields).
+        // Tech prereq is Tech::None at the BuildingDef level — the runtime
+        // gate (only buildable when owner civ has apolloBuilt == true) is
+        // enforced separately in setCityProductionBuilding / pickAi.
+        {"Spaceship Structural", 80,  Tech::None},
+        {"Spaceship Component",  160, Tech::None},
+        {"Spaceship Module",     320, Tech::None},
     };
     int i = int(t);
     if (i < 0 || i >= kBuildingTypeCount) i = 0;
@@ -273,8 +290,16 @@ enum class WonderType : uint8_t {
     HangingGardens = 2,
     GreatWall      = 3,
     Colossus       = 4,
+    // ---- Apollo Program (Civ1 endgame trigger) --------------------------
+    // Cost 600 (most expensive wonder). Tech prereq Tech::Mathematics
+    // (faithful Civ1 prereq is Space Flight, several eras past the early-
+    // era subset; we substitute Mathematics — already in the existing
+    // TechResearch.h enum — as the documented simplification). Building
+    // Apollo sets civ.apolloBuilt = true (gates spaceship part production)
+    // AND civ.mapRevealed = true (Civ1: Apollo reveals the entire map).
+    Apollo         = 5,
 };
-static constexpr int kWonderCount = 5; // includes None at index 0
+static constexpr int kWonderCount = 6; // includes None at index 0
 
 struct WonderDef {
     const char* name;            // English key (Translator -> Chinese)
@@ -298,6 +323,8 @@ inline const WonderDef& wonderDefOf(WonderType w) {
          "Defender +50% in own cities (stacks with Walls)"},
         {"Colossus",        200, Tech::BronzeWorking,
          "+1 science per city (Civ1: +1 trade per ocean tile; simplified)"},
+        {"Apollo Program",  600, Tech::Mathematics,
+         "Reveals the map and enables Spaceship parts (Civ1 endgame)"},
     };
     int i = int(w);
     if (i < 0 || i >= kWonderCount) i = 0;
@@ -424,6 +451,25 @@ struct CivState {
     // hut barbarian uprising spawn variant + era-appropriate unit types
     // beyond Militia/Legion are STUBS — see commit message TODOs.
     bool isBarbarian = false;
+
+    // ---- SPACE RACE / APOLLO endgame (Civ1) ------------------------------
+    // Civ1 victory condition: a civ that builds the Apollo Program and
+    // launches a spaceship reaching Alpha Centauri before any other civ
+    // wins the Space Race. We model the subset:
+    //   * apolloBuilt: true once the Apollo Program wonder completes for
+    //     this civ. Required to start building any spaceship part.
+    //   * mapRevealed: Apollo also reveals the full map (Civ1). MiniWorld
+    //     can read this to skip fog when fog is modeled; the value is
+    //     persisted so save/load round-trip stays honest.
+    //   * spaceshipStructural/Component/Module: count of each part built.
+    //     Faithful Civ1 launch threshold (simplified) is 10 / 8 / 4.
+    //   * spaceshipLaunchTurn: -1 until launched. Arrival = launch + 20.
+    bool    apolloBuilt = false;
+    bool    mapRevealed = false;
+    uint8_t spaceshipStructural = 0;
+    uint8_t spaceshipComponent  = 0;
+    uint8_t spaceshipModule     = 0;
+    int     spaceshipLaunchTurn = -1;  // -1 = not yet launched
 };
 
 struct City {
@@ -726,6 +772,21 @@ public:
     // have checked first; defensive).
     void recordWonderCompletion(int civId, int cityId, WonderType w);
 
+    // ---- SPACE RACE launch helper ---------------------------------------
+    // Threshold counts for the Civ1 spaceship launch (faithful simplified).
+    static constexpr int kShipStructuralThreshold = 10;
+    static constexpr int kShipComponentThreshold  = 8;
+    static constexpr int kShipModuleThreshold     = 4;
+    // Turn count to traverse to Alpha Centauri once launched.
+    static constexpr int kShipTravelTurns = 20;
+    // Auto-launch the spaceship for civ `civIdx` if it has enough parts
+    // (10 structural + 8 components + 4 modules) and has NOT yet launched.
+    // Sets civs[civIdx].spaceshipLaunchTurn = currentTurn on success.
+    // Returns true when this call performed the launch; false otherwise
+    // (already launched, not enough parts, civ out of range, or Apollo
+    // not yet built).
+    bool launchSpaceshipIfReady(int civIdx, int currentTurn);
+
     // Direct access for GameLoadAndSave to restore the owner-city map.
     const int* wonderOwnerCityArray() const { return wonderOwnerCity_; }
     void setWonderOwnerCity(WonderType w, int cityId) {
@@ -945,7 +1006,7 @@ private:
     // Per-wonder owner cityId. -1 means "unowned (any civ may build it)".
     // Index 0 (WonderType::None) is unused but kept for indexing parity with
     // the enum's numeric values.
-    int wonderOwnerCity_[kWonderCount] = { -1, -1, -1, -1, -1 };
+    int wonderOwnerCity_[kWonderCount] = { -1, -1, -1, -1, -1, -1 };
 
     // ---- DIPLOMACY ------------------------------------------------------
     // Pairwise relations matrix (NxN where N = civs_.size()). Reshaped to

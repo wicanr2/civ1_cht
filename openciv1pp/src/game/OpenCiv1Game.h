@@ -37,6 +37,13 @@ public:
     GDriver graphics;
     CRectangle var_aa; // screen-0 drawing context (OpenCiv1's Var_aa_Screen0_Rectangle)
 
+    // ---- SPACE RACE victory ---------------------------------------------
+    // Civ1 endgame: when a civ's spaceship arrives at Alpha Centauri, that
+    // civ wins the game. CheckPlayerTurn::processEndOfTurn sets this to
+    // the winning civ's index; FrontEndFlow can read it to transition the
+    // top-level state to DONE. Default -1 == "no victor yet".
+    int victoryCiv = -1;
+
     // Keyword-replacement values used by LanguageTools::ReplaceKeywords
     // ($US/$THEM/$BUCKS/$RPLC1/$RPLC2). Mirrors OpenCiv1GameGlobals.Array_30b8;
     // defaults to 5 empty strings, populated by other (not-yet-ported) CodeObjects.

@@ -466,6 +466,18 @@ bool UnitManagement::setCityProductionBuilding(int cityId, BuildingType b) {
             return false; // tech not yet researched -> refuse
         }
     }
+    // ---- SPACESHIP PARTS GATE (Apollo required) -------------------------
+    // Faithful Civ1 endgame rule: spaceship parts are only buildable
+    // AFTER the owner civ has completed the Apollo Program wonder. Refuse
+    // any spaceship-part production attempt by a civ that hasn't built
+    // Apollo (mirrors the original game's grey-out of those entries in
+    // the city-production menu until Apollo completes).
+    if ((b == BuildingType::SpaceshipStructural ||
+         b == BuildingType::SpaceshipComponent  ||
+         b == BuildingType::SpaceshipModule) &&
+        c.owner >= 0 && std::size_t(c.owner) < civs_.size()) {
+        if (!civs_[std::size_t(c.owner)].apolloBuilt) return false;
+    }
     c.productionKind = City::ProductionKind::Building;
     c.productionBuildingType = b;
     c.production = bd.cost;
@@ -514,6 +526,35 @@ void UnitManagement::recordWonderCompletion(int civId, int cityId, WonderType w)
     civs_[std::size_t(civId)].ownedWonders.insert(w);
     int i = int(w);
     if (i > 0 && i < kWonderCount) wonderOwnerCity_[i] = cityId;
+    // ---- APOLLO PROGRAM side-effects (Civ1 endgame trigger) -------------
+    // Faithful Civ1: completing Apollo flips the per-civ apolloBuilt flag
+    // (gates the spaceship-parts production gate elsewhere) AND reveals
+    // the entire world map for the owning civ (the famous Apollo "fog
+    // dropped" effect). Both flags persist via GameLoadAndSave v16.
+    if (w == WonderType::Apollo) {
+        CivState& cv = civs_[std::size_t(civId)];
+        cv.apolloBuilt = true;
+        cv.mapRevealed = true;
+    }
+}
+
+// ---- SPACE RACE launch helper ------------------------------------------
+// Auto-launch the spaceship for civ `civIdx` when it has enough parts
+// (10 structural + 8 components + 4 modules) AND Apollo is built AND
+// it hasn't already launched. Faithful Civ1: launch is an instantaneous
+// action triggered by accumulating parts (the original game's "Launch"
+// menu entry — automated here, since the player-side launch UI is
+// stubbed; an explicit menu hook is // TODO(port)).
+bool UnitManagement::launchSpaceshipIfReady(int civIdx, int currentTurn) {
+    if (civIdx < 0 || std::size_t(civIdx) >= civs_.size()) return false;
+    CivState& cv = civs_[std::size_t(civIdx)];
+    if (!cv.apolloBuilt) return false;
+    if (cv.spaceshipLaunchTurn >= 0) return false; // already launched
+    if (int(cv.spaceshipStructural) < kShipStructuralThreshold) return false;
+    if (int(cv.spaceshipComponent)  < kShipComponentThreshold)  return false;
+    if (int(cv.spaceshipModule)     < kShipModuleThreshold)     return false;
+    cv.spaceshipLaunchTurn = currentTurn;
+    return true;
 }
 
 bool UnitManagement::tileCityHasBuilding(int owner, int x, int y,

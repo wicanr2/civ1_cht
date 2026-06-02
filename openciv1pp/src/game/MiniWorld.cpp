@@ -682,7 +682,10 @@ void MiniWorld::endTurn() {
                 if (u.alive && barbId >= 0 && u.owner == barbId) ++beforeBarbs;
             }
         }
-        game_->checkPlayerTurn().processEndOfTurn();
+        // Pass the explicit turn so the SPACE RACE launch/arrival check
+        // uses MiniWorld's authoritative turn counter (NOT the year-derived
+        // proxy the no-arg overload falls back to).
+        game_->checkPlayerTurn().processEndOfTurn(turn_);
         if (!um.civs().empty()) {
             int afterAlive = 0;
             int afterBarbs = 0;

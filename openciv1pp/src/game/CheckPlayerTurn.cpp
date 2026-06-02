@@ -198,6 +198,15 @@ int CheckPlayerTurn::spawnBarbariansForTurn(int turn) {
 }
 
 int CheckPlayerTurn::processEndOfTurn() {
+    // Derive a stable turn proxy from the year (the year ticks monotonically
+    // alongside the turn counter; legacy callers/tests don't always track an
+    // explicit turn). Use the same (year+4000)/20 estimate barb spawn uses.
+    int t = (p.unitManagement().year() + 4000) / 20;
+    if (t < 1) t = 1;
+    return processEndOfTurn(t);
+}
+
+int CheckPlayerTurn::processEndOfTurn(int currentTurn) {
     auto& um = p.unitManagement();
     auto& cities = um.citiesMut();
 
@@ -738,7 +747,31 @@ int CheckPlayerTurn::processEndOfTurn() {
                 if (needed > 0 && c.shields >= needed) {
                     BuildingType built = c.productionBuildingType;
                     c.shields -= needed;
-                    c.ownedBuildings.insert(built);
+                    // ---- SPACESHIP PARTS: civ-wide counters --------------
+                    // Spaceship parts are NOT per-city "owned buildings"
+                    // (they don't sit in a city's ownedBuildings set —
+                    // multiple cities can build the same part type and
+                    // each contributes to the civ-wide counter). Civ1
+                    // launch threshold checks the per-civ totals.
+                    if (built == BuildingType::SpaceshipStructural ||
+                        built == BuildingType::SpaceshipComponent  ||
+                        built == BuildingType::SpaceshipModule) {
+                        if (c.owner >= 0 &&
+                            std::size_t(c.owner) < um.civs().size()) {
+                            CivState& cv = um.civsMut()[std::size_t(c.owner)];
+                            if (built == BuildingType::SpaceshipStructural &&
+                                cv.spaceshipStructural < 255)
+                                cv.spaceshipStructural += 1;
+                            else if (built == BuildingType::SpaceshipComponent &&
+                                     cv.spaceshipComponent < 255)
+                                cv.spaceshipComponent  += 1;
+                            else if (built == BuildingType::SpaceshipModule &&
+                                     cv.spaceshipModule < 255)
+                                cv.spaceshipModule     += 1;
+                        }
+                    } else {
+                        c.ownedBuildings.insert(built);
+                    }
                     // Fall back to producing Militia next cycle (documented
                     // default; the player can override via setCityProduction*).
                     c.productionKind = City::ProductionKind::Unit;
@@ -949,6 +982,43 @@ int CheckPlayerTurn::processEndOfTurn() {
                 units[std::size_t(victim)].alive = false;
                 cv.upkeepGoldPerTurn -= 1; // one less unit to pay for
                 cv.gold += 1;              // refund this turn's unpaid upkeep
+            }
+        }
+    }
+
+    // ---- SPACE RACE: launch + arrival check -----------------------------
+    // Faithful Civ1 endgame: after all civ updates, iterate civs. For each
+    // civ with apolloBuilt + enough parts + not-yet-launched, AUTO-launch
+    // (the player-side explicit "launch" menu entry is // TODO(port)).
+    // Then check arrival: a civ that launched at turn L arrives at
+    // L + kShipTravelTurns. The FIRST civ to arrive wins the game; we
+    // record its index on OpenCiv1Game::victoryCiv (default -1) and stamp
+    // a "Space Race Victory" banner via UnitManagement::lastActionKey
+    // (read by MiniWorld for the HUD line). Subsequent arrivals are
+    // ignored (the first civ to arrive wins).
+    {
+        const int nCivs = int(um.civs().size());
+        // First pass: auto-launch any qualifying civs at this turn.
+        for (int civId = 0; civId < nCivs; ++civId) {
+            um.launchSpaceshipIfReady(civId, currentTurn);
+        }
+        // Second pass: arrival = launchTurn + kShipTravelTurns. First
+        // civ to arrive wins (we only record one — the lowest civ id on
+        // a tie; faithful Civ1 doesn't tie-break formally either).
+        if (p.victoryCiv < 0) {
+            for (int civId = 0; civId < nCivs; ++civId) {
+                const CivState& cv = um.civs()[std::size_t(civId)];
+                if (cv.spaceshipLaunchTurn < 0) continue;
+                if (currentTurn >= cv.spaceshipLaunchTurn +
+                                   UnitManagement::kShipTravelTurns) {
+                    p.victoryCiv = civId;
+                    // Surface the victory banner on the HUD via the
+                    // existing lastCombatKey channel (MiniWorld already
+                    // mirrors lastCombatKey/lastActionKey to its own
+                    // lastActionKey_ line — see MiniWorld::endTurn).
+                    um.setLastCombatKey("Spaceship arrived at Alpha Centauri!");
+                    break;
+                }
             }
         }
     }

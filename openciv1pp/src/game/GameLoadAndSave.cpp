@@ -130,7 +130,13 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
     // 'civbarb' key entirely (default: isBarbarian=false from CivState's
     // struct init). The barbarian civ unit's owner field already round-
     // trips via the regular 'unit' line so barbarian units survive load.
-    os << "OpenCiv1pp savegame v15\n";
+    // v16 adds Apollo + Space Race endgame state: per-civ apolloBuilt
+    // flag (+ implicit mapRevealed mirror, same flag), per-civ spaceship
+    // part counters (structural/component/module) + launch turn. Appended
+    // as 'civapollo <i> <0|1>' and 'civship <i> <s> <c> <m> <launchTurn>'
+    // lines. v1..v15 readers skip both keys (defaults: all false / 0 /
+    // launchTurn=-1 — matching CivState struct init).
+    os << "OpenCiv1pp savegame v16\n";
 
     // Turn / year. Turn lives on MiniWorld; year on UnitManagement (mutated
     // by CheckPlayerTurn::advanceYear each end-of-turn).
@@ -301,6 +307,22 @@ bool GameLoadAndSave::saveToFile(const std::string& path,
         os << "civbarb " << i << " " << (civs[i].isBarbarian ? 1 : 0) << "\n";
     }
 
+    // v16: per-civ Apollo flag (folded with mapRevealed — Apollo always
+    // also reveals the map, so the two flags move together). Persisted
+    // as a single 0/1 to keep the schema small; the loader restores both
+    // CivState fields to the same value (matches recordWonderCompletion).
+    for (std::size_t i = 0; i < civs.size(); ++i) {
+        os << "civapollo " << i << " " << (civs[i].apolloBuilt ? 1 : 0) << "\n";
+    }
+    // v16: per-civ spaceship state (3 part counters + launch turn).
+    for (std::size_t i = 0; i < civs.size(); ++i) {
+        os << "civship " << i << " "
+           << int(civs[i].spaceshipStructural) << " "
+           << int(civs[i].spaceshipComponent)  << " "
+           << int(civs[i].spaceshipModule)     << " "
+           << civs[i].spaceshipLaunchTurn      << "\n";
+    }
+
     // v10: per-city {happy, unhappy, disorder}. One line per city. v1..v9
     // readers skip the 'cityhappy' key entirely (default: happy=0,
     // unhappy=0, disorder=false from City's struct init).
@@ -403,7 +425,8 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         header != "OpenCiv1pp savegame v12" &&
         header != "OpenCiv1pp savegame v13" &&
         header != "OpenCiv1pp savegame v14" &&
-        header != "OpenCiv1pp savegame v15") return false;
+        header != "OpenCiv1pp savegame v15" &&
+        header != "OpenCiv1pp savegame v16") return false;
 
     int turn = 0, year = -4000;
     int difficulty = -1, tribe = -1;
@@ -467,6 +490,14 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
     // saves don't emit this key -> default (false) holds.
     struct CivBarbRow { int civId; int isBarbarian; };
     std::vector<CivBarbRow> civBarbRows;
+    // v16: per-civ Apollo + spaceship state. Applied after civs are
+    // restored. v1..v15 saves don't emit these keys -> defaults
+    // (apolloBuilt=mapRevealed=false, counters=0, launchTurn=-1) hold.
+    struct CivApolloRow { int civId; int apolloBuilt; };
+    std::vector<CivApolloRow> civApolloRows;
+    struct CivShipRow   { int civId; int structural; int component;
+                          int module; int launchTurn; };
+    std::vector<CivShipRow> civShipRows;
 
     std::string line;
     while (std::getline(is, line)) {
@@ -635,6 +666,17 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
             CivBarbRow r{};
             iss >> r.civId >> r.isBarbarian;
             civBarbRows.push_back(r);
+        }
+        else if (key == "civapollo") {
+            CivApolloRow r{};
+            iss >> r.civId >> r.apolloBuilt;
+            civApolloRows.push_back(r);
+        }
+        else if (key == "civship") {
+            CivShipRow r{};
+            iss >> r.civId >> r.structural >> r.component
+                >> r.module >> r.launchTurn;
+            civShipRows.push_back(r);
         }
         else if (key == "cityhappy") {
             CityHappyRow r{};
@@ -844,6 +886,31 @@ bool GameLoadAndSave::loadFromFile(const std::string& path, FrontEndFlow* flow) 
         for (const auto& r : civBarbRows) {
             if (r.civId < 0 || std::size_t(r.civId) >= cv.size()) continue;
             cv[std::size_t(r.civId)].isBarbarian = (r.isBarbarian != 0);
+        }
+    }
+    // v16: apply Apollo + spaceship state. Absent in v1..v15 saves ->
+    // defaults (apolloBuilt=mapRevealed=false, counters=0, launchTurn=-1).
+    {
+        auto& cv = p.unitManagement().civsMut();
+        for (const auto& r : civApolloRows) {
+            if (r.civId < 0 || std::size_t(r.civId) >= cv.size()) continue;
+            bool flag = (r.apolloBuilt != 0);
+            cv[std::size_t(r.civId)].apolloBuilt = flag;
+            cv[std::size_t(r.civId)].mapRevealed = flag; // Apollo reveals map
+        }
+        for (const auto& r : civShipRows) {
+            if (r.civId < 0 || std::size_t(r.civId) >= cv.size()) continue;
+            CivState& c = cv[std::size_t(r.civId)];
+            // Clamp counters to uint8_t range (0..255).
+            auto clamp = [](int v) -> uint8_t {
+                if (v < 0) return 0;
+                if (v > 255) return 255;
+                return uint8_t(v);
+            };
+            c.spaceshipStructural = clamp(r.structural);
+            c.spaceshipComponent  = clamp(r.component);
+            c.spaceshipModule     = clamp(r.module);
+            c.spaceshipLaunchTurn = r.launchTurn;
         }
     }
     // v10: apply per-city {happy, unhappy, disorder}. Absent in v1..v9
