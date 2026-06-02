@@ -70,6 +70,12 @@ ctest --test-dir build          # 16/16 自測
 
 實機中文截圖：[`openciv1pp/docs/screenshots/`](openciv1pp/docs/screenshots/)（menubox / textbox / demo）。
 
+#### 對照 DOS 原版（30s 並排錄影）
+
+![openciv1pp vs DOS Civ1 side-by-side](openciv1pp/docs/videos/comparison.gif)
+
+左：本專案；右：1991 DOS 原版透過 DOSBox。錄製完全在 Docker + Xvfb 容器內進行（`openciv1pp/docker/recording/`），不會在主機桌面開窗。
+
 ### 誠實的剩餘工作
 
 「完整可玩」還需移植**模擬主體 ~30+ 個 CodeObjects**（地圖/城市/單位/戰鬥/外交/回合迴圈/AI，含 `Segment_25fb` 359KB、`CityWorker` 158KB 等大檔）+ boot path（`MainCode`/`StartGameMenu`/`MainIntro`），且實際執行需使用者自備正版 Civ1 DOS 資產（`.pic/.pal/.txt`，著作權，不在 repo）。引擎 + UI 殼 + 中文化已是穩固地基；移植已機械化（VCPU API 對齊 C#、harness 與測試模式確立）。

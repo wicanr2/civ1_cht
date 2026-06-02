@@ -4,6 +4,16 @@
 
 本 repo 目前是**已驗證的地基（foundation）**：渲染管線、字型、中文化、SDL2 顯示、VCPU 核心都已能編譯執行。8 萬行遊戲邏輯（CodeObjects）為後續增量移植目標。
 
+## openciv1pp vs DOS Civ1 對照
+
+![openciv1pp vs DOS Civ1 side-by-side](docs/videos/comparison.gif)
+
+左邊：本專案（C++/SDL2 中文化版本），右邊：1991 DOS 原版透過 DOSBox 執行。
+畫面實機錄製、無人為剪輯，使用相同 DOS 資源檔。錄製流程完全在 Docker + Xvfb 容器內跑（`docker/recording/`），沒有任何視窗開到主機桌面。
+
+完整 MP4：[docs/videos/comparison.mp4](docs/videos/comparison.mp4)
+
+
 ## 為什麼這樣分層
 
 OpenCiv1 的遊戲邏輯大量是 x86 組語逐指令轉寫，跑在一個軟體 VCPU + 分段記憶體模型上。直接全量直譯成 C++ 是數月工程，所以策略是**先把可重用、難度集中的「殼層」做穩**：
