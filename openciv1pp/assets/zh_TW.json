@@ -359,5 +359,11 @@
   "Arctic": "冰原",
   "Swamp": "沼澤",
   "Jungle": "叢林",
-  "River": "河流"
+  "River": "河流",
+  "Pop:": "人口:",
+  "City Resources": "城市資源",
+  "Supported Units": "供養單位",
+  "Food Storage": "糧倉",
+  "Production": "生產",
+  "Buildings": "建築"
 }

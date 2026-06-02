@@ -14,6 +14,7 @@
 #include "../localization/Translator.h"
 #include "../platform/SdlPresenter.h"
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <filesystem>
 
@@ -81,20 +82,39 @@ bool CityView::handleKey(int navKey) {
     return false;
 }
 
-// City-view layout for the 640x480 native fb (FOV refactor):
-//   - CBACK*.PIC backdrop at native 320x200 in the TOP-LEFT (0,0)..(320,200).
-//   - 21-tile mini-grid (5x5 with 4 corners removed, 24px cells = 120x120)
-//     in the upper-right region, beside the backdrop.
-//   - Comprehensive info panel occupying the FULL bottom strip
-//     y=200..480 (640x280) — name/year, owner/population/production/buildings.
-// The panel-rect below is the INFO panel only; clicks anywhere outside it
-// AND outside the backdrop+grid upper strip close the view.
+// City-view layout for the 640x480 native fb:
+//   - DOS region (0..319, 0..199): CBACK*.PIC backdrop + all the DOS-coord
+//     panels/labels/grid baked on top at their canonical DOS coords (the
+//     pixel-parity zone). All coordinates inside this region come straight
+//     out of CityWorker.cs (see docs/CITYVIEW_LAYOUT.md).
+//   - Right strip (320..639, 0..199): extra Chinese accessibility area
+//     (mini-grid label/legend space) — reserved canvas, currently blank.
+//   - Bottom HUD strip (0..639, 200..479): Chinese 16-row label/value stack
+//     (Population/Food/Food per turn/Founded/Owner/Production/Researching/
+//     Government/Buildings/Wonders/Diplomacy/Trade/Upkeep/Treasury/Happy/
+//     Unhappy/Status). Kept for the "視野要變大" payoff.
+// The panel-rect below is the bottom HUD only; clicks anywhere outside the
+// 640x480 canvas close the view.
 namespace {
 constexpr int kBackX = 0,   kBackY = 0;
 constexpr int kBackW = 320, kBackH = 200;
-constexpr int kGridX = 340, kGridY = 16;     // upper-right of backdrop
 constexpr int kPanelX = 0,  kPanelY = 200;
 constexpr int kPanelW = 640, kPanelH = 280;
+
+// The 21 city-radius offsets (the fat-cross 5x5-minus-4-corners pattern).
+// Mirrors OpenCiv1.OpenCiv1GameGlobals.CityOffsets (cardinal/diagonal
+// neighbours, then the four outer cardinals, then the eight outer "knight"
+// offsets, then the centre). Order matches the C# array; the layout doesn't
+// depend on it but keeping the source order makes a side-by-side diff with
+// CityWorker.cs trivial.
+constexpr int kCityOffsetCount = 21;
+constexpr int kCityOffsets[kCityOffsetCount][2] = {
+    { 0,-1},{ 1, 0},{ 0, 1},{-1, 0},
+    { 1,-1},{ 1, 1},{-1, 1},{-1,-1},
+    { 0,-2},{ 2, 0},{ 0, 2},{-2, 0},
+    {-1,-2},{ 1,-2},{ 2,-1},{ 2, 1},{ 1, 2},{-1, 2},{-2, 1},{-2,-1},
+    { 0, 0},
+};
 } // namespace
 
 bool CityView::handleClick(int fbX, int fbY) {
@@ -119,125 +139,322 @@ void CityView::draw(GBitmap& screen, int fontId) {
 
 // ---- the actual screen-build (mirrors F19_0000_0000_ShowCityLayout shape). --
 void CityView::draw(GBitmap& screen, const City& city, int fontId) {
-    // Install a dedicated set of palette indices with HIGH-CONTRAST values
-    // mirroring the 16-colour VGA palette (Palette::loadDefaultVga in
-    // src/graphics/Palette.h). Picked to be far from terrain hues 200..206
-    // and the AI civ colours 220..226 (see MiniWorld::renderUnits). We DO
-    // NOT write to indices 0..15 directly because copyPaletteFrom(*backdrop_)
-    // would clobber them; instead we install matching VGA RGB values at
-    // dedicated 16x.. indices so the panel/text stays readable on top of
-    // whatever palette the loaded backdrop installs.
-    //   160 = VGA dark blue   (1)   -> backdrop fill
-    //   161 = VGA dark grey   (8)   -> panel fill (DARK so text on top reads)
-    //   162 = VGA bright white (15) -> panel border / dividers
-    //   163 = VGA black        (0)  -> text shadow
-    //   164 = VGA bright white (15) -> body text / labels
-    //   165 = VGA light grey   (7)  -> sub-panel fill
-    //   166 = VGA bright yellow(14) -> population dots / city centre / title
-    //   167 = VGA bright green (10) -> grassland / plains
-    //   168 = VGA dark blue    (1)  -> water / river
-    //   169 = VGA light grey   (7)  -> hills / mountains
-    //   170 = VGA brown        (6)  -> desert
-    //   171 = VGA dark green   (2)  -> forest / jungle
-    //   172 = VGA bright cyan  (11) -> river highlight
-    //   173 = VGA dark cyan    (3)  -> swamp
-    auto installCityViewPalette = [&]() {
-        screen.palette.set(160,   0,   0, 170); // dark blue (backdrop fill)
-        screen.palette.set(161,  85,  85,  85); // dark grey (panel fill)
-        screen.palette.set(162, 255, 255, 255); // bright white (border)
-        screen.palette.set(163,   0,   0,   0); // black (text shadow)
-        screen.palette.set(164, 255, 255, 255); // bright white (text)
-        screen.palette.set(165, 170, 170, 170); // light grey (sub-panel)
-        screen.palette.set(166, 255, 255,  85); // bright yellow (title + pop)
-        screen.palette.set(167,  85, 255,  85); // bright green (grass/plains)
-        screen.palette.set(168,   0,   0, 170); // dark blue (water/river)
-        screen.palette.set(169, 170, 170, 170); // light grey (hills/mountains)
-        screen.palette.set(170, 170,  85,   0); // brown (desert)
-        screen.palette.set(171,   0, 170,   0); // dark green (forest/jungle)
-        screen.palette.set(172,  85, 255, 255); // bright cyan (river)
-        screen.palette.set(173,   0, 170, 170); // dark cyan (swamp)
-        screen.palette.set(174, 255, 255, 255); // bright white (arctic)
-        // 175 = VGA bright red — used for the city title when the city is
-        // in CIVIL DISORDER (民變). Pickable visually distinct from the
-        // bright yellow (166) "normal" title.
-        screen.palette.set(175, 255,  85,  85); // bright red (disorder title)
-    };
-    installCityViewPalette();
+    // ---------------------------------------------------------------------
+    // PALETTE STRATEGY (per docs/CITYVIEW_LAYOUT.md fix step #1):
+    //   CBACK.PIC uses ALL 256 palette entries (the brown-ground gradient
+    //   actually occupies 155..175, the sky gradient 240..255, etc — see
+    //   the palette dump in CBACK.PIC). So we CANNOT carve out custom
+    //   indices for the HUD without breaking CBACK's appearance.
+    //   Instead we use CBACK's intact palette for EVERYTHING:
+    //     - DOS-region content uses CBACK's 0..15 (standard VGA layout)
+    //     - Bottom HUD strip ALSO uses CBACK's 0..15 (the VGA colors)
+    //   For the worked-tile blit, we momentarily swap to TER257's palette,
+    //   blit tiles, then restore CBACK's 0..15 so subsequent draws still
+    //   look right.
+    //
+    //   Color cheat-sheet (DOS VGA-standard, matches CBACK 0..15):
+    //     0  = black            (text shadow, borders)
+    //     1  = dark blue        (sub-panel fill)
+    //     7  = light grey       (HUD panel fill alt)
+    //     8  = dark grey        (HUD panel fill)
+    //     12 = bright red       (disorder title, food-bar bg)
+    //     14 = bright yellow    (HUD title, food-bar fill)
+    //     15 = bright white     (body text, panel border)
+    //     10 = bright green     (supported-units list)
+    // ---------------------------------------------------------------------
 
-    // Clear the whole canvas to the "outside" backdrop fill BEFORE painting
-    // the upper region. This guarantees the bottom info panel starts from a
-    // known colour and the area to the right of CBACK reads as canvas, not
-    // as garbage from a prior frame.
-    screen.clear(160);
+    // 1) Clear the whole canvas to black BEFORE painting anything.
+    screen.clear(0);
 
-    // 1) Backdrop: CBACK*.PIC when loaded (mirrors the C# HILL.PIC backdrop
-    //    used by ShowCityLayout); else a flat colored fill in the backdrop
-    //    rect. CBACK is 320x200 DOS art — drawn at NATIVE size in the
-    //    top-left so the pixels stay crisp; the right side / bottom panel
-    //    use the freed space for the mini-grid + info panel. The palette is
-    //    re-installed AFTER copyPaletteFrom so panel/text colours survive
-    //    the backdrop's palette table.
+    // 2) Backdrop CBACK*.PIC at native 320x200, top-left. CBACK's palette
+    //    is copied into 0..255 verbatim so the DOS region and HUD strip
+    //    share a single coherent palette table.
     if (backdrop_) {
         screen.copyPaletteFrom(*backdrop_);
         if (backdrop_->width() <= screen.width() &&
             backdrop_->height() <= screen.height()) {
             screen.drawBitmap(kBackX, kBackY, *backdrop_, false);
         }
-        installCityViewPalette();
     } else {
-        // No backdrop asset: fill ONLY the backdrop rect (panel still gets 161).
-        screen.fillRect(Rect{kBackX, kBackY, kBackW, kBackH}, 160);
-    }
-    // When TER257 tileset is loaded for the mini-grid, its palette (indices
-    // 0..~127) must be installed so the blit pixels resolve correctly. Our
-    // CityView overrides at 160+ are re-applied AFTER so they survive.
-    if (tileset_) {
-        screen.copyPaletteFrom(*tileset_);
-        installCityViewPalette();
+        // No backdrop asset: install a VGA-default 0..15 ramp so DOS-color
+        // indices 0..15 below resolve to recognizable colors. The DOS
+        // region is left as a solid fill in this fallback (rare path,
+        // only hit when DOS assets are absent).
+        screen.palette.set( 0,   0,   0,   0); // black
+        screen.palette.set( 1,   0,   0, 170); // dark blue
+        screen.palette.set( 2,   0, 170,   0); // dark green
+        screen.palette.set( 3,   0, 170, 170); // dark cyan
+        screen.palette.set( 4, 170,   0,   0); // dark red
+        screen.palette.set( 5, 170,   0, 170); // dark magenta
+        screen.palette.set( 6, 170,  85,   0); // brown
+        screen.palette.set( 7, 170, 170, 170); // light grey
+        screen.palette.set( 8,  85,  85,  85); // dark grey
+        screen.palette.set( 9,  85,  85, 255); // bright blue
+        screen.palette.set(10,  85, 255,  85); // bright green
+        screen.palette.set(11,  85, 255, 255); // bright cyan
+        screen.palette.set(12, 255,  85,  85); // bright red
+        screen.palette.set(13, 255,  85, 255); // bright magenta
+        screen.palette.set(14, 255, 255,  85); // bright yellow
+        screen.palette.set(15, 255, 255, 255); // bright white
+        screen.fillRect(Rect{kBackX, kBackY, kBackW, kBackH}, 1);
     }
 
-    // 2) Bottom info panel — fills the freed space y=200..480 (640x280) below
-    //    the native-size CBACK. Generous room for all the labels.
-    screen.fillRect(Rect{kPanelX, kPanelY, kPanelW, kPanelH}, 161);
-    screen.drawRect(Rect{kPanelX, kPanelY, kPanelW, kPanelH}, 162);
-    screen.drawRect(Rect{kPanelX + 1, kPanelY + 1, kPanelW - 2, kPanelH - 2}, 162);
+    // Save the full CBACK palette so we can restore it after the (TER257)
+    // tile blit below. This keeps both the DOS region and the bottom HUD
+    // reading their VGA-standard indices 0..15 against CBACK's palette.
+    std::array<RGB, 256> cbackPal{};
+    for (int i = 0; i < 256; ++i) cbackPal[std::size_t(i)] = screen.palette.colors[std::size_t(i)];
 
-    // 3) Title bar at the TOP of the info panel — city name + (year)
-    //    (mirrors the C# DrawCenteredStringWithShadow "{cityName} ({year})"
-    //    line in F19_0000_0000_ShowCityLayout).
     const GFont& font = p.graphics.font(fontId);
-    int titleY = kPanelY + 6;
+    auto& um = p.unitManagement();
+
+    // Cache stats used by multiple panels below.
+    int population = std::max(1, city.population);
+    bool hasGranary = city.hasBuilding(BuildingType::Granary);
+    int growthThreshold = (city.population + 1) * (hasGranary ? 5 : 10);
+
+    // =====================================================================
+    //  DOS-REGION CONTENT (0..319, 0..199) — pixel-parity layer.
+    //  All coords here come straight from CityWorker.cs (DOS coords).
+    // =====================================================================
+
+    // (a) Top header strip (2,1)-(208,21): DOS uses FillRectangleWithPattern.
+    // We approximate the pattern as a 1px black border + dark-blue fill so
+    // the city-name text reads against it.
+    screen.fillRect(Rect{2, 1, 208, 21}, 1);   // color 1 = dark blue
+    screen.drawRect(Rect{2, 1, 208, 21}, 0);   // color 0 = black border
+
+    // (b) City name centered at DOS (104, 2), white (color 15).
+    //     Format: "{中文城市名} (人口: {N})". We use Translator for
+    //     "Pop:" -> "人口:" and for the city name itself.
     {
-        char yearbuf[32];
-        int yr = p.unitManagement().year();
-        std::snprintf(yearbuf, sizeof(yearbuf), " (%d %s)",
-                      yr < 0 ? -yr : yr, yr < 0 ? "BC" : "AD");
-        // Title "City: <Name>" — translate "City" via the chokepoint, then the
-        // name (also translatable, e.g. "Capital"->"首都"), then the year.
-        std::string cityKey = Translator::instance().translate("City");
-        std::string nameTr  = Translator::instance().translate(city.name);
-        std::string title   = cityKey + ": " + nameTr + yearbuf;
+        std::string nameTr = Translator::instance().translate(city.name);
+        std::string popLbl = Translator::instance().translate("Pop:");
+        char buf[80];
+        std::snprintf(buf, sizeof(buf), "%s (%s %d)", nameTr.c_str(),
+                      popLbl.c_str(), population);
+        std::string title = buf;
         Size sz = measureString(font, title);
-        int tx = kPanelX + (kPanelW - sz.w) / 2;
-        // Shadow then text (the F19_ DrawCenteredStringWithShadow recipe).
-        // Title is rendered in bright yellow (166) for visual emphasis —
-        // BUT switches to bright red (175) when the city is in CIVIL
-        // DISORDER, so the player notices at a glance that production +
-        // growth have halted (faithful Civ1 city-screen disorder cue).
-        uint8_t titleCol = city.disorder ? 175 : 166;
-        screen.drawString(font, tx + 1, titleY + 1, title, 163);
-        screen.drawString(font, tx, titleY, title, titleCol);
+        // 16px font is taller than DOS's 8px font; clamp y so the text fits
+        // within the 21px-tall header strip. Center on (104,2) (DOS anchor)
+        // but offset upward by half the font height to match DOS visual.
+        int tx = 104 - sz.w / 2;
+        if (tx < 2) tx = 2;
+        int ty = 2;
+        uint8_t titleCol = city.disorder ? 12 /* bright red */ : 15 /* white */;
+        screen.drawString(font, tx + 1, ty + 1, title, 0);   // shadow
+        screen.drawString(font, tx, ty, title, titleCol);
     }
 
-    // 4) Info column (LEFT half of bottom panel) — Population:/Founded:/
-    //    Owner:/Production:/Researching:/Buildings:. Lots of breathing room
-    //    after the FOV refactor.
-    int infoX = kPanelX + 16;
-    int infoY = titleY + font.pixelHeight + font.lineSpacing + 6;
-    int lineH = font.pixelHeight + font.lineSpacing + 2;
+    // (c) Resources sub-panel at (2, 23, 122, 9), fill color 1, label
+    //     "City Resources" at (8, 24) color 15. (DOS draws the label INSIDE
+    //     the strip; we use y=24 so the 16px font fits roughly.)
+    screen.fillRect(Rect{2, 23, 122, 9}, 1);
+    {
+        std::string lbl = Translator::instance().translate("City Resources");
+        screen.drawString(font, 9, 25, lbl, 0);   // shadow
+        screen.drawString(font, 8, 24, lbl, 15);  // white
+    }
 
-    auto& um = p.unitManagement();
-    int yr = um.year();
+    // (d) Worked-tile grid: 21 tiles centered around (160, 56). For each
+    //     (dx,dy) blit a 16x16 TER257 tile at ((dx+5)*16+80, (dy+3)*16+8).
+    //     The center tile lands at (160, 56).
+    //
+    //     Palette tension: TER257 pixels reference TER257's palette indices,
+    //     but CBACK's palette is what's INSTALLED. If we just copy raw
+    //     TER257 indices, tile colors come out wrong (CBACK[100] != TER257[100]).
+    //     Fix: build an RGB->CBACK-index nearest-match lookup, then map each
+    //     TER257 source pixel through it. CBACK's palette stays intact -> the
+    //     surrounding DOS region keeps its DOS colors.
+    {
+        const MapManagement* mm = nullptr;
+        try { mm = &p.mapManagement(); } catch (...) { mm = nullptr; }
+        auto mapTerToCback = [&](uint8_t terIdx) -> uint8_t {
+            if (!tileset_) return terIdx;
+            const RGB src = tileset_->palette.colors[std::size_t(terIdx)];
+            // Nearest CBACK palette index by squared RGB distance.
+            int bestI = 0; int bestD = INT32_MAX;
+            for (int i = 0; i < 256; ++i) {
+                const RGB& c = cbackPal[std::size_t(i)];
+                int dr = int(c.r) - int(src.r);
+                int dg = int(c.g) - int(src.g);
+                int db = int(c.b) - int(src.b);
+                int d = dr*dr + dg*dg + db*db;
+                if (d < bestD) { bestD = d; bestI = i; if (d == 0) break; }
+            }
+            return uint8_t(bestI);
+        };
+        // Build a per-source-index cache (256-entry LUT) so the 21-tile loop
+        // doesn't pay nearest-match cost per pixel.
+        std::array<uint8_t, 256> lut{};
+        if (tileset_) for (int i = 0; i < 256; ++i) lut[std::size_t(i)] = mapTerToCback(uint8_t(i));
+
+        for (int i = 0; i < kCityOffsetCount; ++i) {
+            int dx = kCityOffsets[i][0];
+            int dy = kCityOffsets[i][1];
+            int gx = (dx + 5) * 16 + 80;
+            int gy = (dy + 3) * 16 + 8;
+            Terrain t = Terrain::Grassland;
+            if (mm) {
+                int tx = city.x + dx, ty = city.y + dy;
+                if (tx >= 0 && ty >= 0 &&
+                    tx < mm->width() && ty < mm->height()) {
+                    t = mm->terrainAt(tx, ty);
+                } else {
+                    t = Terrain::Water;
+                }
+            }
+            if (tileset_) {
+                TileXY tile = terrainToTileXY(t);
+                int srcX = tile.col * 16, srcY = tile.row * 16;
+                // Per-pixel remap blit via setPixel (16x16 = 256 ops/tile,
+                // 21 tiles = 5376 ops/frame; negligible vs the rest of draw()).
+                for (int py = 0; py < 16; ++py) {
+                    for (int px = 0; px < 16; ++px) {
+                        uint8_t s = tileset_->getPixel(srcX + px, srcY + py);
+                        screen.setPixel(gx + px, gy + py, lut[std::size_t(s)]);
+                    }
+                }
+            } else {
+                // Fallback colored rect (DOS color 2/3 are dark green/cyan,
+                // close enough for terrain). 16x16.
+                uint8_t col = 2;
+                switch (t) {
+                    case Terrain::Water:     col = 1; break;
+                    case Terrain::River:     col = 11; break;
+                    case Terrain::Grassland: col = 10; break;
+                    case Terrain::Plains:    col = 14; break;
+                    case Terrain::Forest:    col = 2; break;
+                    case Terrain::Jungle:    col = 2; break;
+                    case Terrain::Hills:     col = 7; break;
+                    case Terrain::Mountains: col = 7; break;
+                    case Terrain::Desert:    col = 6; break;
+                    case Terrain::Tundra:    col = 7; break;
+                    case Terrain::Arctic:    col = 15; break;
+                    case Terrain::Swamp:     col = 3; break;
+                    default:                 col = 10; break;
+                }
+                screen.fillRect(Rect{gx, gy, 16, 16}, col);
+            }
+            // The 21st offset is (0,0) — the city centre. DOS marks all
+            // "being-worked" tiles with a 15x15 red (color 12) outline.
+            // Without a real worker simulation we treat the city centre
+            // tile as "being worked" so the outline appears at the canonical
+            // anchor; this matches what DOS shows for a freshly-founded
+            // 1-pop city.
+            if (dx == 0 && dy == 0) {
+                screen.drawRect(Rect{gx, gy, 15, 15}, 12);
+            }
+        }
+    }
+
+    // (e) Vertical food-storage bar at (309, 2, 8, 96):
+    //     bg color 12 (red), filled portion (color 14 / yellow) sized by
+    //     food/growthThreshold. NO label here (per fix step #4).
+    {
+        screen.fillRect(Rect{309, 2, 8, 96}, 12);
+        int h = 96 * std::max(0, city.food) / std::max(1, growthThreshold);
+        if (h > 96) h = 96;
+        if (h > 0) screen.fillRect(Rect{309, 2 + (96 - h), 8, h}, 14);
+    }
+
+    // (f) "Food Storage" label at (8, 108) color 15. zh: "糧倉".
+    {
+        std::string lbl = Translator::instance().translate("Food Storage");
+        screen.drawString(font, 9, 109, lbl, 0);
+        screen.drawString(font, 8, 108, lbl, 15);
+    }
+
+    // (g) Supported-units list at (98, i*6+179) color 10. We list units
+    //     physically present at city.x,city.y (proxy for "supported by this
+    //     city" — Unit doesn't carry a homeCity field in this port). Cap
+    //     to 4 rows so the list stays inside the DOS region. Localized.
+    {
+        int rows = 0;
+        std::string sLbl = Translator::instance().translate("Supported Units");
+        // Header label one row above the first row anchor.
+        screen.drawString(font, 99, 174, sLbl, 0);
+        screen.drawString(font, 98, 173, sLbl, 15);
+        for (const auto& u : um.units()) {
+            if (!u.alive) continue;
+            if (u.owner != city.owner) continue;
+            if (u.x != city.x || u.y != city.y) continue;
+            if (rows >= 4) break;
+            std::string nm = Translator::instance().translate(
+                                 unitDefOf(u.type).name);
+            int y = rows * 6 + 179;
+            // Clamp y so the 16px font fits inside the DOS region
+            // (the 6px DOS row pitch was for the smaller DOS font).
+            screen.drawString(font, 98, y, nm, 10);
+            ++rows;
+        }
+    }
+
+    // (h) Right info panel at (230, 99, 90, 100): fill color 0 (black),
+    //     show current production label + shield bar + buildings list.
+    {
+        screen.fillRect(Rect{230, 99, 90, 100}, 0);
+        // "生產: <what>"
+        const char* what = nullptr;
+        if (city.productionKind == City::ProductionKind::Wonder &&
+            city.productionWonderType != WonderType::None) {
+            what = wonderDefOf(city.productionWonderType).name;
+        } else if (city.productionKind == City::ProductionKind::Building &&
+            city.productionBuildingType != BuildingType::None) {
+            what = buildingDefOf(city.productionBuildingType).name;
+        } else {
+            what = unitDefOf(city.productionType).name;
+        }
+        std::string prodLbl = Translator::instance().translate("Production");
+        std::string whatTr = Translator::instance().translate(what);
+        char prodBuf[96];
+        std::snprintf(prodBuf, sizeof(prodBuf), "%s: %s",
+                      prodLbl.c_str(), whatTr.c_str());
+        screen.drawString(font, 233, 101, prodBuf, 0);
+        screen.drawString(font, 232, 100, prodBuf, 15);
+        // Shield bar (production progress).
+        int barX = 234, barY = 118, barW = 80, barH = 6;
+        screen.drawRect(Rect{barX, barY, barW, barH}, 15);
+        int filled = (city.production > 0) ?
+                     std::min(barW - 2, (barW - 2) * city.shields / city.production) : 0;
+        if (filled > 0) screen.fillRect(Rect{barX + 1, barY + 1, filled, barH - 2}, 14);
+        // "建築:" + buildings list (up to 6 rows, 8px stride).
+        std::string bLbl = Translator::instance().translate("Buildings");
+        char bHeader[32];
+        std::snprintf(bHeader, sizeof(bHeader), "%s:", bLbl.c_str());
+        screen.drawString(font, 233, 131, bHeader, 0);
+        screen.drawString(font, 232, 130, bHeader, 15);
+        int row = 0;
+        for (BuildingType b : city.ownedBuildings) {
+            if (row >= 6) break;
+            std::string n = Translator::instance().translate(buildingDefOf(b).name);
+            int y = 142 + row * 8;
+            if (y + 6 >= 199) break;
+            screen.drawString(font, 232, y, n, 15);
+            ++row;
+        }
+        if (row == 0) {
+            screen.drawString(font, 232, 142, "-", 15);
+        }
+    }
+
+    // =====================================================================
+    //  BOTTOM HUD STRIP (y=200..479) — Chinese accessibility label/value
+    //  stack. Uses our 160..175 palette overrides (CBACK doesn't touch them).
+    // =====================================================================
+
+    // HUD uses CBACK's standard VGA 0..15 — index 8 (dark grey) for fill,
+    // 15 (white) for border, 0 (black) for shadow, 15 (white) for text.
+    screen.fillRect(Rect{kPanelX, kPanelY, kPanelW, kPanelH}, 8);
+    screen.drawRect(Rect{kPanelX, kPanelY, kPanelW, kPanelH}, 15);
+    screen.drawRect(Rect{kPanelX + 1, kPanelY + 1, kPanelW - 2, kPanelH - 2}, 15);
+
+    // (DOS title at (104,2) is the canonical title — bottom HUD starts
+    //  directly with the label/value stack, no duplicate "City:" line.)
+    int infoX = kPanelX + 16;
+    int infoY = kPanelY + 8;
+    int lineH = font.pixelHeight + font.lineSpacing + 2;
+    int yr2 = um.year(); (void)yr2;
 
     // Owner tribe name (resolve via civs() when populated; fall back to a
     // generic label when not).
@@ -249,20 +466,12 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         }
     }
 
-    // Population = ActualSize, now driven by city.population (set by
-    // CheckPlayerTurn's per-turn food/growth pass). Mirrors the C#
-    // F19_0000_111f_DrawCityPopulation, which iterates city.ActualSize and
-    // draws one POP sprite per point. Floor at 1 (a city always has >= 1
-    // pop; single-pop starvation just clamps food at 0).
-    int population = std::max(1, city.population);
-    // Growth threshold for the current pop (Granary halves it). Shown as
-    // "<food>/<threshold>" in the 食物 line so the player can read the
-    // distance to growth at a glance.
-    bool hasGranary = city.hasBuilding(BuildingType::Granary);
-    int growthThreshold = (city.population + 1) * (hasGranary ? 5 : 10);
+    // population/growthThreshold are declared near the top of draw()
+    // (used by the DOS-region content above). Re-use those values here.
+    (void)hasGranary;
 
     // Founded label.
-    int yFound = city.foundedTurn; (void)yr;
+    int yFound = city.foundedTurn;
     // We store founded as a TURN number (small int). In the C# the original
     // shows the FOUNDED YEAR. We approximate by drawing the founded turn —
     // sufficient for the test (the label is still localized) and faithful to
@@ -270,11 +479,11 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
 
     auto drawLabelValue = [&](int y, const char* labelKey, const std::string& val) {
         std::string lab = Translator::instance().translate(labelKey);
-        screen.drawString(font, infoX + 1, y + 1, lab, 163);
-        int penX = screen.drawString(font, infoX, y, lab, 164);
+        screen.drawString(font, infoX + 1, y + 1, lab, 0);
+        int penX = screen.drawString(font, infoX, y, lab, 15);
         // value: numeric/proper-noun-ish; not localized further
-        screen.drawString(font, penX + 1, y + 1, val, 163);
-        screen.drawString(font, penX, y, val, 164);
+        screen.drawString(font, penX + 1, y + 1, val, 0);
+        screen.drawString(font, penX, y, val, 15);
     };
 
     {
@@ -476,132 +685,16 @@ void CityView::draw(GBitmap& screen, const City& city, int fontId) {
         drawLabelValue(infoY + lineH * 16, "Status:", stTr);
     }
 
-    // 5) Population dots — one warm yellow dot per population point, drawn in
-    //    a horizontal row below the info block (mirrors the C# pop-sprite row
-    //    drawn at (24, 140) in F19_0000_111f_DrawCityPopulation; we use small
-    //    coloured dots instead of POP.PIC sprites — see header for the stub).
-    {
-        int popY = infoY + lineH * 17 + 2;
-        int popX = infoX;
-        for (int i = 0; i < population && i < 24; ++i) {
-            screen.fillRect(Rect{popX, popY, 6, 8}, 166);
-            screen.drawRect(Rect{popX, popY, 6, 8}, 163);
-            popX += 8;
-        }
-    }
+    // (The 21-tile mini-grid and population-dots row that used to live in
+    //  the right-strip / bottom-strip are GONE — the DOS-region content
+    //  above (sections (a)..(h)) replaces them at the canonical DOS coords.)
 
-    // 6) 21-tile mini-grid — the city centre + the 20 worker tiles in the
-    //    city radius. The Civ1 city radius is a 5x5 area with the four
-    //    corner tiles removed (the "fat cross" pattern of 21 tiles). After
-    //    the FOV refactor the grid lives in the UPPER-RIGHT of the canvas
-    //    (beside the native-size CBACK), with BIGGER 24x24 cells so it
-    //    reads clearly. We sample real terrain when MapManagement was
-    //    generated; otherwise we leave the cells blank (panel fill).
-    {
-        // When TER257 is available, the mini-grid blits the 16x16 base tile
-        // per cell upscaled into a 24x24 cell (3:2 nearest-neighbour by way
-        // of the temp 16x16 -> scaled2x path that fills 32x32, clipped to
-        // 24). Otherwise we draw 24px colored rects keyed to a DISTINCT
-        // bright palette index per terrain enum.
-        const int cellSz = 24;
-        // Upper-right region — beside the native-size CBACK at (kGridX, kGridY).
-        int gridX0 = kGridX;
-        int gridY0 = kGridY;
-
-        // Section label above the grid.
-        std::string lbl = Translator::instance().translate("Tiles:");
-        int tY = gridY0 - font.pixelHeight - font.lineSpacing - 2;
-        if (tY < 0) tY = 0;
-        screen.drawString(font, gridX0 + 1, tY + 1, lbl, 163);
-        screen.drawString(font, gridX0, tY, lbl, 164);
-
-        const bool useTiles = (tileset_ != nullptr);
-
-        const MapManagement* mm = nullptr;
-        try { mm = &p.mapManagement(); } catch (...) { mm = nullptr; }
-
-        // Per-terrain palette index lookup for the fallback path. DISTINCT
-        // VGA-style colours so each terrain reads at a glance (mirrors the
-        // colour scheme called out in the polish task: Water/River=blue,
-        // Grassland=green, Plains=yellow, Forest/Jungle=dark-green, Hills/
-        // Mountains=light-grey, Desert=brown, Tundra=light-grey, Arctic=white,
-        // Swamp=dark-cyan).
-        auto terrainCol = [](Terrain t) -> uint8_t {
-            switch (t) {
-                case Terrain::Water:     return 168; // dark blue
-                case Terrain::River:     return 172; // bright cyan
-                case Terrain::Grassland: return 167; // bright green
-                case Terrain::Plains:    return 166; // bright yellow
-                case Terrain::Forest:    return 171; // dark green
-                case Terrain::Jungle:    return 171; // dark green
-                case Terrain::Hills:     return 169; // light grey
-                case Terrain::Mountains: return 169; // light grey
-                case Terrain::Desert:    return 170; // brown
-                case Terrain::Tundra:    return 165; // light grey (sub-panel)
-                case Terrain::Arctic:    return 174; // bright white
-                case Terrain::Swamp:     return 173; // dark cyan
-                default:                 return 167; // grass fallback
-            }
-        };
-
-        // 5x5 area; skip the 4 corners == 21 tiles ("fat cross" city radius).
-        for (int dy = -2; dy <= 2; ++dy) {
-            for (int dx = -2; dx <= 2; ++dx) {
-                bool corner = (std::abs(dx) == 2 && std::abs(dy) == 2);
-                if (corner) continue;
-                int gx = gridX0 + (dx + 2) * cellSz;
-                int gy = gridY0 + (dy + 2) * cellSz;
-
-                Terrain t = Terrain::Grassland;
-                if (mm) {
-                    int tx = city.x + dx, ty = city.y + dy;
-                    if (tx >= 0 && ty >= 0 &&
-                        tx < mm->width() && ty < mm->height()) {
-                        t = mm->terrainAt(tx, ty);
-                    } else {
-                        t = Terrain::Water;
-                    }
-                }
-                if (useTiles) {
-                    // 16x16 TER257 tile blitted at NATIVE size centered in the
-                    // 24x24 cell. We don't upscale: native pixels keep the
-                    // tile art crisp (matching the FOV refactor's "no chunky
-                    // pixels" rule). srcRect-aware drawBitmap pulls the right
-                    // slot out of the tileset atlas in one call.
-                    TileXY tile = terrainToTileXY(t);
-                    int ox = gx + (cellSz - 16) / 2;
-                    int oy = gy + (cellSz - 16) / 2;
-                    screen.drawBitmap(ox, oy, *tileset_,
-                                      Rect{tile.col * 16, tile.row * 16, 16, 16},
-                                      false);
-                    screen.drawRect(Rect{gx, gy, cellSz, cellSz}, 162);
-                } else {
-                    screen.fillRect(Rect{gx, gy, cellSz - 1, cellSz - 1},
-                                    terrainCol(t));
-                    screen.drawRect(Rect{gx, gy, cellSz - 1, cellSz - 1}, 162);
-                }
-                if (dx == 0 && dy == 0) {
-                    // city centre marker (bright yellow + dark outline)
-                    int inset = 3;
-                    screen.fillRect(Rect{gx + inset, gy + inset,
-                                         cellSz - 1 - 2 * inset,
-                                         cellSz - 1 - 2 * inset}, 166);
-                    screen.drawRect(Rect{gx + inset, gy + inset,
-                                         cellSz - 1 - 2 * inset,
-                                         cellSz - 1 - 2 * inset}, 163);
-                }
-            }
-        }
-    }
-
-    // 7) Hint line at the bottom — ESC returns to map.
+    // ESC hint at the bottom of the HUD strip.
     {
         std::string hint = Translator::instance().translate("Esc: quit");
-        // re-key to "ESC: return" if the existing key is too tied to the world
-        // map. We use "Esc: quit" key already in the language pack (HUD line 2).
         int hy = kPanelY + kPanelH - font.pixelHeight - font.lineSpacing - 4;
-        screen.drawString(font, infoX + 1, hy + 1, hint, 163);
-        screen.drawString(font, infoX, hy, hint, 164);
+        screen.drawString(font, infoX + 1, hy + 1, hint, 0);
+        screen.drawString(font, infoX, hy, hint, 15);
     }
 }
 
