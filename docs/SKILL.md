@@ -283,3 +283,14 @@ Batch A 主要術語（`data/inline_translations.json`）：
 - 翻譯 chokepoint：`GDriver::drawString` / `DrawTools::F0_1182_*`。
 - 字型 uming.ttc：`/usr/share/fonts/truetype/arphic/uming.ttc`。
 - 剩餘大宗：模擬主體 ~30+ CodeObjects + boot path + 使用者正版 DOS 資產。
+
+### ⚠️ Docker-only testing rule（強制）
+
+所有會碰 X11 / SDL window / DOSBox / ffmpeg x11grab / xdotool / Xvfb / 螢幕擷取 / 自動化 GUI 的測試與錄影 **必須在 Docker container 內** 跑，**絕對不可在 host display :0 跑**。使用者親口要求："ctest 一直跳出畫面來干擾我"、"紀錄在 skill & local rule 當中 都用 docker 測試"。
+
+- Docker 在本機可用、**無需 sudo**（28.1.1）。
+- 鏡像範本：`openciv1pp/docker/recording/Dockerfile` — Ubuntu 22.04 + xvfb + ffmpeg + xdotool + dosbox + SDL2/freetype + fonts-noto-cjk。要裝什麼套件**隨便加**，使用者授權 "docker 環境隨便你安裝"。
+- container 內用 `Xvfb :99 -screen 0 1280x720x24`，**絕不可** Xephyr（Xephyr 會在 host 開可見視窗）。
+- 純 headless 指令（`ctest`、`cmake --build`、純 Bash）可在 host 跑，因為不開窗。
+- 一旦 host 上出現可見視窗，立刻 kill 該 process 並把工作重構成 Docker 版本。
+- 詳細規則記於使用者 memory `docker-only-testing.md`。
