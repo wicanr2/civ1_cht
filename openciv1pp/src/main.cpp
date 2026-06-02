@@ -2813,6 +2813,116 @@ static int playDump(const std::string& assetDir, const char* ppmPath, bool realg
     return 0;
 }
 
+// ---------------- documentation screenshot helpers ----------------
+// Headless one-shot dumpers used by docs/screenshots/ side-by-side comparison.
+// Each helper boots the relevant CodeObject path with Translator ON, optionally
+// loads real DOS assets via assetDir (LOGO.PIC / BIRTH3.PIC / CBACK.PIC), and
+// dumps a PPM. The caller (a Python wrapper around the CLI) converts to PNG.
+static int shotTitle(const std::string& assetDir, const char* ppmPath) {
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+    if (!assetDir.empty()) g.setResourcePath(assetDir);
+    g.graphics.screen(0).clear(1);
+    bool logo = false;
+    g.mainCode().F0_11a8_0486_LogoAndMainGameMenu(/*forcedSelection*/ 0, &logo);
+    if (!dumpPPM(g.graphics.screen(0), ppmPath)) {
+        std::fprintf(stderr, "shotTitle: cannot write %s\n", ppmPath); return 1;
+    }
+    std::printf("[shotTitle] wrote %s (logo=%s)\n", ppmPath, logo ? "real" : "fallback");
+    return 0;
+}
+
+// Dump one MainIntro slide (default BIRTH3 = index 6) to a PPM.
+static int shotIntro(const std::string& assetDir, const char* ppmPath, int slideIdx = 6) {
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+    if (!assetDir.empty()) g.setResourcePath(assetDir);
+    MainIntro& mi = g.mainIntro();
+    if (!mi.hasAssets()) {
+        std::fprintf(stderr, "shotIntro: no DOS assets at %s\n", assetDir.c_str());
+        return 1;
+    }
+    mi.play();
+    GBitmap& fb = g.graphics.screen(GDriver::MainScreen);
+    int idx = 0;
+    while (mi.nextFrame(fb)) {
+        if (idx == slideIdx) {
+            if (!dumpPPM(fb, ppmPath)) {
+                std::fprintf(stderr, "shotIntro: cannot write %s\n", ppmPath); return 1;
+            }
+            std::printf("[shotIntro] wrote %s (slide %d)\n", ppmPath, idx);
+            return 0;
+        }
+        ++idx;
+    }
+    std::fprintf(stderr, "shotIntro: slide %d not reached (only %d slides)\n", slideIdx, idx);
+    return 1;
+}
+
+// Dump the PLAYING world (MiniWorld + units + minimap + Chinese HUD).
+static int shotWorld(const std::string& assetDir, const char* ppmPath) {
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+    if (!assetDir.empty()) g.setResourcePath(assetDir);
+    FrontEndFlow flow(g);
+    if (!assetDir.empty()) flow.setAssetDir(assetDir); // load real TER257 tiles
+    flow.enterTitle();
+    for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING
+    g.checkPlayerTurn().processEndOfTurn(); // AI founds capitals (visible on minimap)
+    flow.draw();
+    if (!dumpPPM(g.graphics.screen(0), ppmPath)) {
+        std::fprintf(stderr, "shotWorld: cannot write %s\n", ppmPath); return 1;
+    }
+    std::printf("[shotWorld] wrote %s\n", ppmPath);
+    return 0;
+}
+
+// Dump CityView for the first AI capital (CBACK backdrop + Chinese HUD panel).
+static int shotCity(const std::string& assetDir, const char* ppmPath) {
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+    if (!assetDir.empty()) g.setResourcePath(assetDir);
+    FrontEndFlow flow(g);
+    flow.enterTitle();
+    for (int k = 0; k < 6; ++k) flow.handleKey(MenuBoxDialog::KeyEnter);
+    g.checkPlayerTurn().processEndOfTurn();
+    int cid = 0;
+    for (std::size_t i = 0; i < g.unitManagement().cities().size(); ++i)
+        if (g.unitManagement().cities()[i].owner > 0) { cid = int(i); break; }
+    g.cityView().open(cid);
+    g.cityView().draw(g.graphics.screen(0), 1);
+    if (!dumpPPM(g.graphics.screen(0), ppmPath)) {
+        std::fprintf(stderr, "shotCity: cannot write %s\n", ppmPath); return 1;
+    }
+    std::printf("[shotCity] wrote %s\n", ppmPath);
+    return 0;
+}
+
+// Dump the main-menu MenuBoxDialog (Chinese items, highlighted bar).
+static int shotMenu(const char* ppmPath) {
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+    g.graphics.screen(0).clear(1);
+    const std::vector<std::string> items = {
+        "Start a New Game", "Load a Saved Game", "Play on EARTH",
+        "Customize World", "View Hall of Fame", "Quit",
+    };
+    MenuBoxDialog& mb = g.menuBoxDialog();
+    mb.forcedSelection = 0;
+    mb.F0_2d05_0031_ShowMenuBox(items, /*x*/ 30, /*y*/ 20,
+                                /*windowFrame*/ true, /*helpOption*/ false);
+    if (!dumpPPM(g.graphics.screen(0), ppmPath)) {
+        std::fprintf(stderr, "shotMenu: cannot write %s\n", ppmPath); return 1;
+    }
+    std::printf("[shotMenu] wrote %s\n", ppmPath);
+    return 0;
+}
+
 // ---------------- integrated --game flow (TITLE..PLAYING) ----------------
 // Headless verification of the integrated FrontEndFlow PLAYING state. Walks
 // TITLE -> MAIN_MENU -> DIFFICULTY (Prince) -> TRIBE (Egyptians) -> NAME
@@ -8286,6 +8396,118 @@ static int spacetest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- More Wonders (--morewonderstest) -----------------------
+// Verifies the MORE-WONDERS slice (Magellan / Lighthouse / Oracle):
+//   (1) Lighthouse: civ 0 records Lighthouse -> ownedWonders contains it.
+//       A Trireme (naval) of civ 0 gets +1 movement after EOT (base*3+3=12).
+//   (2) Magellan stacks: civ 0 also records Magellan -> after EOT reset the
+//       Trireme has base*3 + 3 (Lighthouse) + 6 (Magellan) = 18 mvp.
+//   (3) Oracle: civ 0 owns Temple + Oracle -> Temple's unhappy reduction is
+//       2 (faithful Civ1 "double Temple effect"). A control civ with Temple
+//       but NO Oracle reduces by only 1.
+static int morewonderstest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) {
+        if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; }
+    };
+
+    // ---- (1)+(2): naval move bonuses (Lighthouse + Magellan stack) -------
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        Translator::instance().enabled = true;
+        auto& um = g.unitManagement();
+        um.setMapBounds(20, 20);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 1);
+        g.techResearch().initCivs(int(um.civs().size()));
+        // Found a city so the wonder home-city map can record something.
+        std::string nm;
+        chk(um.buildCity(5, 5, 0, nm), "(1) civ 0 city founded");
+
+        // Add a Trireme on the city tile. We don't need real Water terrain
+        // to exercise the mvp bonus path (no movement validation here — we
+        // only check the per-turn mvp reset + bonus arithmetic).
+        int trId = um.addUnit(0, UnitType::Trireme, 5, 5);
+        chk(trId >= 0, "(1) Trireme added");
+        // Trireme baseline: def.move=3 -> mvp = 9.
+        const int triremeBaseMvp = UnitManagement::unitMovePointsMax(
+            UnitType::Trireme);
+        chk(triremeBaseMvp == 9, "(1) Trireme baseline mvp == 9 (move 3 * 3)");
+
+        // Record Lighthouse for civ 0 (cost 200, MapMaking — direct
+        // recordWonderCompletion bypass to keep the test fast).
+        um.recordWonderCompletion(0, 0, WonderType::Lighthouse);
+        chk(um.civs()[0].hasWonder(WonderType::Lighthouse),
+            "(1) civ 0 ownedWonders contains Lighthouse");
+        chk(um.wonderOwner(WonderType::Lighthouse) == 0,
+            "(1) wonderOwner(Lighthouse) == 0");
+
+        // Run EOT. The mvp reset + Lighthouse bonus should leave the
+        // Trireme at base + 3 = 12 mvp.
+        g.checkPlayerTurn().processEndOfTurn(1);
+        const int mvpWithLh = um.units()[std::size_t(trId)].movePointsLeft;
+        char buf[200];
+        std::snprintf(buf, sizeof(buf),
+                      "(1) Trireme mvp after EOT with Lighthouse == %d "
+                      "(expected %d = base 9 + 3)",
+                      mvpWithLh, triremeBaseMvp + 3);
+        chk(mvpWithLh == triremeBaseMvp + 3, buf);
+
+        // (2) Add Magellan; bonuses stack additively (+2 move = +6 mvp).
+        um.recordWonderCompletion(0, 0, WonderType::Magellan);
+        chk(um.civs()[0].hasWonder(WonderType::Magellan),
+            "(2) civ 0 ownedWonders contains Magellan");
+        g.checkPlayerTurn().processEndOfTurn(2);
+        const int mvpWithBoth = um.units()[std::size_t(trId)].movePointsLeft;
+        std::snprintf(buf, sizeof(buf),
+                      "(2) Trireme mvp after EOT with Lighthouse+Magellan "
+                      "== %d (expected %d = base 9 + 3 + 6)",
+                      mvpWithBoth, triremeBaseMvp + 9);
+        chk(mvpWithBoth == triremeBaseMvp + 9, buf);
+    }
+
+    // ---- (3): Oracle doubles Temple happiness effect ---------------------
+    // Compare two civs both at population 6 with a Temple. The civ owning
+    // Oracle reduces unhappy by 2; the control civ reduces by 1.
+    {
+        OpenCiv1Game g; setupGame(g, 640, 480);
+        Translator::instance().enabled = true;
+        auto& um = g.unitManagement();
+        um.setMapBounds(20, 20);
+        um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 1);
+        g.techResearch().initCivs(int(um.civs().size()));
+        std::string nm;
+        chk(um.buildCity(5, 5, 0, nm),    "(3) civ 0 city founded");
+        chk(um.buildCity(15, 15, 1, nm),  "(3) civ 1 city founded");
+
+        // Both cities own Temple, both at population 6 (so baseline
+        // unhappy = pop - 4 = 2 -> non-zero after Temple's -1).
+        um.citiesMut()[0].ownedBuildings.insert(BuildingType::Temple);
+        um.citiesMut()[0].population = 6;
+        um.citiesMut()[1].ownedBuildings.insert(BuildingType::Temple);
+        um.citiesMut()[1].population = 6;
+
+        // Only civ 0 gets Oracle.
+        um.recordWonderCompletion(0, 0, WonderType::Oracle);
+        chk(um.civs()[0].hasWonder(WonderType::Oracle),
+            "(3) civ 0 ownedWonders contains Oracle");
+
+        // Run one EOT — happiness pass writes c.unhappy.
+        g.checkPlayerTurn().processEndOfTurn(1);
+        const int unhappyOracle = um.cities()[0].unhappy;
+        const int unhappyControl = um.cities()[1].unhappy;
+        char buf[200];
+        std::snprintf(buf, sizeof(buf),
+                      "(3) Oracle city unhappy=%d (expected 0 = 2 - 2*Temple), "
+                      "control city unhappy=%d (expected 1 = 2 - 1*Temple)",
+                      unhappyOracle, unhappyControl);
+        chk(unhappyOracle == 0 && unhappyControl == 1, buf);
+    }
+
+    if (fail) std::printf("MOREWONDERSTEST: %d failure(s)\n", fail);
+    else      std::printf("MOREWONDERSTEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -8371,6 +8593,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--huttest")) { return huttest(); }
         else if (!std::strcmp(argv[i], "--barbtest")) { return barbtest(); }
         else if (!std::strcmp(argv[i], "--spacetest")) { return spacetest(); }
+        else if (!std::strcmp(argv[i], "--morewonderstest")) { return morewonderstest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -8390,6 +8613,23 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--gddraw") && i + 1 < argc) {
             GDriver gd; drawGdScene(gd); dumpPPM(gd.screen(0), argv[++i]);
             std::printf("[gddraw] wrote %s\n", argv[i]); return 0;
+        }
+        // --shot{Title,Intro,World,City,Menu} <out.ppm>: docs-comparison dumpers.
+        // Use --assets <dir> (or OPENCIV1_DOS_ASSETS) for real DOS asset paths.
+        else if (!std::strcmp(argv[i], "--shotTitle") && i + 1 < argc) {
+            return shotTitle(resolveAssetDir(assetsDir), argv[++i]);
+        }
+        else if (!std::strcmp(argv[i], "--shotIntro") && i + 1 < argc) {
+            return shotIntro(resolveAssetDir(assetsDir), argv[++i]);
+        }
+        else if (!std::strcmp(argv[i], "--shotWorld") && i + 1 < argc) {
+            return shotWorld(resolveAssetDir(assetsDir), argv[++i]);
+        }
+        else if (!std::strcmp(argv[i], "--shotCity") && i + 1 < argc) {
+            return shotCity(resolveAssetDir(assetsDir), argv[++i]);
+        }
+        else if (!std::strcmp(argv[i], "--shotMenu") && i + 1 < argc) {
+            return shotMenu(argv[++i]);
         }
     }
 
@@ -8436,7 +8676,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

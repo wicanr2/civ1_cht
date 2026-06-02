@@ -538,6 +538,26 @@ void UnitManagement::recordWonderCompletion(int civId, int cityId, WonderType w)
     }
 }
 
+// ---- MORE-WONDERS: naval move bonus ------------------------------------
+// Lighthouse: +1 move (+3 mvp thirds) to all alive naval units of civ.
+// Magellan:   +2 move (+6 mvp thirds). Stacks additively (+9 mvp when
+// both are owned -> +3 effective move). Called by CheckPlayerTurn right
+// after the per-turn movePointsLeft reset so the bonus is fresh each
+// turn (the reset overwrites mvp back to def.move*3 each EOT).
+void UnitManagement::applyWonderUnitBonuses(int civIdx) {
+    if (civIdx < 0 || std::size_t(civIdx) >= civs_.size()) return;
+    const CivState& cv = civs_[std::size_t(civIdx)];
+    int navalBonusThirds = 0;
+    if (cv.hasWonder(WonderType::Lighthouse)) navalBonusThirds += 3;
+    if (cv.hasWonder(WonderType::Magellan))   navalBonusThirds += 6;
+    if (navalBonusThirds == 0) return;
+    for (auto& u : units_) {
+        if (!u.alive || u.owner != civIdx) continue;
+        if (!unitDefOf(u.type).isNaval) continue;
+        u.movePointsLeft += navalBonusThirds;
+    }
+}
+
 // ---- SPACE RACE launch helper ------------------------------------------
 // Auto-launch the spaceship for civ `civIdx` when it has enough parts
 // (10 structural + 8 components + 4 modules) AND Apollo is built AND

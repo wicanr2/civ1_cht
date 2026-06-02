@@ -298,8 +298,24 @@ enum class WonderType : uint8_t {
     // Apollo sets civ.apolloBuilt = true (gates spaceship part production)
     // AND civ.mapRevealed = true (Civ1: Apollo reveals the entire map).
     Apollo         = 5,
+    // ---- MORE-WONDERS slice (Magellan / Lighthouse / Oracle) -----------
+    // Magellan's Expedition: cost 400, techPrereq MapMaking. Civ-wide
+    //   +2 movement to all naval units (applied AFTER the per-turn mvp
+    //   reset in CheckPlayerTurn::processEndOfTurn so the bonus is
+    //   visible to BOTH AI movement (this same EOT pass) AND the
+    //   human's next turn). Stacks with Lighthouse for +3 total.
+    // Lighthouse: cost 200, techPrereq MapMaking. Civ-wide +1 movement
+    //   to all naval units (same hook). Stacks with Magellan.
+    // Oracle: cost 300, techPrereq Mysticism. Doubles the Temple
+    //   happiness effect in the owning civ's cities (Temple normally
+    //   -1 unhappy; with Oracle -> -2 unhappy). Stacks with Cathedral
+    //   and Hanging Gardens (each remains additive). See the happiness
+    //   pass in CheckPlayerTurn::processEndOfTurn.
+    Magellan       = 6,
+    Lighthouse     = 7,
+    Oracle         = 8,
 };
-static constexpr int kWonderCount = 6; // includes None at index 0
+static constexpr int kWonderCount = 9; // includes None at index 0
 
 struct WonderDef {
     const char* name;            // English key (Translator -> Chinese)
@@ -325,6 +341,20 @@ inline const WonderDef& wonderDefOf(WonderType w) {
          "+1 science per city (Civ1: +1 trade per ocean tile; simplified)"},
         {"Apollo Program",  600, Tech::Mathematics,
          "Reveals the map and enables Spaceship parts (Civ1 endgame)"},
+        // MORE-WONDERS slice (Civ1 manual costs / techs):
+        //   Magellan: 400 shields, MapMaking. Civ1 effect: +2 move all
+        //     naval units (faithful). Stacks with Lighthouse.
+        //   Lighthouse: 200 shields, MapMaking. Civ1 effect: +1 move all
+        //     naval units. Stacks with Magellan.
+        //   Oracle: 300 shields, Mysticism. Civ1 effect (faithful subset
+        //     of "doubles Temple effect"): the owning civ's cities treat
+        //     each Temple's -1 unhappy as -2 unhappy.
+        {"Magellan's Expedition", 400, Tech::MapMaking,
+         "+2 movement to all naval units of owning civ"},
+        {"Lighthouse",            200, Tech::MapMaking,
+         "+1 movement to all naval units of owning civ"},
+        {"Oracle",                300, Tech::Mysticism,
+         "Doubles the Temple happiness effect in owning civ's cities"},
     };
     int i = int(w);
     if (i < 0 || i >= kWonderCount) i = 0;
@@ -772,6 +802,16 @@ public:
     // have checked first; defensive).
     void recordWonderCompletion(int civId, int cityId, WonderType w);
 
+    // ---- MORE-WONDERS: per-turn naval move bonus -----------------------
+    // Apply the civ-wide naval movement bonuses (Lighthouse +1, Magellan
+    // +2; they stack additively) to every alive naval unit owned by
+    // `civIdx`. Called by CheckPlayerTurn::processEndOfTurn IMMEDIATELY
+    // AFTER the per-turn movePointsLeft reset (the reset overwrites mvp
+    // to def.move*3, so the bonus must be re-applied each turn). Out-of-
+    // range civIdx is a no-op. The bonus is in WHOLE moves (each = 3
+    // mvp thirds, faithful to the road-movement scheme).
+    void applyWonderUnitBonuses(int civIdx);
+
     // ---- SPACE RACE launch helper ---------------------------------------
     // Threshold counts for the Civ1 spaceship launch (faithful simplified).
     static constexpr int kShipStructuralThreshold = 10;
@@ -1006,7 +1046,7 @@ private:
     // Per-wonder owner cityId. -1 means "unowned (any civ may build it)".
     // Index 0 (WonderType::None) is unused but kept for indexing parity with
     // the enum's numeric values.
-    int wonderOwnerCity_[kWonderCount] = { -1, -1, -1, -1, -1, -1 };
+    int wonderOwnerCity_[kWonderCount] = { -1, -1, -1, -1, -1, -1, -1, -1, -1 };
 
     // ---- DIPLOMACY ------------------------------------------------------
     // Pairwise relations matrix (NxN where N = civs_.size()). Reshaped to

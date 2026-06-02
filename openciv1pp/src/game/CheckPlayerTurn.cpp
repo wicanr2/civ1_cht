@@ -266,6 +266,19 @@ int CheckPlayerTurn::processEndOfTurn(int currentTurn) {
         }
     }
 
+    // ---- MORE-WONDERS: Lighthouse + Magellan naval move bonuses ---------
+    // Lighthouse adds +1 move and Magellan adds +2 move (stacking) to every
+    // naval unit of the owning civ. Applied IMMEDIATELY after the per-turn
+    // mvp reset so the bonus is fresh each turn (the reset overwrites mvp
+    // each EOT). Iterates ALL civs so AI + human + barbarian naval bonuses
+    // all materialise before the AI movement pass below.
+    {
+        const auto& civs = um.civs();
+        for (std::size_t i = 0; i < civs.size(); ++i) {
+            um.applyWonderUnitBonuses(int(i));
+        }
+    }
+
     // ---- SETTLERS IMPROVEMENT TICK ---------------------------------------
     // Mirrors the per-turn dispatcher entry where a Settlers with an
     // outstanding work counter has it decremented and the matching
@@ -573,7 +586,20 @@ int CheckPlayerTurn::processEndOfTurn(int currentTurn) {
             {
                 int u = c.population - 4;
                 if (u < 0) u = 0;
-                if (c.hasBuilding(BuildingType::Temple) && u > 0) u -= 1;
+                if (c.hasBuilding(BuildingType::Temple) && u > 0) {
+                    // ORACLE (MORE-WONDERS): owning civ's Temple effect
+                    // doubles (faithful Civ1: -2 unhappy per Temple
+                    // instead of -1). Stacks additively with Cathedral
+                    // and Hanging Gardens (each remains independent).
+                    int templeEffect = 1;
+                    if (std::size_t(c.owner) < um.civs().size() &&
+                        um.civs()[std::size_t(c.owner)].hasWonder(
+                            WonderType::Oracle)) {
+                        templeEffect = 2;
+                    }
+                    u -= templeEffect;
+                    if (u < 0) u = 0;
+                }
                 // Cathedral (MORE-BUILDINGS slice): -3 unhappy citizens
                 // (clamped >= 0). Faithful Civ1 Cathedral effect.
                 if (c.hasBuilding(BuildingType::Cathedral) && u > 0) {
