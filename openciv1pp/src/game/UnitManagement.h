@@ -405,6 +405,13 @@ struct Unit {
     // breaks the fortification).
     bool fortifying = false;
     bool fortified  = false;
+    // ---- B5: YEAR-ADVANCE GATE -------------------------------------------
+    // skippedThisTurn: human-only, transient (NOT saved). Set by MiniWorld::
+    // skipUnitAtCursor (W key) so the year-advance gate treats this unit as
+    // "done" for the current turn even though it still has movePointsLeft.
+    // Reset to false at the top of CheckPlayerTurn::processEndOfTurn so each
+    // new turn starts fresh.
+    bool skippedThisTurn = false;
 };
 
 // Per-civilization state (a SUBSET of GameData.Players[i] + Nations[i]).

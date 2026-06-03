@@ -35,6 +35,7 @@
 #include "game/HallOfFame.h"
 #include "localization/Translator.h"
 #include "platform/SdlPresenter.h"
+#include <SDL.h>  // B6: SDL_TEXTINPUT raw event handling in --newgame loop
 #include "resource/PicLoader.h"
 #include "resource/TextResource.h"
 #include "vcpu/VCPU.h"
@@ -1385,6 +1386,20 @@ static int newgameInteractive(const std::string& assetDir) {
 
     FrontEndFlow flow(g);
     flow.enterTitle();              // start at the logo+menu splash.
+    // B6: SDL_TEXTINPUT name-entry hook. We track the previous state so we can
+    // call startTextInput() exactly once when entering NAME and stopTextInput()
+    // exactly once when leaving it. The buffer lives on FrontEndFlow.
+    FrontEndFlow::State prevTextState = flow.state();
+    auto syncTextInput = [&](FrontEndFlow::State now) {
+        if (now == FrontEndFlow::State::NAME && prevTextState != FrontEndFlow::State::NAME) {
+            flow.nameBufferClear();
+            pres.startTextInput();
+        } else if (prevTextState == FrontEndFlow::State::NAME && now != FrontEndFlow::State::NAME) {
+            pres.stopTextInput();
+        }
+        prevTextState = now;
+    };
+    syncTextInput(flow.state());
     auto stateName = [](FrontEndFlow::State s) -> const char* {
         switch (s) {
             case FrontEndFlow::State::TITLE:      return "TITLE";
@@ -1404,6 +1419,12 @@ static int newgameInteractive(const std::string& assetDir) {
     while (true) {
         if (!pres.present(fb)) break;
         FrontEndFlow::State prev = flow.state();
+        // B6: drain SDL_TEXTINPUT events FIRST (before pollKey/pollMouse which
+        // would discard them). Append the resulting bytes to the name buffer.
+        if (flow.state() == FrontEndFlow::State::NAME) {
+            std::string ti = pres.pollTextInput();
+            if (!ti.empty()) flow.nameBufferAppend(ti.c_str());
+        }
         // Mouse: dispatch into the current menu (if any) as a click==Enter.
         SdlPresenter::MouseEvent me;
         bool consumedMouse = false;
@@ -1427,10 +1448,27 @@ static int newgameInteractive(const std::string& assetDir) {
                 break;
             }
         }
-        if (consumedMouse) { flow.draw(); continue; }
+        if (consumedMouse) { syncTextInput(flow.state()); flow.draw(); continue; }
+        // B6: Backspace handling — SDL maps to no SdlPresenter::Key code, so
+        // we peek the raw event queue for SDLK_BACKSPACE BEFORE pollKey
+        // discards it. Only meaningful in the NAME state.
+        if (flow.state() == FrontEndFlow::State::NAME) {
+            SDL_Event peekEv;
+            SDL_PumpEvents();
+            while (SDL_PeepEvents(&peekEv, 1, SDL_GETEVENT, SDL_KEYDOWN, SDL_KEYDOWN) > 0) {
+                if (peekEv.key.keysym.sym == SDLK_BACKSPACE) {
+                    flow.nameBufferBackspace();
+                } else {
+                    // Re-queue any non-Backspace key so pollKey() sees it.
+                    SDL_PushEvent(&peekEv);
+                    break;
+                }
+            }
+        }
         int key = pres.pollKey();
-        if (key == 0) continue;
+        if (key == 0) { syncTextInput(flow.state()); continue; }
         FrontEndFlow::State s = flow.handleKey(key);
+        syncTextInput(s);
         if (s != prev) std::printf("[newgame] -> %s\n", stateName(s));
         if (s == FrontEndFlow::State::DONE || s == FrontEndFlow::State::QUIT ||
             s == FrontEndFlow::State::PLAYING) {
@@ -2752,7 +2790,15 @@ static int playInteractive(const std::string& assetDir, bool realgen = false) {
                 break;
             }
             case SdlPresenter::KeyW: {
-                if (world.declareWarOnRival(0)) {
+                // B5: prefer SKIP-UNIT (Civ1 "Wait" semantics) when a human
+                // unit lives at the cursor tile. Falls back to Declare War on
+                // the selected rival when no unit is there (so the diplomacy
+                // shortcut still works on empty/non-unit tiles).
+                if (world.skipUnitAtCursor(0)) {
+                    std::printf("[play] skip unit at (%d,%d)\n",
+                                world.unitX(), world.unitY());
+                    dirty = true;
+                } else if (world.declareWarOnRival(0)) {
                     std::printf("[play] declared war on rival civ %d\n",
                                 g.unitManagement().selectedRivalCiv());
                     dirty = true;
@@ -3029,7 +3075,18 @@ static int gameflowtest() {
         // ENTER several times via handleKey advances the turn and the year.
         int t0 = w->turn();
         int y0 = g.unitManagement().year();
-        for (int i = 0; i < 5; ++i) flow.handleKey(MenuBoxDialog::KeyEnter);
+        // B5: with the year-advance gate live, any human unit produced by a
+        // city (newly trained Militia / Settlers / etc.) blocks the next
+        // turn until the player acts. Zero out every human unit's mvp
+        // before each Enter so the gate consistently passes.
+        auto zeroHumanMvp = [&](){
+            for (auto& u : g.unitManagement().unitsMut())
+                if (u.alive && u.owner == 0) u.movePointsLeft = 0;
+        };
+        for (int i = 0; i < 5; ++i) {
+            zeroHumanMvp();
+            flow.handleKey(MenuBoxDialog::KeyEnter);
+        }
         chk(w->turn() == t0 + 5, "5x ENTER in PLAYING -> turn advanced by 5");
         chk(g.unitManagement().year() > y0,
             "year advanced (Segment_1238 year-step ladder is live)");
@@ -3202,7 +3259,15 @@ static int gameInteractive(const std::string& assetDir) {
                     break;
                 }
                 case SdlPresenter::KeyW: {
-                    if (w->declareWarOnRival(0)) {
+                    // B5: prefer SKIP-UNIT (Civ1 "Wait" semantics) when a
+                    // human unit lives at the cursor tile. Falls back to
+                    // Declare War on the selected rival when no unit is
+                    // there (so the diplomacy shortcut still works).
+                    if (w->skipUnitAtCursor(0)) {
+                        std::printf("[game] skip unit at (%d,%d)\n",
+                                    w->unitX(), w->unitY());
+                        dirty = true;
+                    } else if (w->declareWarOnRival(0)) {
                         std::printf("[game] declared war on rival civ %d\n",
                                     g.unitManagement().selectedRivalCiv());
                         dirty = true;
@@ -9013,6 +9078,179 @@ static int civnotetest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- B5 YEAR-ADVANCE GATE (--yeargatetest) ---------------
+static int yeargatetest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+    auto& um = g.unitManagement();
+    um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 0); // humanCiv = 0
+    MiniWorld w(40, 30, 12345u);
+    w.attachGame(g);
+
+    // Find a land tile to drop the Settlers on.
+    int gx = -1, gy = -1;
+    for (int y = 0; y < 30 && gx < 0; ++y)
+        for (int x = 0; x < 40 && gx < 0; ++x) {
+            Terrain t = w.terrainAt(x, y);
+            if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+        }
+    chk(gx >= 0, "(0) found a land tile");
+    int uid = um.addUnit(/*owner*/ 0, UnitType::Settlers, gx, gy);
+    chk(uid >= 0, "(0) added human Settlers");
+    // Move cursor to the unit's tile.
+    w.setUnitPosition(gx, gy);
+
+    int year0 = um.year();
+    int turn0 = w.turn();
+
+    // (1) Gate REFUSES when the unit still has movement.
+    um.unitsMut()[std::size_t(uid)].movePointsLeft = 2;
+    um.unitsMut()[std::size_t(uid)].fortified = false;
+    um.unitsMut()[std::size_t(uid)].fortifying = false;
+    um.unitsMut()[std::size_t(uid)].skippedThisTurn = false;
+    chk(!g.checkPlayerTurn().allHumanUnitsDone(),
+        "(1) allHumanUnitsDone == false when mvp>0");
+    bool advanced = w.endTurnAttempt(turn0 + 1);
+    chk(!advanced, "(1) endTurnAttempt refuses with mvp>0");
+    chk(w.turn() == turn0, "(1) turn unchanged after refusal");
+    chk(um.year() == year0, "(1) year unchanged after refusal");
+    chk(w.lastActionKey() == "You must move all units",
+        "(1) lastActionKey set to gate message");
+
+    // (2) Gate PASSES when mvp <= 0; year + turn advance.
+    um.unitsMut()[std::size_t(uid)].movePointsLeft = 0;
+    chk(g.checkPlayerTurn().allHumanUnitsDone(),
+        "(2) allHumanUnitsDone == true when mvp<=0");
+    advanced = w.endTurnAttempt(turn0 + 1);
+    chk(advanced, "(2) endTurnAttempt succeeds with mvp==0");
+    chk(w.turn() == turn0 + 1, "(2) turn advanced");
+    chk(um.year() > year0, "(2) year advanced");
+
+    // (3) Fortified unit counts as done.
+    um.unitsMut()[std::size_t(uid)].movePointsLeft = 3;
+    um.unitsMut()[std::size_t(uid)].fortified = true;
+    chk(g.checkPlayerTurn().allHumanUnitsDone(),
+        "(3) fortified unit counts as done");
+
+    // (4) skippedThisTurn counts as done; processEndOfTurn clears it.
+    um.unitsMut()[std::size_t(uid)].fortified = false;
+    um.unitsMut()[std::size_t(uid)].movePointsLeft = 3;
+    um.unitsMut()[std::size_t(uid)].skippedThisTurn = true;
+    chk(g.checkPlayerTurn().allHumanUnitsDone(),
+        "(4) skippedThisTurn counts as done");
+    int t1 = w.turn();
+    chk(w.endTurnAttempt(t1 + 1), "(4) endTurnAttempt with skipped passes");
+    // After EOT skippedThisTurn must be reset (mvp was also reset).
+    chk(!um.units()[std::size_t(uid)].skippedThisTurn,
+        "(4) skippedThisTurn reset by processEndOfTurn");
+
+    // (5) skipUnitAtCursor flips the flag and the gate then passes.
+    um.unitsMut()[std::size_t(uid)].movePointsLeft = 3;
+    um.unitsMut()[std::size_t(uid)].skippedThisTurn = false;
+    chk(!g.checkPlayerTurn().allHumanUnitsDone(),
+        "(5) gate fails before skip");
+    w.setUnitPosition(um.units()[std::size_t(uid)].x,
+                      um.units()[std::size_t(uid)].y);
+    chk(w.skipUnitAtCursor(0), "(5) skipUnitAtCursor returns true");
+    chk(um.units()[std::size_t(uid)].skippedThisTurn,
+        "(5) skipUnitAtCursor sets flag");
+    chk(w.lastActionKey() == "Skip this unit",
+        "(5) lastActionKey set to skip message");
+    chk(g.checkPlayerTurn().allHumanUnitsDone(),
+        "(5) gate now passes");
+
+    // (6) AI unit doesn't gate the human.
+    um.setupCivs(0, 1); // re-create civs with 1 AI
+    int aid = um.addUnit(/*owner*/ 1, UnitType::Militia, gx, gy);
+    chk(aid >= 0, "(6) added AI unit");
+    um.unitsMut()[std::size_t(aid)].movePointsLeft = 3;
+    // Make all human units done.
+    for (auto& u : um.unitsMut()) if (u.alive && u.owner == 0) u.movePointsLeft = 0;
+    chk(g.checkPlayerTurn().allHumanUnitsDone(),
+        "(6) AI mvp>0 does not block the gate");
+
+    if (fail) std::printf("YEARGATETEST: %d failure(s)\n", fail);
+    else      std::printf("YEARGATETEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
+// ---------------- B6 SDL_TEXTINPUT name entry (--nameinputtest) -------
+static int nameinputtest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // (1) SdlPresenter::appendTextInput + pollTextInput round-trip.
+    SdlPresenter pres;
+    pres.appendTextInput("Hello");
+    chk(pres.pollTextInput() == "Hello", "(1) appendTextInput round-trip");
+    chk(pres.pollTextInput() == "", "(1) buffer drains");
+
+    // (2) FrontEndFlow::nameBufferAppend assembles ASCII typing "Hello".
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    FrontEndFlow flow(g);
+    flow.setChosenDifficulty(0);
+    flow.setChosenTribe(0);
+    flow.setState(FrontEndFlow::State::NAME);
+    flow.nameBufferClear();
+    const char* chars[] = {"H","e","l","l","o"};
+    for (const char* c : chars) flow.nameBufferAppend(c);
+    chk(flow.nameBuffer() == "Hello", "(2) ASCII typing assembles 'Hello'");
+
+    // (3) Backspace removes the last byte (ASCII).
+    flow.nameBufferBackspace();
+    chk(flow.nameBuffer() == "Hell", "(3) backspace removes 'o'");
+
+    // (4) UTF-8 multi-byte: '你' is 3 bytes (E4 BD A0). nameBufferBackspace
+    // should remove all 3 bytes atomically.
+    flow.nameBufferClear();
+    flow.nameBufferAppend("\xE4\xBD\xA0"); // 你
+    chk(flow.nameBuffer().size() == 3, "(4) 3-byte UTF-8 codepoint appended");
+    flow.nameBufferBackspace();
+    chk(flow.nameBuffer().empty(), "(4) backspace removes 3-byte UTF-8 char");
+
+    // (5) Max-bytes cap: kNameMaxBytes = 24; pushing 30 ASCII bytes truncates.
+    flow.nameBufferClear();
+    flow.nameBufferAppend("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"); // 32 bytes
+    chk(flow.nameBuffer().size() <= FrontEndFlow::kNameMaxBytes,
+        "(5) max-bytes cap enforced");
+    chk(flow.nameBuffer().size() == FrontEndFlow::kNameMaxBytes,
+        "(5) buffer filled exactly to cap");
+
+    // (6) nameBufferAccept commits buffer to chosenName and advances state.
+    flow.nameBufferClear();
+    flow.nameBufferAppend("Caesar");
+    chk(flow.nameBufferAccept(), "(6) nameBufferAccept returns true");
+    chk(flow.chosenName() == "Caesar", "(6) chosenName == buffer");
+    chk(flow.state() == FrontEndFlow::State::STARTING,
+        "(6) state -> STARTING after accept");
+
+    // (7) Empty buffer at accept falls back to defaultName.
+    flow.setState(FrontEndFlow::State::NAME);
+    flow.setDefaultName("Augustus");
+    flow.nameBufferClear();
+    chk(flow.nameBufferAccept(), "(7) accept on empty buffer succeeds");
+    chk(flow.chosenName() == "Augustus", "(7) fallback to defaultName");
+
+    // (8) 2-byte UTF-8 backspace (Latin-1 supplement: 'ñ' = C3 B1).
+    flow.setState(FrontEndFlow::State::NAME);
+    flow.nameBufferClear();
+    flow.nameBufferAppend("a" "\xC3\xB1" "b"); // "añb" (4 bytes)
+    chk(flow.nameBuffer().size() == 4, "(8) 2-byte UTF-8 char encoded");
+    flow.nameBufferBackspace(); // remove 'b'
+    chk(flow.nameBuffer().size() == 3, "(8) BS removes 1-byte 'b'");
+    flow.nameBufferBackspace(); // remove 'ñ' (2 bytes)
+    chk(flow.nameBuffer() == "a", "(8) BS removes 2-byte 'ñ'");
+
+    if (fail) std::printf("NAMEINPUTTEST: %d failure(s)\n", fail);
+    else      std::printf("NAMEINPUTTEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -9105,6 +9343,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--wizardtest")) { return wizardtest(); }
         else if (!std::strcmp(argv[i], "--tutorialtest")) { return tutorialtest(); }
         else if (!std::strcmp(argv[i], "--civnotetest")) { return civnotetest(); }
+        else if (!std::strcmp(argv[i], "--yeargatetest")) { return yeargatetest(); }
+        else if (!std::strcmp(argv[i], "--nameinputtest")) { return nameinputtest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -9187,7 +9427,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest(); f += creditstest(); f += wizardtest(); f += tutorialtest(); f += civnotetest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest(); f += creditstest(); f += wizardtest(); f += tutorialtest(); f += civnotetest(); f += yeargatetest(); f += nameinputtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

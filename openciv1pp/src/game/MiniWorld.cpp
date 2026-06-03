@@ -220,6 +220,20 @@ bool MiniWorld::buildCityAtUnit(std::string& outName, int playerId) {
     if (um.buildCity(unitX_, unitY_, playerId, turn_, outName)) {
         lastActionKey_ = "Build City";
         lastCityName_ = outName;
+        // B5 / Faithful Civ1: BUILD-CITY consumes the founding Settlers
+        // (it becomes the city's first population). The UnitManagement
+        // path doesn't kill the unit here (only the AI aiStep does), so
+        // we kill the founding human Settlers ourselves. Picks the FIRST
+        // alive owner-matched Settlers at this tile.
+        auto& units = um.unitsMut();
+        for (auto& u : units) {
+            if (!u.alive) continue;
+            if (u.owner != playerId) continue;
+            if (u.type != UnitType::Settlers) continue;
+            if (u.x != unitX_ || u.y != unitY_) continue;
+            u.alive = false;
+            break;
+        }
         return true;
     }
     return false;
@@ -659,6 +673,23 @@ void MiniWorld::renderMinimap(GBitmap& screen) const {
 }
 
 void MiniWorld::endTurn() {
+    // B5: route through the gate. When the human still has movable units,
+    // the gate refuses and lastActionKey_ is set so the HUD shows the
+    // localized "You must move all units" message. No turn_ change.
+    (void)endTurnAttempt(turn_ + 1);
+}
+
+bool MiniWorld::endTurnAttempt(int currentTurn) {
+    // B5: gate the year-advance behind the "all human units done" check
+    // when a host game is attached. Headless callers (the legacy playtest
+    // with no game_) just advance the turn counter — they don't have units.
+    if (game_) {
+        if (!game_->checkPlayerTurn().allHumanUnitsDone()) {
+            lastActionKey_ = "You must move all units";
+            lastCityName_.clear();
+            return false; // year/turn unchanged
+        }
+    }
     ++turn_;
     // A4: age down the CIVILIZATION NOTE banner queue. Notes display for
     // PendingNote::turnsLeft turns then auto-pop. Independent of whether a
@@ -689,7 +720,7 @@ void MiniWorld::endTurn() {
         // Pass the explicit turn so the SPACE RACE launch/arrival check
         // uses MiniWorld's authoritative turn counter (NOT the year-derived
         // proxy the no-arg overload falls back to).
-        game_->checkPlayerTurn().processEndOfTurn(turn_);
+        game_->checkPlayerTurn().processEndOfTurn(currentTurn);
         if (!um.civs().empty()) {
             int afterAlive = 0;
             int afterBarbs = 0;
@@ -707,6 +738,39 @@ void MiniWorld::endTurn() {
             }
         }
     }
+    return true;
+}
+
+bool MiniWorld::skipUnitAtCursor(int playerId) {
+    if (!game_) return false;
+    auto& um = game_->unitManagement();
+    auto& units = um.unitsMut();
+    int skippedId = -1;
+    for (std::size_t i = 0; i < units.size(); ++i) {
+        if (!units[i].alive) continue;
+        if (units[i].owner != playerId) continue;
+        if (units[i].x == unitX_ && units[i].y == unitY_) {
+            units[i].skippedThisTurn = true;
+            skippedId = int(i);
+            break;
+        }
+    }
+    if (skippedId < 0) return false;
+    // Advance cursor to the next movable human unit (still has mvp, not
+    // skipped, not fortified). If none found, leave cursor where it is.
+    for (std::size_t i = 0; i < units.size(); ++i) {
+        const auto& u = units[i];
+        if (!u.alive) continue;
+        if (u.owner != playerId) continue;
+        if (u.movePointsLeft <= 0) continue;
+        if (u.fortified || u.fortifying) continue;
+        if (u.skippedThisTurn) continue;
+        unitX_ = u.x; unitY_ = u.y;
+        break;
+    }
+    lastActionKey_ = "Skip this unit";
+    lastCityName_.clear();
+    return true;
 }
 
 bool MiniWorld::setUnitPosition(int x, int y) {

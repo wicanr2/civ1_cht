@@ -117,6 +117,46 @@ int SdlPresenter::pollKey() {
     return 0;
 }
 
+// ---- B6: TEXT INPUT (SDL_TEXTINPUT for name entry) --------------------
+void SdlPresenter::startTextInput() {
+    // No-op when SDL hasn't been initialized (headless tests). Real SDL
+    // ignores StartTextInput when no video subsystem is up, so the guard is
+    // defensive — keeps tests that call startTextInput() before init() safe.
+    if (window_) SDL_StartTextInput();
+}
+
+void SdlPresenter::stopTextInput() {
+    if (window_) SDL_StopTextInput();
+}
+
+std::string SdlPresenter::pollTextInput() {
+    std::string out;
+    if (window_) {
+        SDL_PumpEvents();
+        SDL_Event ev;
+        while (true) {
+            int got = SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_TEXTINPUT,
+                                     SDL_TEXTINPUT);
+            if (got <= 0) break;
+            // ev.text.text is a NUL-terminated UTF-8 buffer (max 32 bytes
+            // per SDL spec). Append verbatim — the caller handles UTF-8
+            // bookkeeping (max length, backspace removing 1-3 bytes).
+            out.append(ev.text.text);
+        }
+    }
+    // Drain any test-fed bytes regardless of init state so headless tests
+    // can simulate typing without a real SDL window.
+    if (!textFeed_.empty()) {
+        out.append(textFeed_);
+        textFeed_.clear();
+    }
+    return out;
+}
+
+void SdlPresenter::appendTextInput(const char* utf8) {
+    if (utf8) textFeed_.append(utf8);
+}
+
 bool SdlPresenter::present(const GBitmap& fb) {
     if (!pumpEvents()) return false;
 

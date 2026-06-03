@@ -14,6 +14,7 @@
 #pragma once
 #include "../graphics/GBitmap.h"
 #include <functional>
+#include <string>
 
 namespace oc1 {
 
@@ -70,6 +71,27 @@ public:
     // True once the user asked to quit (SDL_QUIT or pressed ESC).
     bool quit() const { return quit_; }
 
+    // ---- B6: TEXT INPUT (SDL_TEXTINPUT for name entry) ------------------
+    // SDL2 normally suppresses SDL_TEXTINPUT events until StartTextInput()
+    // is called (per SDL docs). The FrontEndFlow NAME state calls
+    // startTextInput() on entry and stopTextInput() on leave so the IME /
+    // dead-key composition path is active ONLY while a name field is open.
+    void startTextInput();
+    void stopTextInput();
+
+    // Drains all SDL_TEXTINPUT events currently in the queue and returns
+    // the concatenated UTF-8 bytes. Returns an empty string when no text
+    // events are pending. Returns the accumulated TEST-FEED buffer as well
+    // (set via appendTextInput) so headless tests don't need a real SDL
+    // event loop.
+    std::string pollTextInput();
+
+    // Headless test hook: append UTF-8 bytes to an internal feed buffer.
+    // The next pollTextInput() drains and returns them (mixed with any
+    // real SDL_TEXTINPUT events). Used by the nameinputtest to simulate
+    // typing without spinning up an SDL window. NOT thread-safe.
+    void appendTextInput(const char* utf8);
+
 private:
     void* window_  = nullptr; // SDL_Window*
     void* renderer_ = nullptr; // SDL_Renderer*
@@ -77,6 +99,7 @@ private:
     int fbW_ = 0, fbH_ = 0;
     bool quit_ = false;
     std::vector<uint8_t> rgba_;
+    std::string textFeed_;  // B6: test-only feed (appended by appendTextInput)
 };
 
 } // namespace oc1

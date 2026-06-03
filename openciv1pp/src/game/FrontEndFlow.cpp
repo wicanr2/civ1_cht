@@ -230,14 +230,13 @@ FrontEndFlow::State FrontEndFlow::handleKey(int navKey) {
             break;
         }
         case State::NAME: {
-            // STUB: there is no live keyboard edit loop (TextBoxDialogs' edit
-            // path is itself stubbed in this port). ENTER accepts the default
-            // name (tribe's leader, unless caller set one); ESC backs up.
+            // B6: live keyboard edit via SDL_TEXTINPUT. ENTER commits the
+            // buffer (falling back to defaultName_ when empty); ESC backs up.
             if (navKey == MenuBoxDialog::KeyEsc) {
+                nameBuffer_.clear();
                 enterTribe();
             } else if (navKey == MenuBoxDialog::KeyEnter) {
-                chosenName_ = defaultName_;
-                state_ = State::STARTING;
+                nameBufferAccept();
             }
             break;
         }
@@ -377,6 +376,67 @@ void FrontEndFlow::draw() {
         case State::QUIT:
             break; // nothing to draw for terminal states.
     }
+}
+
+// ---- B6: SDL_TEXTINPUT name-entry buffer ---------------------------------
+void FrontEndFlow::nameBufferAppend(const char* utf8) {
+    if (!utf8 || !*utf8) return;
+    // Append byte-by-byte, but stop adding bytes once the buffer would
+    // exceed kNameMaxBytes. Respect UTF-8 boundaries: a multi-byte char
+    // (lead byte indicates length) is added atomically — if it doesn't
+    // fully fit, skip it. This keeps the buffer always-valid UTF-8.
+    std::size_t i = 0;
+    while (utf8[i] != '\0') {
+        unsigned char b = static_cast<unsigned char>(utf8[i]);
+        std::size_t charLen = 1;
+        if      ((b & 0x80) == 0x00) charLen = 1;
+        else if ((b & 0xE0) == 0xC0) charLen = 2;
+        else if ((b & 0xF0) == 0xE0) charLen = 3;
+        else if ((b & 0xF8) == 0xF0) charLen = 4;
+        else { ++i; continue; } // invalid lead byte; skip
+        // Verify all `charLen` bytes are actually present in the input
+        // before committing.
+        bool complete = true;
+        for (std::size_t j = 0; j < charLen; ++j) {
+            if (utf8[i + j] == '\0') { complete = false; break; }
+        }
+        if (!complete) break;
+        if (nameBuffer_.size() + charLen > kNameMaxBytes) {
+            // No more room — stop (don't truncate mid-codepoint).
+            break;
+        }
+        nameBuffer_.append(utf8 + i, charLen);
+        i += charLen;
+    }
+}
+
+void FrontEndFlow::nameBufferBackspace() {
+    if (nameBuffer_.empty()) return;
+    // UTF-8 char boundary: walk back from end until we find a non-
+    // continuation byte (10xxxxxx). That byte is the lead of the last
+    // codepoint — erase from there to end.
+    std::size_t i = nameBuffer_.size();
+    while (i > 0) {
+        --i;
+        unsigned char b = static_cast<unsigned char>(nameBuffer_[i]);
+        if ((b & 0xC0) != 0x80) {
+            // Lead byte (or single-byte ASCII) — erase from here.
+            nameBuffer_.erase(i);
+            return;
+        }
+    }
+    // All continuation bytes (malformed) — clear the whole thing.
+    nameBuffer_.clear();
+}
+
+bool FrontEndFlow::nameBufferAccept() {
+    if (state_ != State::NAME) return false;
+    // When the buffer is empty fall back to defaultName_ (the tribe's
+    // leader name) — matches the legacy ENTER-on-empty behavior.
+    chosenName_ = nameBuffer_.empty() ? defaultName_ : nameBuffer_;
+    state_ = State::STARTING;
+    nameBuffer_.clear();
+    return true;
 }
 
 } // namespace oc1
