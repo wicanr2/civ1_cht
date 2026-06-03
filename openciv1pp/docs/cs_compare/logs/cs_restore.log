@@ -1,0 +1,5 @@
+  Determining projects to restore...
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605: Detected package downgrade: SkiaSharp from 2.88.9 to 2.88.8. Reference the package directly from the project to select a different version.  [/work/OpenCiv1/OpenCiv1.sln]
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605:  OpenCiv1 -> Avalonia.Desktop 11.3.14 -> Avalonia.Skia 11.3.14 -> SkiaSharp (>= 2.88.9)  [/work/OpenCiv1/OpenCiv1.sln]
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605:  OpenCiv1 -> SkiaSharp (>= 2.88.8) [/work/OpenCiv1/OpenCiv1.sln]
+  Restored /work/OpenCiv1/src/OpenCiv1.csproj (in 150 ms).

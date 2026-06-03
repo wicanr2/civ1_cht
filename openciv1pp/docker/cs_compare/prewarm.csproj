@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- NU1605 fires because Avalonia.Skia 11.3.14 wants SkiaSharp >= 2.88.9
+         while we pin 2.88.8 to match src/OpenCiv1.csproj. Real csproj has
+         WarningsAsErrors=nullable (not the catch-all), so the actual build
+         only emits a warning. We replicate that here. -->
+    <NoWarn>NU1605</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.14" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.14" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.14" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.14" />
+    <PackageReference Include="SkiaSharp" Version="2.88.8" />
+  </ItemGroup>
+</Project>

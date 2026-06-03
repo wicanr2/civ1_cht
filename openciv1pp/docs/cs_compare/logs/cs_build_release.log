@@ -1,0 +1,23 @@
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605: Detected package downgrade: SkiaSharp from 2.88.9 to 2.88.8. Reference the package directly from the project to select a different version. 
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605:  OpenCiv1 -> Avalonia.Desktop 11.3.14 -> Avalonia.Skia 11.3.14 -> SkiaSharp (>= 2.88.9) 
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605:  OpenCiv1 -> SkiaSharp (>= 2.88.8)
+/work/OpenCiv1/src/Game/OpenCiv1Game.cs(107,54): error CS0103: The name 'Assembly' does not exist in the current context [/work/OpenCiv1/src/OpenCiv1.csproj]
+/work/OpenCiv1/src/Game/TerrainMap/TerrainMapCell.cs(18,30): warning CS0414: The field 'TerrainMapCell.oTerrainDefinition' is assigned but its value is never used [/work/OpenCiv1/src/OpenCiv1.csproj]
+/work/OpenCiv1/src/Game/CodeObjects/MapInitAndIntro.cs(13,16): warning CS0414: The field 'MapInitAndIntro.mapFinished' is assigned but its value is never used [/work/OpenCiv1/src/OpenCiv1.csproj]
+/work/OpenCiv1/src/Game/CodeObjects/GameLoadAndSave.cs(13,16): warning CS0414: The field 'GameLoadAndSave.loadingGame' is assigned but its value is never used [/work/OpenCiv1/src/OpenCiv1.csproj]
+/work/OpenCiv1/src/Game/TerrainMap/TerrainMapCell.cs(19,15): warning CS0414: The field 'TerrainMapCell.iTotalCellWorth' is assigned but its value is never used [/work/OpenCiv1/src/OpenCiv1.csproj]
+
+Build FAILED.
+
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605: Detected package downgrade: SkiaSharp from 2.88.9 to 2.88.8. Reference the package directly from the project to select a different version. 
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605:  OpenCiv1 -> Avalonia.Desktop 11.3.14 -> Avalonia.Skia 11.3.14 -> SkiaSharp (>= 2.88.9) 
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605:  OpenCiv1 -> SkiaSharp (>= 2.88.8)
+/work/OpenCiv1/src/Game/TerrainMap/TerrainMapCell.cs(18,30): warning CS0414: The field 'TerrainMapCell.oTerrainDefinition' is assigned but its value is never used [/work/OpenCiv1/src/OpenCiv1.csproj]
+/work/OpenCiv1/src/Game/CodeObjects/MapInitAndIntro.cs(13,16): warning CS0414: The field 'MapInitAndIntro.mapFinished' is assigned but its value is never used [/work/OpenCiv1/src/OpenCiv1.csproj]
+/work/OpenCiv1/src/Game/CodeObjects/GameLoadAndSave.cs(13,16): warning CS0414: The field 'GameLoadAndSave.loadingGame' is assigned but its value is never used [/work/OpenCiv1/src/OpenCiv1.csproj]
+/work/OpenCiv1/src/Game/TerrainMap/TerrainMapCell.cs(19,15): warning CS0414: The field 'TerrainMapCell.iTotalCellWorth' is assigned but its value is never used [/work/OpenCiv1/src/OpenCiv1.csproj]
+/work/OpenCiv1/src/Game/OpenCiv1Game.cs(107,54): error CS0103: The name 'Assembly' does not exist in the current context [/work/OpenCiv1/src/OpenCiv1.csproj]
+    5 Warning(s)
+    1 Error(s)
+
+Time Elapsed 00:00:06.32
