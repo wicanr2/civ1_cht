@@ -42,10 +42,16 @@ void SdlPresenter::shutdown() {
 }
 
 bool SdlPresenter::pumpEvents() {
+    // B6 FIX: do NOT use SDL_PollEvent here — it drains the entire queue,
+    // including SDL_TEXTINPUT events that pollTextInput() needs to read on
+    // a later frame. Pump the OS to refresh the queue, then only consume
+    // SDL_QUIT events. Everything else (KEYDOWN/TEXTINPUT/MOUSE*) stays
+    // queued for pollKey/pollTextInput/pollMouse. ESCAPE-as-quit is still
+    // handled by pollKey() (which sets quit_ when it sees SDLK_ESCAPE).
+    SDL_PumpEvents();
     SDL_Event ev;
-    while (SDL_PollEvent(&ev)) {
-        if (ev.type == SDL_QUIT) quit_ = true;
-        else if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) quit_ = true;
+    while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_QUIT, SDL_QUIT) > 0) {
+        quit_ = true;
     }
     return !quit_;
 }
@@ -88,8 +94,24 @@ int SdlPresenter::pollKey() {
     // Mapped codes mirror MenuBoxDialog::NavKey (kept as literals so this SDL
     // layer stays free of any game-header dependency): 1=Up,2=Down,3=Enter,4=Esc;
     // 5=Left,6=Right extend it for the map-scroller.
+    //
+    // B6 FIX: previously used SDL_PollEvent which drains ALL pending events —
+    // any SDL_TEXTINPUT events that arrived after pollTextInput() returned
+    // (but before pollKey() ran on the same frame) were silently discarded,
+    // dropping characters during fast xdotool typing. Switch to SDL_PeepEvents
+    // and only consume SDL_KEYDOWN + SDL_QUIT events, leaving SDL_TEXTINPUT
+    // queued for the next pollTextInput() call.
+    SDL_PumpEvents();
     SDL_Event ev;
-    while (SDL_PollEvent(&ev)) {
+    while (true) {
+        int got = SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_KEYDOWN, SDL_KEYDOWN);
+        if (got <= 0) {
+            // Also drain any pending SDL_QUIT.
+            if (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_QUIT, SDL_QUIT) > 0) {
+                quit_ = true; return 0;
+            }
+            break;
+        }
         if (ev.type == SDL_QUIT) { quit_ = true; return 0; }
         if (ev.type == SDL_KEYDOWN) {
             switch (ev.key.keysym.sym) {
