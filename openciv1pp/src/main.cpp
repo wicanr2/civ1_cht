@@ -3159,6 +3159,12 @@ static int gameInteractive(const std::string& assetDir) {
     GBitmap& fb = g.graphics.screen(0);
     SdlPresenter pres;
     if (!pres.init("OpenCiv1++ Game (zh-TW)", fb.width(), fb.height(), g_winW, g_winH)) return 1;
+    // Zoom hotkey discoverability: tell the user about +/- and F11 on stdout
+    // (terminal is the launcher today). The Translator is already enabled so
+    // the hint reads in zh_TW when running with the localized assets.
+    std::printf("[hint] F11=%s  +/-=%s\n",
+                Translator::instance().translate("Fullscreen").c_str(),
+                Translator::instance().translate("Zoom in/out").c_str());
 
     FrontEndFlow flow(g);
     if (!assetDir.empty()) flow.setAssetDir(assetDir);
@@ -9615,6 +9621,58 @@ static int nameinputlivetest() {
 }
 
 
+// ---------------- zoom hotkey clamp / state machine (--zoomtest) ---------
+// Headless coverage for the +/- zoom keys and F11 fullscreen toggle. We don't
+// open a real SDL window — the static clampScale helper and the cached scale_
+// field (mutated by setScale with window_==nullptr) are enough to verify the
+// 1..4 clamp and the prevScale_-restore logic on F11 exit. Headless-safe.
+static int zoomtest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    // --- (1) Static clamp helper ---
+    chk(SdlPresenter::clampScale(1) == 1, "clamp: 1 -> 1");
+    chk(SdlPresenter::clampScale(4) == 4, "clamp: 4 -> 4");
+    chk(SdlPresenter::clampScale(0) == 1, "clamp: 0 -> 1 (floor)");
+    chk(SdlPresenter::clampScale(-7) == 1, "clamp: -7 -> 1 (floor)");
+    chk(SdlPresenter::clampScale(5) == 4, "clamp: 5 -> 4 (cap)");
+    chk(SdlPresenter::clampScale(99) == 4, "clamp: 99 -> 4 (cap)");
+
+    // --- (2) Default scale on a fresh, uninitialized presenter ---
+    SdlPresenter p;
+    chk(p.scale() == SdlPresenter::DefaultScale, "default scale_ == 2 (1280x960)");
+    chk(SdlPresenter::DefaultScale == 2, "DefaultScale constant is 2");
+    chk(SdlPresenter::DefaultWindowW == 1280, "DefaultWindowW == 1280");
+    chk(SdlPresenter::DefaultWindowH == 960,  "DefaultWindowH == 960");
+
+    // --- (3) setScale clamps + caches even without a window ---
+    int r = p.setScale(1);
+    chk(r == 1 && p.scale() == 1, "setScale(1) -> 1");
+    r = p.setScale(3);
+    chk(r == 3 && p.scale() == 3, "setScale(3) -> 3");
+    r = p.setScale(4);
+    chk(r == 4 && p.scale() == 4, "setScale(4) -> 4");
+    r = p.setScale(99);
+    chk(r == 4 && p.scale() == 4, "setScale(99) clamps to 4");
+    r = p.setScale(0);
+    chk(r == 1 && p.scale() == 1, "setScale(0) clamps to 1");
+    r = p.setScale(-3);
+    chk(r == 1 && p.scale() == 1, "setScale(-3) clamps to 1");
+
+    // --- (4) toggleFullscreen flips state even without a real window ---
+    chk(!p.isFullscreen(), "starts windowed");
+    p.setScale(3);
+    p.toggleFullscreen();
+    chk(p.isFullscreen(), "F11 enters fullscreen");
+    p.toggleFullscreen();
+    chk(!p.isFullscreen(), "F11 again exits fullscreen");
+
+    if (fail) std::printf("ZOOMTEST: %d failure(s)\n", fail);
+    else      std::printf("ZOOMTEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -9713,6 +9771,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--tutorialarmedtest")) { return tutorialarmedtest(); }
         else if (!std::strcmp(argv[i], "--firstcitynotetest")) { return firstcitynotetest(); }
         else if (!std::strcmp(argv[i], "--wizarddraworderptest")) { return wizarddraworderptest(); }
+        else if (!std::strcmp(argv[i], "--zoomtest")) { return zoomtest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -9796,7 +9855,7 @@ int main(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
             f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest(); f += creditstest(); f += wizardtest(); f += tutorialtest(); f += civnotetest(); f += yeargatetest(); f += nameinputtest(); f += nameinputlivetest();
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest(); f += creditstest(); f += wizardtest(); f += tutorialtest(); f += civnotetest(); f += yeargatetest(); f += nameinputtest(); f += tutorialarmedtest(); f += firstcitynotetest(); f += wizarddraworderptest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest(); f += creditstest(); f += wizardtest(); f += tutorialtest(); f += civnotetest(); f += yeargatetest(); f += nameinputtest(); f += tutorialarmedtest(); f += firstcitynotetest(); f += wizarddraworderptest(); f += zoomtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

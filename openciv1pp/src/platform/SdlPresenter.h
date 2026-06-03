@@ -20,9 +20,17 @@ namespace oc1 {
 
 class SdlPresenter {
 public:
-    // Default window size: 640x480 (matches the native framebuffer).
-    static constexpr int DefaultWindowW = 640;
-    static constexpr int DefaultWindowH = 480;
+    // Default window size: 1280x960 (2x the 640x480 native framebuffer).
+    // Modern hi-DPI screens make the 1x native size painfully small, so the
+    // out-of-the-box experience opens at 2x. `--window WxH` still overrides.
+    // Logical FB stays 640x480, so coordinates / hit-tests are unaffected.
+    static constexpr int DefaultScale = 2;
+    static constexpr int DefaultWindowW = 640 * DefaultScale;
+    static constexpr int DefaultWindowH = 480 * DefaultScale;
+
+    // Clamp helper for the zoom hotkey logic, exposed as a static helper so
+    // a headless test can exercise it without spinning up SDL.
+    static int clampScale(int s) { return s < 1 ? 1 : (s > 4 ? 4 : s); }
 
     // fbWidth/fbHeight = framebuffer (logical) size. winW/winH = SDL window
     // size on screen (defaults to 640x480; pass 0 to fall back to defaults).
@@ -92,6 +100,20 @@ public:
     // typing without spinning up an SDL window. NOT thread-safe.
     void appendTextInput(const char* utf8);
 
+    // ---- Zoom hotkey (+/- and F11) ----
+    // setScale(s) clamps to [1,4] and resizes the SDL window to (640*s, 480*s),
+    // re-centering it. The renderer's logical size stays at 640x480, so the
+    // engine's coordinates are untouched. Returns the resulting clamped scale.
+    // No-op (but updates the cached scale_) when the SDL window isn't open
+    // (e.g. headless tests using SDL_VIDEODRIVER=dummy with no window).
+    int setScale(int s);
+    // Current window scale, 1..4. Initialised to DefaultScale (2).
+    int scale() const { return scale_; }
+    // Toggle fullscreen (SDL_WINDOW_FULLSCREEN_DESKTOP). Remembers the prior
+    // windowed scale so exiting fullscreen restores it.
+    void toggleFullscreen();
+    bool isFullscreen() const { return fullscreen_; }
+
 private:
     void* window_  = nullptr; // SDL_Window*
     void* renderer_ = nullptr; // SDL_Renderer*
@@ -100,6 +122,10 @@ private:
     bool quit_ = false;
     std::vector<uint8_t> rgba_;
     std::string textFeed_;  // B6: test-only feed (appended by appendTextInput)
+    // ---- zoom / fullscreen state ----
+    int  scale_ = DefaultScale;       // current windowed scale (1..4)
+    int  prevScale_ = DefaultScale;   // remembered scale to restore on F11 exit
+    bool fullscreen_ = false;         // FULLSCREEN_DESKTOP currently active
 };
 
 } // namespace oc1
