@@ -1,4 +1,0 @@
-/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/CMakeFiles/openciv1pp.dir
-/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/CMakeFiles/test.dir
-/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/CMakeFiles/edit_cache.dir
-/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/CMakeFiles/rebuild_cache.dir

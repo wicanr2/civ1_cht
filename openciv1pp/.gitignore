@@ -2,3 +2,4 @@ build/
 build_docker/
 *.o
 *.ppm
+build_user/
