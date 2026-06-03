@@ -249,8 +249,13 @@ void NewGameWizard::drawWizardFrame(Stage stage, int leftIdx,
     }
     if (!label.empty() && p.graphics.hasFont(1)) {
         try {
+            // R5-1 fix: position text y so the 16-px label fits INSIDE the
+            // titleH-3 (=21 px) yellow bar (y range rightY+3 .. rightY+24).
+            // The earlier `rightY + 18` placed text at the bottom of the bar
+            // so its bottom half spilled past it AND collided with the first
+            // option row's highlight bar below.
             p.drawTools().F0_1182_005c_DrawStringToScreen0(label,
-                rightX + 12, rightY + 18, kBgBlack);
+                rightX + 12, rightY + 6, kBgBlack);
         } catch (...) {}
     }
 
@@ -271,9 +276,14 @@ void NewGameWizard::drawWizardFrame(Stage stage, int leftIdx,
         if (p.graphics.hasFont(1)) {
             try {
                 uint8_t color = isHilite ? kBgBlack : kTextWhite;
+                // R5-1 fix: align option text y INSIDE the highlight row
+                // (rowH-2 = 20 px, 16 px text -> y = ry + 2). The earlier
+                // `ry + 16` put text 16 px below the row top so its bottom
+                // 12 px spilled below the highlight bar AND the highlight
+                // bar visually "covered" the visible top 4 px of the text.
                 p.drawTools().F0_1182_005c_DrawStringToScreen0(
                     rightOptions[std::size_t(i)],
-                    rightX + 16, ry + 16, color);
+                    rightX + 16, ry + 2, color);
             } catch (...) {}
         }
     }

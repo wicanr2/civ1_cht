@@ -148,6 +148,11 @@ void FrontEndFlow::enterPlaying() {
         }
     }
     miniWorld_->setUnitPosition(sx, sy);
+
+    // A3: arm the first-turn TutorialOverlay so the new-game flow shows the
+    // DOS-style schematic on turn 1. armed defaults FALSE (unit tests rely on
+    // the clean frame) — only the live new-game path opts in here.
+    miniWorld_->tutorial().armed = true;
 }
 
 void FrontEndFlow::rebuildPlayingShell() {
