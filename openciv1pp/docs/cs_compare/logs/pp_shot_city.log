@@ -1,0 +1,9 @@
+[shotCity] wrote /work/out/oci_pp/pp_city.ppm (cities=6)
+[shotCity] CBACK palette audit:
+  [ 0] = (  0,  0,  0)
+  [ 1] = (  0,  0,170)
+  [ 9] = ( 85, 85,255)
+  [10] = ( 85,255, 85)
+  [12] = (255, 85, 85)
+  [14] = (255,255, 85)
+  [15] = (255,255,255)

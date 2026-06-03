@@ -1,0 +1,14 @@
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605: Detected package downgrade: SkiaSharp from 2.88.9 to 2.88.8. Reference the package directly from the project to select a different version. 
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605:  OpenCiv1 -> Avalonia.Desktop 11.3.14 -> Avalonia.Skia 11.3.14 -> SkiaSharp (>= 2.88.9) 
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605:  OpenCiv1 -> SkiaSharp (>= 2.88.8)
+  OpenCiv1 -> /work/OpenCiv1/src/bin/Debug/net8.0/OpenCiv1.dll
+
+Build succeeded.
+
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605: Detected package downgrade: SkiaSharp from 2.88.9 to 2.88.8. Reference the package directly from the project to select a different version. 
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605:  OpenCiv1 -> Avalonia.Desktop 11.3.14 -> Avalonia.Skia 11.3.14 -> SkiaSharp (>= 2.88.9) 
+/work/OpenCiv1/src/OpenCiv1.csproj : warning NU1605:  OpenCiv1 -> SkiaSharp (>= 2.88.8)
+    1 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:00.55
