@@ -2381,6 +2381,10 @@ static int minimaptest() {
     MiniWorld* w1 = flow1.miniWorld();
     chk(w1 != nullptr && w1->minimapEnabled(),
         "PLAYING attaches a MiniWorld with minimap ON by default");
+    // R5-4 side effect: enterPlaying() now arms the first-turn tutorial
+    // overlay. Disarm it here so the overlay doesn't paint over the
+    // minimap pixels the assertions below depend on.
+    w1->tutorial().armed = false;
     flow1.draw();
     GBitmap& fb1 = g1.graphics.screen(0);
     const int mmW = 80 * MiniWorld::kMinimapPxPerTile;
@@ -2419,6 +2423,7 @@ static int minimaptest() {
     MiniWorld* w2 = flow2.miniWorld();
     chk(w2 != nullptr, "second PLAYING has a MiniWorld");
     w2->setMinimapEnabled(false);
+    w2->tutorial().armed = false; // see R5-4 note above
     flow2.draw();
     GBitmap& fb2 = g2.graphics.screen(0);
     bool sameOff = true;
@@ -9251,6 +9256,209 @@ static int nameinputtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- R5-4 A3 TutorialOverlay armed on PLAYING (--tutorialarmedtest) ---
+// Proves the bug fix: FrontEndFlow::enterPlaying() must flip
+// MiniWorld::tutorial().armed from false (default) to true so a fresh
+// new-game session greets the player with the first-turn callouts. Before
+// the R5 fix the overlay was implemented but never armed, so it was
+// invisible in --game.
+static int tutorialarmedtest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+
+    FrontEndFlow ff(g);
+    // Before entering PLAYING there's no MiniWorld at all.
+    chk(ff.miniWorld() == nullptr,
+        "(1) MiniWorld is null before PLAYING is entered");
+
+    // Drive the flow MAIN_MENU -> DIFFICULTY -> TRIBE -> NAME -> STARTING ->
+    // PLAYING via the same ENTER chain used by other tests (e.g. minimaptest).
+    ff.enterTitle();
+    ff.handleKey(MenuBoxDialog::KeyEnter); // -> MAIN_MENU
+    ff.handleKey(MenuBoxDialog::KeyEnter); // -> DIFFICULTY (Start a New Game)
+    ff.handleKey(MenuBoxDialog::KeyEnter); // -> TRIBE
+    ff.handleKey(MenuBoxDialog::KeyEnter); // -> NAME
+    ff.handleKey(MenuBoxDialog::KeyEnter); // -> STARTING
+    ff.handleKey(MenuBoxDialog::KeyEnter); // -> PLAYING (enterPlaying() runs)
+
+    chk(ff.inPlayingState(), "(2) flow reached PLAYING");
+    chk(ff.miniWorld() != nullptr, "(2) MiniWorld created on PLAYING");
+
+    // Core assertion: enterPlaying() must have flipped armed to true.
+    chk(ff.miniWorld()->tutorial().armed,
+        "(3) enterPlaying() armed the TutorialOverlay (R5-4 fix)");
+    // Sanity: shown stays false until the player dismisses it.
+    chk(!ff.miniWorld()->tutorial().shown,
+        "(3) overlay is armed but not yet dismissed");
+
+    // Sanity: a bare MiniWorld (not via FrontEndFlow) keeps armed == false so
+    // existing unit tests don't get the overlay over their assertions.
+    MiniWorld bare(10, 10, 1u);
+    chk(!bare.tutorial().armed,
+        "(4) bare MiniWorld default armed == false (no regression for tests)");
+
+    if (fail) std::printf("TUTORIALARMEDTEST: %d failure(s)\n", fail);
+    else      std::printf("TUTORIALARMEDTEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
+// ---------------- R5-5 A4 first-city CIV NOTE queued (--firstcitynotetest) -----
+// Proves the bug fix: MiniWorld::buildCityAtUnit() must call queueFirstNote
+// (CivNoteKind::FirstCity) so the green "First city founded" banner appears
+// on the build-city event. Also verifies the dedupe bit (CivState::notesFired)
+// prevents a second build-city from re-queueing the same note.
+static int firstcitynotetest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+    auto& um = g.unitManagement();
+    um.setupCivs(/*humanTribe*/ 0, /*numAi*/ 0);
+
+    MiniWorld w(40, 30, 12345u);
+    w.attachGame(g);
+
+    // Locate a land tile and drop a Settlers on it.
+    int gx = -1, gy = -1;
+    for (int y = 0; y < 30 && gx < 0; ++y)
+        for (int x = 0; x < 40 && gx < 0; ++x) {
+            Terrain t = w.terrainAt(x, y);
+            if (t != Terrain::Water && t != Terrain::Arctic) { gx = x; gy = y; }
+        }
+    chk(gx >= 0, "(0) found a land tile");
+    int uid = um.addUnit(/*owner*/ 0, UnitType::Settlers, gx, gy);
+    chk(uid >= 0, "(0) added human Settlers");
+    w.setUnitPosition(gx, gy);
+
+    chk(w.civNotes().empty(), "(1) banner queue empty pre-build");
+    chk((um.civs()[0].notesFired &
+            (uint8_t(1) << int(CivNoteKind::FirstCity))) == 0,
+        "(1) FirstCity bit not yet fired");
+
+    // Build the first city -> note must be queued.
+    std::string cname;
+    chk(w.buildCityAtUnit(cname, /*playerId*/ 0),
+        "(2) buildCityAtUnit succeeds");
+    chk(w.civNotes().pending() >= 1,
+        "(2) civNotes.pending() >= 1 after first build (R5-5 fix)");
+    chk((um.civs()[0].notesFired &
+            (uint8_t(1) << int(CivNoteKind::FirstCity))) != 0,
+        "(2) FirstCity bit set after first build");
+
+    std::size_t pendingAfterFirst = w.civNotes().pending();
+
+    // Second build (different tile): the bit is now set so queueFirstNote
+    // must dedupe and NOT re-queue another banner.
+    // Find ANOTHER land tile that doesn't already have a city.
+    int gx2 = -1, gy2 = -1;
+    for (int y = 0; y < 30 && gx2 < 0; ++y)
+        for (int x = 0; x < 40 && gx2 < 0; ++x) {
+            if (x == gx && y == gy) continue; // not the first city's tile
+            Terrain t = w.terrainAt(x, y);
+            if (t != Terrain::Water && t != Terrain::Arctic) { gx2 = x; gy2 = y; }
+        }
+    chk(gx2 >= 0, "(3) found a second land tile");
+    int uid2 = um.addUnit(/*owner*/ 0, UnitType::Settlers, gx2, gy2);
+    chk(uid2 >= 0, "(3) added second Settlers");
+    w.setUnitPosition(gx2, gy2);
+    std::string cname2;
+    bool built2 = w.buildCityAtUnit(cname2, /*playerId*/ 0);
+    if (built2) {
+        // queue size must NOT have grown (FirstCity bit dedupes the banner).
+        chk(w.civNotes().pending() == pendingAfterFirst,
+            "(3) second build does NOT re-queue First-City note (dedupe)");
+    } else {
+        // OK too: build may legitimately fail (e.g. min-spacing). The dedupe
+        // assertion is moot in that case; just record it.
+        std::printf("  (3) second build skipped (spacing/terrain)\n");
+    }
+
+    if (fail) std::printf("FIRSTCITYNOTETEST: %d failure(s)\n", fail);
+    else      std::printf("FIRSTCITYNOTETEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
+// ---------------- R5-1 wizard title/first-item not covered by highlight bar
+// (--wizarddraworderptest) -----------------------------------------------
+// Proves the wizard's DIFFICULTY frame draws the title text and the first
+// option's text INSIDE the visible drawing rects, not BELOW them where the
+// highlight bar would visually clip them. Concretely: after rendering the
+// wizard at DIFFICULTY (highlight_=0 by default), the framebuffer must:
+//   (1) contain non-yellow (palette != 14) ink in the title-bar y range,
+//       i.e. the title text is visible inside its yellow bar.
+//   (2) contain non-yellow ink in the first option row's y range, i.e. the
+//       black option text shows up on the yellow highlight bar.
+// Before the R5 fix the y coordinates were so far down that BOTH the title
+// and the first item text spilled past their boxes -> their visible portions
+// inside their boxes were nearly empty (just top-of-glyph remnants).
+static int wizarddraworderptest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+
+    NewGameWizard& w = g.newGameWizard();
+    w.reset(); // DIFFICULTY, highlight_=0
+    w.drawWizardFrame();
+
+    GBitmap& fb = g.graphics.screen(0);
+    // The wizard's right column starts at kLeftW + 12 = 108. Title bar
+    // y range: rightY+3 .. rightY+24 (= 27..47). First option row y range:
+    // ry .. ry + rowH-2 = 54..73 (rowsTop=54, rowH=22). Sample wide x bands
+    // inside both regions (avoid the yellow border lines at the edges).
+    const uint8_t kYellow = 14;
+    const int rightX = 108;
+    const int rightW = 640 - rightX - 12; // mirror NewGameWizard kLeftW + 12 math
+
+    // (1) Title bar: count non-yellow, non-black pixels inside the title bar.
+    // After the fix the title text "Choose Difficulty" (translated) draws at
+    // y ~= rightY+6 = 30, so its glyph pixels in palette kBgBlack land within
+    // the bar y range 27..47. Title bar is yellow background; text is black.
+    // We assert presence of pixel value 0 (kBgBlack) INSIDE the yellow bar.
+    auto countInkInBand = [&](int y0, int y1, uint8_t notColor) {
+        std::size_t n = 0;
+        for (int y = y0; y < y1; ++y)
+            for (int x = rightX + 8; x < rightX + rightW - 8; ++x)
+                if (fb.getPixel(x, y) != notColor) ++n;
+        return n;
+    };
+    // Inside the title bar (y=27..47), the background is yellow; the title
+    // text bytes show up as != yellow (specifically palette 0/black).
+    std::size_t titleInk = countInkInBand(27, 47, kYellow);
+    chk(titleInk > 0,
+        "(1) title text ink visible INSIDE the yellow title bar (R5-1 fix)");
+
+    // (2) First option row (highlight bar at y=54..72 with rowH-2=20):
+    // option text ("Chieftain..." translated) draws at ry+2=56 in palette
+    // kBgBlack on the yellow highlight bg, so the band y=54..72 has both
+    // yellow AND black pixels.
+    std::size_t firstRowInk = countInkInBand(54, 72, kYellow);
+    chk(firstRowInk > 0,
+        "(2) first option text ink visible INSIDE the highlight bar (R5-1 fix)");
+
+    // (3) The reverse check: the highlight bar is ALSO present (yellow) in
+    // the first row band. If the row were entirely text-color the bar would
+    // be gone — the highlight must still dominate the row visually.
+    std::size_t firstRowYellow = 0;
+    for (int y = 54; y < 72; ++y)
+        for (int x = rightX + 8; x < rightX + rightW - 8; ++x)
+            if (fb.getPixel(x, y) == kYellow) ++firstRowYellow;
+    chk(firstRowYellow > firstRowInk,
+        "(3) highlight bar (yellow) still dominates the first row");
+
+    if (fail) std::printf("WIZARDDRAWORDERPTEST: %d failure(s)\n", fail);
+    else      std::printf("WIZARDDRAWORDERPTEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -9345,6 +9553,9 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--civnotetest")) { return civnotetest(); }
         else if (!std::strcmp(argv[i], "--yeargatetest")) { return yeargatetest(); }
         else if (!std::strcmp(argv[i], "--nameinputtest")) { return nameinputtest(); }
+        else if (!std::strcmp(argv[i], "--tutorialarmedtest")) { return tutorialarmedtest(); }
+        else if (!std::strcmp(argv[i], "--firstcitynotetest")) { return firstcitynotetest(); }
+        else if (!std::strcmp(argv[i], "--wizarddraworderptest")) { return wizarddraworderptest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -9427,7 +9638,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest(); f += creditstest(); f += wizardtest(); f += tutorialtest(); f += civnotetest(); f += yeargatetest(); f += nameinputtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest(); f += creditstest(); f += wizardtest(); f += tutorialtest(); f += civnotetest(); f += yeargatetest(); f += nameinputtest(); f += tutorialarmedtest(); f += firstcitynotetest(); f += wizarddraworderptest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }
