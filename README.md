@@ -38,7 +38,8 @@
 | **中文化** | 358+ zh_TW.json 條目；DrawTools / GDriver chokepoint 自動翻譯；UI 全中文 | ✅ 全綠 |
 | **驗證** | **54/54 ctest** 連跑 5 輪無 flake；`-Wall -Wextra` 零警告 | ✅ |
 | **影片** | Docker + Xvfb 容器內錄製，side-by-side .mp4 + .gif | ✅ |
-| **整局實機從頭玩到勝利** | `--game` 啟動可用；500-turn 確定性 smoke test 待補 | ⏳ |
+| **R5 深度遊玩對照** | 20 步劇本下場玩（boot → wizard → 建城 → 連續回合），DOS vs openciv1pp 雙邊截圖 | ✅ ([report](openciv1pp/docs/PLAY_COMPARISON_R5.md)) |
+| **整局實機從頭玩到勝利** | `--game` 啟動可用；R5 揭露 A3/A4 各缺 1 行 wiring；500-turn smoke test 待補 | ⏳ |
 
 **Track A (`tools/`, `data/`)** — 1993 Windows civ.exe NE 二進位 patch 路線，**已封存**：Phase 1/2/3/5 完成（48 條 inline 翻譯 + 54 個 RT_DIALOG patch + dfCharSet + 5.21 MB Win10 portable build）。詳見 [`docs/TRACK_A_README.md`](docs/TRACK_A_README.md)。
 
@@ -141,6 +142,17 @@ cp docs/PROJECT_MEMORY.md ~/.claude/projects/$PROJ_KEY/memory/project_civ1_cht.m
 | 世界地圖 | [polish_world_zh.png](openciv1pp/docs/screenshots/polish_world_zh.png) | （runtime 合成） |
 
 完整像素級對照分析：[`openciv1pp/docs/DOS_PARITY_REPORT_R2.md`](openciv1pp/docs/DOS_PARITY_REPORT_R2.md) 與 [`openciv1pp/docs/CITYVIEW_LAYOUT.md`](openciv1pp/docs/CITYVIEW_LAYOUT.md)。
+
+### 🎮 R5 深度遊玩對照（20 步劇本）
+
+從新局精靈一路推到「建城+回合推進」，每步同截 DOS 與 openciv1pp，全程在隔離 Docker 內：
+
+| 步驟 | 對照圖 | 重點 |
+|---|---|---|
+| 新局精靈級聯 | ![](openciv1pp/docs/screenshots/r5/04_WIZARD_DIFFICULTY_pair.png) | DOS 5 個肖像 + 黃框 5 項；openciv1pp 標題被 highlight bar 蓋住（draw-order bug R5-1） |
+| 建城瞬間 | ![](openciv1pp/docs/screenshots/r5/15_FOUND_CITY_pair.png) | DOS 浮現綠底「CIVILIZATION NOTE」；openciv1pp 建城成功但無 banner（A4 wiring 缺，bug R5-5） |
+
+完整 20 步配對 + bug 追蹤：[`openciv1pp/docs/PLAY_COMPARISON_R5.md`](openciv1pp/docs/PLAY_COMPARISON_R5.md)
 
 ---
 
