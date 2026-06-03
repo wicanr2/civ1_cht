@@ -210,6 +210,18 @@ int CheckPlayerTurn::processEndOfTurn(int currentTurn) {
     auto& um = p.unitManagement();
     auto& cities = um.citiesMut();
 
+    // ---- B5: clear skippedThisTurn for ALL units at the top of EOT -------
+    // The skip flag is per-turn and transient — once we advance past the
+    // human's interactive turn, every unit gets a fresh "not yet skipped"
+    // slate for the next turn. Done BEFORE the mvp reset / fortify promote
+    // so the gate doesn't accidentally carry over into the next turn.
+    {
+        auto& units = um.unitsMut();
+        for (auto& u : units) {
+            u.skippedThisTurn = false;
+        }
+    }
+
     // ---- BARBARIANS: spawn pass at the TOP of EOT -----------------------
     // Faithful Civ1: barb uprisings roll BEFORE the AI movement pass so a
     // freshly-spawned barb gets a chance to act this turn (the AI movement
@@ -1055,6 +1067,46 @@ int CheckPlayerTurn::processEndOfTurn(int currentTurn) {
     // advance the year (the per-civ pass above already ran).
     um.setYear(advanceYear(um.year()));
     return um.year();
+}
+
+// ---- B5: YEAR-ADVANCE GATE ------------------------------------------------
+// Returns true iff every alive HUMAN-owned (owner == 0) unit is "done" for
+// this turn. A unit is done when it has no movement left, is fortified /
+// fortifying (dug in), or was explicitly skipped via the W key. AI units
+// (owner != 0) are EXEMPT — they move during EOT, not during the human's
+// interactive turn, so the gate ignores them. When the human has no live
+// units at all (very early game / catastrophic loss) the gate trivially
+// passes so endTurnAttempt doesn't deadlock the game.
+bool CheckPlayerTurn::allHumanUnitsDone() const {
+    const auto& um = p.unitManagement();
+    // No civs registered (degenerate tests / pre-setupCivs) -> nothing to
+    // gate. Mirrors the C# code path where the per-civ loop short-circuits
+    // when Players[] is empty.
+    if (um.civs().empty()) return true;
+    // Ensure civ 0 is actually marked as the human (the convention this gate
+    // relies on). When civ 0 is non-human (e.g. AI-only test setup), treat
+    // the gate as auto-pass so tests don't deadlock.
+    if (!um.civs()[0].isHuman) return true;
+    const auto& units = um.units();
+    for (const auto& u : units) {
+        if (!u.alive) continue;
+        if (u.owner != 0) continue;             // humanCiv == 0 by convention
+        if (u.movePointsLeft <= 0) continue;
+        if (u.fortified || u.fortifying) continue;
+        if (u.skippedThisTurn) continue;
+        return false; // this unit can still act
+    }
+    return true;
+}
+
+// Endurn attempt: when the gate passes, run the per-turn housekeeping pass
+// and return true; otherwise return false WITHOUT advancing the year. The
+// caller (MiniWorld::endTurn) sets lastActionKey on refusal so the HUD shows
+// the localized "You must move all units" message.
+bool CheckPlayerTurn::endTurnAttempt(int currentTurn) {
+    if (!allHumanUnitsDone()) return false;
+    processEndOfTurn(currentTurn);
+    return true;
 }
 
 } // namespace oc1

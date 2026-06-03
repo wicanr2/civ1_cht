@@ -82,7 +82,27 @@ public:
     // shield accumulation + threshold-triggered unit production, then advances
     // GameData.Year via the ported Segment_1238 year-step ladder). Headless
     // (no host) endTurn() is still a simple turn_++ — the playtest covers that.
+    //
+    // B5: routes through CheckPlayerTurn::endTurnAttempt — when the human
+    // still has movable units the year-advance is REFUSED and lastActionKey
+    // is set to "You must move all units"; turn_ is left untouched.
     void endTurn();
+
+    // B5 (test/UI hook): try to end the turn explicitly with the given turn
+    // number. Returns true on success (year advanced), false when the gate
+    // refused (human still has movable units). On refusal sets lastActionKey
+    // to "You must move all units". Mirrors MiniWorld::endTurn but lets
+    // callers (tests, the integrated --game loop) see the result.
+    bool endTurnAttempt(int currentTurn);
+
+    // B5: SKIP-UNIT action (W key on the world map). Marks the FIRST alive
+    // human-owned unit at the cursor tile (unitX_,unitY_) as skippedThisTurn
+    // = true so the year-advance gate treats it as "done", AND advances the
+    // cursor to the next movable human unit (if any). Returns true when a
+    // unit was actually skipped; false when no human unit was at the cursor
+    // tile or no host game is attached. Sets lastActionKey to "Skip this
+    // unit" on success so the HUD reflects the action.
+    bool skipUnitAtCursor(int playerId = 0);
 
     // ---- mouse input (hit-test + dispatch) ----
     // Inverse of the draw() viewport math: convert framebuffer pixel coords to

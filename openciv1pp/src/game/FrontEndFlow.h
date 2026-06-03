@@ -79,6 +79,20 @@ public:
     // loop). When empty, the chosen tribe's leader name is used at ENTER.
     void setDefaultName(std::string n) { defaultName_ = std::move(n); }
 
+    // ---- B6: SDL_TEXTINPUT name-entry buffer ---------------------------
+    // The FrontEndFlow owns the in-progress name buffer for the NAME state.
+    // The integrated --game loop calls nameBufferAppend(utf8) once per
+    // frame with the drained SDL_TEXTINPUT bytes; nameBufferBackspace()
+    // removes the last UTF-8 char (1-3 bytes); nameBufferAccept() commits
+    // the buffer to chosenName_ and advances to STARTING; nameBufferClear()
+    // resets it on enter/leave. Max 24 bytes (Civ1 name field limit).
+    static constexpr std::size_t kNameMaxBytes = 24;
+    void nameBufferAppend(const char* utf8);
+    void nameBufferBackspace();
+    bool nameBufferAccept();   // returns true on success (advances state)
+    void nameBufferClear() { nameBuffer_.clear(); }
+    const std::string& nameBuffer() const { return nameBuffer_; }
+
     // Optional: start the flow at TITLE (logo+main menu) instead of the bare
     // MAIN_MENU. Used by the interactive --newgame entry. Safe to call any
     // time; resets the menu nav state for the new screen.
@@ -152,6 +166,7 @@ private:
     std::unique_ptr<MiniWorld> miniWorld_;
     std::string assetDir_;
     uint32_t worldSeedOverride_ = 0;
+    std::string nameBuffer_;  // B6: in-progress name (UTF-8, max kNameMaxBytes)
 };
 
 } // namespace oc1

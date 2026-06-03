@@ -64,6 +64,22 @@ public:
     // (legacy callers / tests that don't track an explicit turn counter).
     int processEndOfTurn(int currentTurn);
 
+    // ---- B5: YEAR-ADVANCE GATE ------------------------------------------
+    // Returns true iff every alive HUMAN-owned unit (owner == 0) is "done"
+    // for this turn: movePointsLeft <= 0 OR fortified OR fortifying OR
+    // skippedThisTurn. AI units are exempt from the gate (they move during
+    // EOT, not during the human's interactive turn). Used by endTurnAttempt
+    // to refuse the year-advance when the human still has movable units.
+    bool allHumanUnitsDone() const;
+
+    // Attempt to end the human's turn. When the gate (allHumanUnitsDone)
+    // passes, calls processEndOfTurn(currentTurn) and returns true. When the
+    // gate refuses, sets MiniWorld::lastActionKey to "You must move all
+    // units" (via the parent game's MiniWorld, when wired in by the caller)
+    // and returns false WITHOUT advancing the turn. The caller (MiniWorld::
+    // endTurn) is responsible for surfacing the message on the HUD.
+    bool endTurnAttempt(int currentTurn);
+
     // ---- year math (ported 1:1 from Segment_1238.cs lines 268-305) ----
     // Civ1 stores Year as a signed int: negative = BC (Year = -4000 at game
     // start), 0 is replaced with 1 AD after the BC->AD crossing, positive = AD.
