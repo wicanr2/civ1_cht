@@ -22,6 +22,8 @@
 #include "game/MainCode.h"
 #include "game/MainIntro.h"
 #include "game/NewGameWizard.h"
+#include "game/TutorialOverlay.h"
+#include "game/CivNoteBanner.h"
 #include "game/MiniWorld.h"
 #include "game/MapManagement.h"
 #include "game/UnitManagement.h"
@@ -8925,6 +8927,92 @@ static int wizardtest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- A3 first-turn tutorial overlay (--tutorialtest) -----
+static int tutorialtest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+
+    TutorialOverlay t;
+    chk(!t.shown, "(1) fresh tutorial overlay starts undismissed");
+
+    // show() draws callouts; verify it leaves ink on screen0.
+    g.graphics.screen(0).clear(0);
+    t.show(g.graphics, 1);
+    std::size_t ink = 0;
+    for (auto px : g.graphics.screen(0).pixels()) if (px) ++ink;
+    chk(ink > 0, "(2) show() puts callout ink on screen 0");
+
+    // handleKey: ESC or Enter dismisses, also "any key" per spec.
+    chk(t.handleKey(SdlPresenter::KeyEnter) == true && t.shown,
+        "(3) Enter dismisses -> shown=true");
+    t.shown = false;
+    chk(t.handleKey(SdlPresenter::KeyEsc) == true && t.shown,
+        "(3) Esc dismisses -> shown=true");
+
+    // After dismissal handleKey returns false (no-op).
+    chk(t.handleKey(SdlPresenter::KeyEnter) == false,
+        "(4) handleKey after shown=true returns false (no-op)");
+
+    if (fail) std::printf("TUTORIALTEST: %d failure(s)\n", fail);
+    else      std::printf("TUTORIALTEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
+// ---------------- A4 CIVILIZATION NOTE banner (--civnotetest) ---------
+static int civnotetest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+
+    CivNoteBanner b;
+    chk(b.empty(), "(1) fresh banner is empty");
+
+    b.queueNote("First city founded!");
+    chk(!b.empty(), "(2) queueNote appends");
+    chk(b.pending() == 1, "(2) pending == 1");
+
+    b.queueNote("First tech research: Pottery");
+    b.queueNote("First wonder: Pyramids");
+    b.queueNote("First contact: Romans");
+    chk(b.pending() == 4, "(2) four queued");
+
+    // tick: each call decrements head.turnsLeft. Default turns=3.
+    // After 3 ticks, head pops. Default kDefaultTurns=3 so 3 ticks burn the head.
+    for (int i = 0; i < CivNoteBanner::kDefaultTurns; ++i) b.tick();
+    chk(b.pending() == 3, "(3) head popped after kDefaultTurns ticks");
+
+    // draw the new head; verify ink on screen0.
+    g.graphics.screen(0).clear(0);
+    b.draw(g.graphics, 1);
+    std::size_t ink = 0;
+    for (auto px : g.graphics.screen(0).pixels()) if (px) ++ink;
+    chk(ink > 0, "(4) draw() puts banner ink on screen 0");
+
+    // empty queue draw is no-op.
+    while (!b.empty()) for (int i = 0; i < CivNoteBanner::kDefaultTurns; ++i) b.tick();
+    chk(b.empty(), "(5) queue drains after all ticks");
+
+    // CivState::notesFired field is reachable and the bitset semantics work
+    // (full save/load v17 round-trip is exercised by --savetest with a real
+    // game state). Spot-check the bit-field accessor here.
+    g.unitManagement().setupCivs(0, 0);
+    auto& civs = g.unitManagement().civsMut();
+    uint8_t firedBefore = (uint8_t(1) << int(CivNoteKind::FirstCity))
+                       | (uint8_t(1) << int(CivNoteKind::FirstTech));
+    civs[0].notesFired = firedBefore;
+    chk(civs[0].notesFired == firedBefore,
+        "(6) CivState::notesFired bit-set assignment round-trips");
+
+    if (fail) std::printf("CIVNOTETEST: %d failure(s)\n", fail);
+    else      std::printf("CIVNOTETEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -9015,6 +9103,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--halltest")) { return halltest(); }
         else if (!std::strcmp(argv[i], "--creditstest")) { return creditstest(); }
         else if (!std::strcmp(argv[i], "--wizardtest")) { return wizardtest(); }
+        else if (!std::strcmp(argv[i], "--tutorialtest")) { return tutorialtest(); }
+        else if (!std::strcmp(argv[i], "--civnotetest")) { return civnotetest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -9097,7 +9187,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest(); f += creditstest(); f += wizardtest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest(); f += creditstest(); f += wizardtest(); f += tutorialtest(); f += civnotetest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

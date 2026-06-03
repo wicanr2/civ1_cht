@@ -14,6 +14,8 @@
 #include "../graphics/GBitmap.h"
 #include "../graphics/GDriver.h"
 #include "TerrainTiles.h"
+#include "TutorialOverlay.h"
+#include "CivNoteBanner.h"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -216,6 +218,29 @@ public:
     void setLastActionKey(std::string k) { lastActionKey_ = std::move(k); }
     const std::string& lastCityName() const { return lastCityName_; }
 
+    // ---- A3: first-turn tutorial overlay --------------------------------
+    // The overlay is shown on the first call to draw() while turn()==1 and
+    // tutorial.shown is false. ESC/Enter dismisses it (handleTutorialKey).
+    // The dismissed flag is persisted in save format v17+.
+    TutorialOverlay& tutorial() { return tutorial_; }
+    const TutorialOverlay& tutorial() const { return tutorial_; }
+
+    // ---- A4: CIVILIZATION NOTE green banner queue -----------------------
+    // Notes get queued by gameplay code via queueNote (which checks the per-
+    // civ first-fired bitset on CivState::notesFired). The active note is
+    // painted by draw() AFTER the HUD strip; tick() runs from endTurn() so
+    // notes age down per turn.
+    CivNoteBanner& civNotes() { return civNotes_; }
+    const CivNoteBanner& civNotes() const { return civNotes_; }
+
+    // First-fired gated queue helper. Looks up CivState::notesFired bit for
+    // CivNoteKind k on the given civ; if NOT yet fired sets the bit AND
+    // queues the note with the given textKey. Returns true when a banner
+    // was actually queued, false when the gate suppressed it. When no host
+    // game is attached, the call is a passthrough that queues unconditionally
+    // (useful for tests).
+    bool queueFirstNote(int civId, CivNoteKind k, std::string textKey);
+
 private:
     int w_, h_;
     std::vector<Terrain> tiles_;
@@ -229,6 +254,11 @@ private:
     OpenCiv1Game* game_ = nullptr;        // optional host (for UnitManagement)
     std::string lastActionKey_;           // shown on HUD line 2 when non-empty
     std::string lastCityName_;            // last founded city's resolved name
+
+    // A3: first-turn tutorial overlay state. Persisted in v17+ saves.
+    TutorialOverlay tutorial_;
+    // A4: pending CIVILIZATION NOTE banners (and their turn countdowns).
+    CivNoteBanner civNotes_;
 
     bool usesRealGenerator_ = false;
     bool minimapEnabled_ = true;

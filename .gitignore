@@ -26,6 +26,7 @@ Civ*
 !tools/**
 !launcher/**
 !data/**
+!openciv1pp/**
 !README.md
 !.gitignore
 !LICENSE*
