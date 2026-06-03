@@ -13,6 +13,22 @@
 
 完整 MP4：[docs/videos/comparison.mp4](docs/videos/comparison.mp4)
 
+## 🎮 即時對照 — DOS Civ1 vs openciv1pp 深度遊玩 (R5)
+
+20 步劇本下場玩，從**新局精靈**一路推到**建城＋連續回合**，每一步同時截 DOS 與 openciv1pp。
+**全程在隔離 Docker + Xvfb 中跑**（`--network none` / `DISPLAY=:99`），主機桌面沒有任何彈窗。
+
+| 步驟 | 對照圖 | 觀察 |
+|---|---|---|
+| 4. 新局精靈級聯 (A2) | ![](docs/screenshots/r5/04_WIZARD_DIFFICULTY_pair.png) | DOS 5 個肖像 + 黃框列表；openciv1pp 標題「選擇難度」**被 highlight bar 覆蓋**（draw-order bug R5-1）；資料 5 項已正確 |
+| 9. 第一回合 (A3 教學) | ![](docs/screenshots/r5/09_FIRST_TURN_pair.png) | DOS 招牌**白色 callout 疊圖**（Menu Bar / Map Window / Active Unit / 地形）；openciv1pp `TutorialOverlay` 已實作但 `armed=false` 預設，`FrontEndFlow::enterPlaying()` 從未 set true → **bug R5-4** |
+| 15. 建城瞬間 (A4 文明備忘) | ![](docs/screenshots/r5/15_FOUND_CITY_pair.png) | DOS 綠底「CIVILIZATION NOTE」彈出；openciv1pp 建城成功（log: `founded city: Rome`）但**無浮窗 banner** — `buildCityAtUnit` 沒呼叫 `queueFirstNote(FirstCity)` → **bug R5-5** |
+| 12. 必須移動所有單位 (B5 閘) | ![](docs/screenshots/r5/12_TRY_END_TURN_PREMATURELY_pair.png) | openciv1pp 獨家：年份停在 4000 BC，狀態列「你必須移動所有單位」（B5 落地 ✅） |
+| 19. 連續推進回合 | ![](docs/screenshots/r5/19_END_TURN_2_3_4_pair.png) | 雙邊年份滾動正常；DOS 單格 fog、openciv1pp 整圖可見（fog mask 未套用，沿用 R3 結論） |
+
+**完整對照（含 20 步、全部 bug 與修復建議）: [docs/PLAY_COMPARISON_R5.md](docs/PLAY_COMPARISON_R5.md)**
+
+R5 把 R4「預備驗證」升級成真正的 runtime 證據：A1/B5 verified、A2/A3/A4 落地但仍有 P0/P1 bug 待補 1-2 行修。
 
 ## 為什麼這樣分層
 
@@ -108,6 +124,13 @@ for t in selftest restest gfxtest gdtest paltest; do ./build/openciv1pp --$t; do
 - [x] **移植 harness** — `OpenCiv1Game` 殼（VCPU + GDriver + `CRectangle` 脈絡 + 字型註冊 + 文字量測）；確立可重複的 C#→C++ 移植模式。
 - [~] **CodeObjects 增量移植** — **DrawTools** 已移植（文字排版：置中/陰影/`GetStringWidth`/`DrawTextBlock` 自動換行）；`--drawtest` + `--drawscene` 驗證。其餘 ~40 個依相依順序（開機→主選單→地圖→城市）逐檔移植，每步 `--dump` 比對畫面。
   - **注意：實際執行遊戲需使用者自備正版 Civ1 DOS 資產**（`.pic/.pal/.txt`，著作權，repo 不含）。
+- [~] **A1–B6 玩家流程**（R3→R4→R5）：
+  - [x] A1 Credits / Intro 字幕（headless verified；live flow 仍跳過）
+  - [~] A2 NewGameWizard — 5 個 difficulty/14 個 tribe 落地；視覺繪製順序 bug 待修（[R5-1](docs/PLAY_COMPARISON_R5.md)）
+  - [ ] A3 TutorialOverlay — 已實作但 `armed=false` 預設，`enterPlaying()` 沒打開；1 行修（[R5-4](docs/PLAY_COMPARISON_R5.md)）
+  - [ ] A4 CivNoteBanner — 已實作但 `buildCityAtUnit` 沒觸發 First City note；1 行修（[R5-5](docs/PLAY_COMPARISON_R5.md)）
+  - [x] B5 年代閘 / 必須移動所有單位（R5 verified 截圖）
+  - [~] B6 SDL_TEXTINPUT 名稱輸入 — 單元測試通過；live xdotool 路徑接不到鍵，需 verifier（[R5-3](docs/PLAY_COMPARISON_R5.md)）
 - [ ] **輸入/存檔/音效**。
 
 ## License
