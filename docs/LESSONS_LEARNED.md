@@ -37,6 +37,7 @@
 - **API socket error 早死**：通常 14-58 tool uses 之間。對策：在 prompt 加 hard cap，並設計成「部分結果也能 commit」(`git add` 成功部分、honest fail 報告)。
 - **Sub-agent 越權**：上一個 agent 的 working tree 殘留改動，新 agent 若 `git add -A` 會誤 commit 他人工作。對策：明寫「先 `git status`，發現他人改動 → stash → 你 commit → restore」。
 - **Push race**：兩個 agent 同時 push 同 branch。對策：規定 `git pull --rebase` 重試 ≤ 3 次後失敗。
+- **🔥 HEAD race（最痛的雷，2026-06 學到）**：多個 sub-agent 共用同個 working tree 時，他們的 `git checkout` 會切走**共用的 HEAD 指標**。新 agent 開始時用 `git checkout main` 把所有人切到 main；舊 agent commit 時 commit 落到「當下 HEAD 所在的別人 branch」上；主 session 的 `git add` 又黏到「別 agent stage 過的檔」一起 commit。**症狀**：你的 commit 跑去別人 branch / 別人的工作躺進你 commit / 同 PR 含跨 task 的混亂變更。**對策**：每個 sub-agent **必須用 `git worktree`** 開獨立副本，例如 `git worktree add /tmp/<task>-wt <branch>` 再 cd 過去工作。或在派 sub-agent 時用 `Agent` tool 的 `isolation: "worktree"` 參數自動建。T13 agent 自行採用 `/tmp/credits-wizard-wt` worktree 路線是這個雷的標準解法。
 
 ### Bulk parallelization 配方
 獨立 scope 同時派 3 個 agent + run_in_background=true：
