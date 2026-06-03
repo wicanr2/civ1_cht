@@ -13,6 +13,13 @@ bool SdlPresenter::init(const char* title, int fbWidth, int fbHeight, int winW, 
     fbH_ = fbHeight;
     if (winW <= 0) winW = DefaultWindowW;
     if (winH <= 0) winH = DefaultWindowH;
+    // Cache the initial scale (best match against the 640-wide fb). When the
+    // caller passes a custom --window WxH the cached scale stays at whatever
+    // round step the width implies, so subsequent +/- keys behave sanely.
+    scale_ = clampScale(winW / 640);
+    if (scale_ < 1) scale_ = 1;
+    prevScale_ = scale_;
+    fullscreen_ = false;
 
     SDL_Window* win = SDL_CreateWindow(
         title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -114,6 +121,25 @@ int SdlPresenter::pollKey() {
         }
         if (ev.type == SDL_QUIT) { quit_ = true; return 0; }
         if (ev.type == SDL_KEYDOWN) {
+            // ---- Zoom hotkeys: intercepted here so they never propagate to
+            // the game (the game uses '+'/'-' for nothing today, and F11 is
+            // unused). +/= zoom in, - zooms out (clamped 1..4), F11 toggles
+            // fullscreen. These return 0 so the game loop sees "no nav key".
+            switch (ev.key.keysym.sym) {
+                case SDLK_PLUS:
+                case SDLK_EQUALS:
+                case SDLK_KP_PLUS:
+                    setScale(scale_ + 1);
+                    continue;
+                case SDLK_MINUS:
+                case SDLK_KP_MINUS:
+                    setScale(scale_ - 1);
+                    continue;
+                case SDLK_F11:
+                    toggleFullscreen();
+                    continue;
+                default: break;
+            }
             switch (ev.key.keysym.sym) {
                 case SDLK_UP:     return 1;
                 case SDLK_DOWN:   return 2;
@@ -177,6 +203,40 @@ std::string SdlPresenter::pollTextInput() {
 
 void SdlPresenter::appendTextInput(const char* utf8) {
     if (utf8) textFeed_.append(utf8);
+}
+
+// ---- Zoom / fullscreen ---------------------------------------------------
+// setScale clamps to [1,4], resizes the output window, and re-centers it. The
+// renderer's logical size stays at 640x480 (set in init), so the framebuffer,
+// mouse coords, and all hit-tests are unaffected — only the SDL_Window's
+// physical size on screen changes.
+int SdlPresenter::setScale(int s) {
+    s = clampScale(s);
+    scale_ = s;
+    if (window_ && !fullscreen_) {
+        SDL_Window* win = static_cast<SDL_Window*>(window_);
+        SDL_SetWindowSize(win, 640 * s, 480 * s);
+        SDL_SetWindowPosition(win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
+    return scale_;
+}
+
+void SdlPresenter::toggleFullscreen() {
+    if (!window_) {
+        fullscreen_ = !fullscreen_;
+        return;
+    }
+    SDL_Window* win = static_cast<SDL_Window*>(window_);
+    if (!fullscreen_) {
+        prevScale_ = scale_;
+        SDL_SetWindowFullscreen(win, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        fullscreen_ = true;
+    } else {
+        SDL_SetWindowFullscreen(win, 0);
+        fullscreen_ = false;
+        // Restore the prior windowed scale (size + center).
+        setScale(prevScale_);
+    }
 }
 
 bool SdlPresenter::present(const GBitmap& fb) {
