@@ -2,6 +2,7 @@
 #include "MainCode.h"
 #include "MapManagement.h"
 #include "MiniWorld.h"
+#include "NewGameWizard.h"
 #include "TerrainTiles.h"
 #include "TextBoxDialogs.h"
 #include "UnitManagement.h"
@@ -297,38 +298,56 @@ void FrontEndFlow::draw() {
             break;
         }
         case State::DIFFICULTY:
-        case State::TRIBE: {
+        case State::TRIBE:
+        case State::NAME: {
+            // A2: draw the DOS-style wizard cascade frame (left portrait
+            // stack + right yellow-bordered list with the stage title bar)
+            // for the difficulty / tribe / name screens. The FrontEndFlow's
+            // own state machine still drives nav (so handleKey() and
+            // mb.highlight remain authoritative); we just translate the
+            // current state into the wizard's draw API.
             fb.clear(1);
-            // Pre-select + highlight the currently navigated item.
             mb.defaultOptionIndex = mb.highlight;
             mb.forcedSelection = mb.highlight;
-            // 640x480 native: shift menus down + right so they sit comfortably
-            // in the upper-left quadrant rather than hugging the corner. The
-            // old (30, 20) on 320x200 maps to roughly (60, 40) on 640x480.
+            NewGameWizard& ngw = p.newGameWizard();
+            NewGameWizard::Stage ws = NewGameWizard::Stage::DIFFICULTY;
+            std::vector<std::string> options;
+            int leftIdx = 0;
             if (state_ == State::DIFFICULTY) {
-                mb.F0_2d05_0031_ShowMenuBox(difficultyItems(), 60, 40,
-                                            /*windowFrame*/ true, /*helpOption*/ false);
-            } else {
-                mb.F0_2d05_0031_ShowMenuBox(tribeItems(), 60, 40,
-                                            /*windowFrame*/ true, /*helpOption*/ false);
+                ws = NewGameWizard::Stage::DIFFICULTY;
+                options = difficultyItems();
+                leftIdx = chosenTribe_ >= 0 ? chosenTribe_ : 0;
+            } else if (state_ == State::TRIBE) {
+                ws = NewGameWizard::Stage::TRIBE;
+                options = tribeItems();
+                leftIdx = mb.highlight;
+            } else { // NAME
+                ws = NewGameWizard::Stage::NAME;
+                std::string dn = defaultName_;
+                if (dn.empty() && chosenTribe_ >= 0 &&
+                    chosenTribe_ < int(MainCode::tribes().size())) {
+                    dn = MainCode::tribes()[std::size_t(chosenTribe_)].leader;
+                }
+                options.push_back(dn);
+                leftIdx = chosenTribe_ >= 0 ? chosenTribe_ : 0;
             }
-            break;
-        }
-        case State::NAME: {
-            fb.clear(1);
-            // The C# F23_0000_00d6_PlayerNameDialog draws a small text-edit
-            // box. The port reuses the (faithful) city-name-style box from
-            // TextBoxDialogs as the render — the edit loop is itself stubbed.
-            TextBoxDialogs& tb = p.textBoxDialogs();
-            tb.forcedSelection = 1; // 1 = ENTER/accept in the C# editbox.
-            // Show the default name (leader, unless explicitly overridden) as
-            // the prompt content.
-            std::string dn = defaultName_;
-            if (dn.empty() && chosenTribe_ >= 0 &&
-                chosenTribe_ < int(MainCode::tribes().size())) {
-                dn = MainCode::tribes()[std::size_t(chosenTribe_)].leader;
+            // Sync the wizard's internal highlight with mb.highlight via
+            // reset + repeated nav() — keeps highlight_ matching the
+            // FrontEndFlow's authoritative state without exposing a setter.
+            ngw.reset();
+            if (ws == NewGameWizard::Stage::TRIBE) {
+                ngw.nav(MenuBoxDialog::KeyEnter);   // DIFF -> CIVS
+                ngw.nav(MenuBoxDialog::KeyEnter);   // CIVS -> TRIBE
+            } else if (ws == NewGameWizard::Stage::NAME) {
+                ngw.nav(MenuBoxDialog::KeyEnter);   // DIFF -> CIVS
+                ngw.nav(MenuBoxDialog::KeyEnter);   // CIVS -> TRIBE
+                int t = chosenTribe_ >= 0 ? chosenTribe_ : 0;
+                for (int k = 0; k < t; ++k) ngw.nav(MenuBoxDialog::KeyDown);
+                ngw.nav(MenuBoxDialog::KeyEnter);   // TRIBE -> NAME
             }
-            tb.F23_0000_0000_CityNameDialog("Pick your tribe...", dn, 200, 200, 14);
+            for (int k = 0; k < mb.highlight; ++k)
+                ngw.nav(MenuBoxDialog::KeyDown);
+            ngw.drawWizardFrame(ws, leftIdx, options);
             break;
         }
         case State::STARTING: {

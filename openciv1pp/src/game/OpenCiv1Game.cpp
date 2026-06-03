@@ -14,6 +14,7 @@
 #include "CityView.h"
 #include "GameLoadAndSave.h"
 #include "TechResearch.h"
+#include "NewGameWizard.h"
 
 namespace oc1 {
 
@@ -34,6 +35,7 @@ OpenCiv1Game::OpenCiv1Game() {
     cityView_ = std::make_unique<CityView>(*this);
     gameLoadAndSave_ = std::make_unique<GameLoadAndSave>(*this);
     techResearch_ = std::make_unique<TechResearch>(*this);
+    newGameWizard_ = std::make_unique<NewGameWizard>(*this);
 }
 OpenCiv1Game::~OpenCiv1Game() = default;
 

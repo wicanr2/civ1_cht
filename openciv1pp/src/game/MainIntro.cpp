@@ -31,6 +31,72 @@ const std::vector<MainIntro::Slide>& MainIntro::slides() {
     return s;
 }
 
+// ---------------- A1: pre-title studio credits ----------------
+const std::vector<MainIntro::CreditLine>& MainIntro::creditLines() {
+    static const std::vector<CreditLine> lines = {
+        { "Designed by Sid Meier with Bruce Shelley" },
+        { "Music by Jeffery L Briggs" },
+        { "Graphics by Harry Teasley" },
+    };
+    return lines;
+}
+
+void MainIntro::playCredits() {
+    creditLine_       = 0;
+    creditTickInLine_ = 0;
+    creditIntensity_  = 0;
+    creditPhase_      = creditLines().empty() ? CreditPhase::Done : CreditPhase::FadeIn;
+}
+
+bool MainIntro::stepCredits() {
+    if (creditPhase_ == CreditPhase::Done) return false;
+    const auto& lines = creditLines();
+    if (creditLine_ >= int(lines.size())) {
+        creditPhase_ = CreditPhase::Done;
+        return false;
+    }
+    int t = creditTickInLine_;
+    if (t < kFadeInTicks) {
+        creditPhase_     = CreditPhase::FadeIn;
+        creditIntensity_ = t + 1;
+    } else if (t < kFadeInTicks + kHoldTicks) {
+        creditPhase_     = CreditPhase::Hold;
+        creditIntensity_ = kFadeInTicks;
+    } else if (t < kLineTicks) {
+        creditPhase_     = CreditPhase::FadeOut;
+        int fo           = t - (kFadeInTicks + kHoldTicks);
+        creditIntensity_ = kFadeOutTicks - fo;
+    }
+    ++creditTickInLine_;
+    if (creditTickInLine_ >= kLineTicks) {
+        creditTickInLine_ = 0;
+        creditIntensity_  = 0;
+        ++creditLine_;
+        if (creditLine_ >= int(lines.size())) {
+            creditPhase_ = CreditPhase::Done;
+            return false;
+        }
+        creditPhase_ = CreditPhase::FadeIn;
+    }
+    return true;
+}
+
+void MainIntro::drawCurrentCredit(GBitmap& fb) {
+    if (creditPhase_ == CreditPhase::Done) return;
+    const auto& lines = creditLines();
+    if (creditLine_ < 0 || creditLine_ >= int(lines.size())) return;
+    if (!p.graphics.hasFont(1) || !p.graphics.hasScreen(GDriver::MainScreen)) return;
+    if (&p.graphics.screen(GDriver::MainScreen) != &fb) return;
+    int peak = kFadeInTicks;
+    int color = (creditIntensity_ * 15) / (peak > 0 ? peak : 1);
+    if (color < 0) color = 0; else if (color > 15) color = 15;
+    try {
+        p.drawTools().F0_1182_00b3_DrawCenteredStringWithShadowToScreen0(
+            lines[std::size_t(creditLine_)].text,
+            fb.width() / 2, fb.height() / 2, uint8_t(color));
+    } catch (...) { /* font unavailable */ }
+}
+
 bool MainIntro::hasAssets() const {
     if (p.resourcePath().empty()) return false;
     std::error_code ec;

@@ -21,6 +21,7 @@
 #include "game/GameMenus.h"
 #include "game/MainCode.h"
 #include "game/MainIntro.h"
+#include "game/NewGameWizard.h"
 #include "game/MiniWorld.h"
 #include "game/MapManagement.h"
 #include "game/UnitManagement.h"
@@ -8721,6 +8722,209 @@ static int halltest() {
     return fail ? 1 : 0;
 }
 
+// ---------------- pre-title studio credits (--creditstest) ----------------
+// Verifies the A1 credits sequence:
+//   (1) MainIntro::creditLines() lists the three DOS credit cards in order.
+//   (2) playCredits() arms FadeIn at line 0.
+//   (3) stepCredits() advances FadeIn -> Hold -> FadeOut for each line.
+//   (4) Total ticks until done == 3 * kLineTicks.
+//   (5) Translated Music-by string has positive width via DrawTools.
+//   (6) drawCurrentCredit() puts ink on screen 0.
+static int creditstest() {
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+
+    const auto& lines = MainIntro::creditLines();
+    chk(lines.size() == 3, "(1) credits has 3 lines");
+    chk(lines.size() >= 1 && lines[0].text == "Designed by Sid Meier with Bruce Shelley",
+        "(1) line 0 == Designed by Sid Meier with Bruce Shelley");
+    chk(lines.size() >= 2 && lines[1].text == "Music by Jeffery L Briggs",
+        "(1) line 1 == Music by Jeffery L Briggs");
+    chk(lines.size() >= 3 && lines[2].text == "Graphics by Harry Teasley",
+        "(1) line 2 == Graphics by Harry Teasley");
+
+    MainIntro& mi = g.mainIntro();
+
+    mi.playCredits();
+    chk(mi.currentCreditLine() == 0, "(2) playCredits() starts at line 0");
+    chk(mi.currentCreditPhase() == MainIntro::CreditPhase::FadeIn,
+        "(2) playCredits() arms FadeIn phase");
+    chk(!mi.creditsDone(), "(2) playCredits() is not Done");
+
+    mi.playCredits();
+    chk(mi.stepCredits(), "(3) first stepCredits() still has lines");
+    chk(mi.currentCreditPhase() == MainIntro::CreditPhase::FadeIn,
+        "(3) tick 1 in FadeIn phase");
+    chk(mi.currentCreditIntensity() == 1, "(3) tick 1 intensity == 1");
+    // Step through all FadeIn ticks (tick 1 already counted above): need
+    // kFadeInTicks-1 more calls so we've processed t=0..kFadeInTicks-1. The
+    // next stepCredits() then processes t=kFadeInTicks which lands in Hold.
+    for (int i = 1; i < MainIntro::kFadeInTicks; ++i) mi.stepCredits();
+    mi.stepCredits();
+    chk(mi.currentCreditPhase() == MainIntro::CreditPhase::Hold,
+        "(3) after kFadeInTicks+1 ticks -> Hold");
+    chk(mi.currentCreditIntensity() == MainIntro::kFadeInTicks,
+        "(3) Hold intensity == peak");
+    // Hold runs for kHoldTicks; we've already done 1 Hold tick above.
+    for (int i = 1; i < MainIntro::kHoldTicks; ++i) mi.stepCredits();
+    mi.stepCredits();   // first FadeOut step
+    chk(mi.currentCreditPhase() == MainIntro::CreditPhase::FadeOut,
+        "(3) after Hold ticks -> FadeOut");
+    // Remaining FadeOut ticks (kFadeOutTicks-1) advance us to line 1.
+    for (int i = 1; i < MainIntro::kFadeOutTicks; ++i) mi.stepCredits();
+    chk(mi.currentCreditLine() == 1,
+        "(3) after kLineTicks -> advanced to line 1");
+    chk(mi.currentCreditPhase() == MainIntro::CreditPhase::FadeIn,
+        "(3) line 1 starts in FadeIn");
+
+    mi.playCredits();
+    int ticks = 0;
+    while (mi.stepCredits() && ticks < 10 * MainIntro::kLineTicks * int(lines.size())) ++ticks;
+    // The terminal stepCredits() (which finishes line 2) returns false WITHOUT
+    // counting itself, so the loop body increments `ticks` only for the calls
+    // that returned true: 3*kLineTicks - 1 (terminal one returns false).
+    chk(ticks == 3 * MainIntro::kLineTicks - 1,
+        "(4) total true-ticks until Done == 3*kLineTicks - 1");
+    chk(mi.creditsDone(), "(4) creditsDone() at end");
+    chk(!mi.stepCredits(), "(4) stepCredits() past end returns false");
+
+    int w = g.drawTools().F0_1182_00ef_GetStringWidth("Music by Jeffery L Briggs");
+    chk(w > 0, "(5) translated Music-by string has positive width");
+
+    mi.playCredits();
+    mi.stepCredits();
+    g.graphics.screen(0).clear(0);
+    mi.drawCurrentCredit(g.graphics.screen(0));
+    std::size_t ink = 0;
+    for (auto px : g.graphics.screen(0).pixels()) if (px) ++ink;
+    chk(ink > 0, "(6) drawCurrentCredit puts ink on screen 0");
+
+    if (fail) std::printf("CREDITSTEST: %d failure(s)\n", fail);
+    else      std::printf("CREDITSTEST: PASS\n");
+    return fail ? 1 : 0;
+}
+
+// ---------------- new-game wizard cascade (--wizardtest) ----------------
+// Verifies the A2 wizard:
+//   (1) reset() arms DIFFICULTY with highlight 0 and no chosen values.
+//   (2) DIFFICULTY -> CIVILIZATIONS -> TRIBE -> NAME -> DONE cascade keeps
+//       picks persistent across stages.
+//   (3) ESC backs up one stage (CIVS -> DIFFICULTY restores chosen difficulty).
+//   (4) UP/DOWN wrap.
+//   (5) leftPortraitIndex() tracks tribe highlight then sticks.
+//   (6) drawWizardFrame puts ink (yellow palette 14), localized labels differ.
+static int wizardtest() {
+    using Stage = NewGameWizard::Stage;
+    int fail = 0;
+    auto chk = [&](bool ok, const char* m) { if (!ok) { std::printf("  FAIL: %s\n", m); ++fail; } };
+
+    OpenCiv1Game g;
+    setupGame(g, 640, 480);
+    Translator::instance().enabled = true;
+
+    NewGameWizard& w = g.newGameWizard();
+    w.reset();
+
+    chk(w.stage() == Stage::DIFFICULTY, "(1) reset() -> DIFFICULTY");
+    chk(w.highlight() == 0, "(1) highlight starts at 0");
+    chk(w.chosenDifficulty() == -1, "(1) no chosenDifficulty yet");
+    chk(w.chosenCivCount() == -1,   "(1) no chosenCivCount yet");
+    chk(w.chosenTribe() == -1,      "(1) no chosenTribe yet");
+    chk(w.chosenName().empty(),     "(1) chosenName empty");
+    chk(w.currentStageLabel() == "Choose Difficulty",
+        "(1) stage label == Choose Difficulty");
+    chk(int(w.currentOptions().size()) == int(MainCode::difficultyItems().size()),
+        "(1) difficulty options size matches");
+
+    w.nav(MenuBoxDialog::KeyDown);
+    w.nav(MenuBoxDialog::KeyDown);
+    Stage s = w.nav(MenuBoxDialog::KeyEnter);
+    chk(s == Stage::CIVILIZATIONS, "(2) DIFFICULTY+ENTER -> CIVILIZATIONS");
+    chk(w.chosenDifficulty() == 2, "(2) chosenDifficulty == 2 (Prince)");
+    chk(w.currentStageLabel() == "Choose Civilizations",
+        "(2) stage label updates to Civilizations");
+
+    w.nav(MenuBoxDialog::KeyDown);
+    w.nav(MenuBoxDialog::KeyDown);
+    s = w.nav(MenuBoxDialog::KeyEnter);
+    chk(s == Stage::TRIBE, "(2) CIVS+ENTER -> TRIBE");
+    chk(w.chosenCivCount() == 5, "(2) chosenCivCount == 5");
+
+    for (int i = 0; i < 4; ++i) w.nav(MenuBoxDialog::KeyDown);
+    chk(w.leftPortraitIndex() == 4, "(2) leftPortraitIndex tracks tribe highlight");
+    s = w.nav(MenuBoxDialog::KeyEnter);
+    chk(s == Stage::NAME, "(2) TRIBE+ENTER -> NAME");
+    chk(w.chosenTribe() == 4, "(2) chosenTribe == 4 (Americans)");
+    chk(w.defaultLeaderName() == "Abe Lincoln",
+        "(2) default name == Abe Lincoln");
+
+    s = w.nav(MenuBoxDialog::KeyEnter);
+    chk(s == Stage::DONE, "(2) NAME+ENTER -> DONE");
+    chk(w.chosenName() == "Abe Lincoln",
+        "(2) chosenName defaulted to Abe Lincoln");
+
+    chk(w.chosenDifficulty() == 2 && w.chosenCivCount() == 5 &&
+        w.chosenTribe() == 4, "(2) all 4 picks persistent through DONE");
+
+    w.reset();
+    w.nav(MenuBoxDialog::KeyDown);
+    w.nav(MenuBoxDialog::KeyEnter);
+    chk(w.stage() == Stage::CIVILIZATIONS && w.chosenDifficulty() == 1,
+        "(3) prep: CIVS with chosenDifficulty == 1");
+    s = w.nav(MenuBoxDialog::KeyEsc);
+    chk(s == Stage::DIFFICULTY, "(3) ESC in CIVS -> DIFFICULTY");
+    chk(w.highlight() == 1, "(3) DIFFICULTY highlight restored to chosenDifficulty");
+
+    w.reset();
+    w.nav(MenuBoxDialog::KeyUp);
+    chk(w.highlight() == int(MainCode::difficultyItems().size()) - 1,
+        "(4) UP at row 0 wraps to last row");
+    w.nav(MenuBoxDialog::KeyDown);
+    chk(w.highlight() == 0, "(4) DOWN at last row wraps to 0");
+
+    w.reset();
+    w.nav(MenuBoxDialog::KeyEnter);                // pick difficulty 0
+    w.nav(MenuBoxDialog::KeyEnter);                // pick civ count 0
+    w.nav(MenuBoxDialog::KeyDown);
+    w.nav(MenuBoxDialog::KeyDown);
+    w.nav(MenuBoxDialog::KeyDown);
+    w.nav(MenuBoxDialog::KeyEnter);                // tribe 3 -> NAME
+    chk(w.chosenTribe() == 3, "(5) chosenTribe == 3 (Egyptians)");
+    chk(w.leftPortraitIndex() == 3,
+        "(5) leftPortraitIndex follows chosen tribe in NAME stage");
+
+    auto renderWizard = [&](bool translate) -> std::vector<uint8_t> {
+        OpenCiv1Game gg;
+        setupGame(gg, 640, 480);
+        Translator::instance().enabled = translate;
+        NewGameWizard& ww = gg.newGameWizard();
+        ww.reset();
+        ww.drawWizardFrame();
+        return gg.graphics.screen(0).pixels();
+    };
+    std::vector<uint8_t> zh = renderWizard(true);
+    std::vector<uint8_t> en = renderWizard(false);
+    chk(zh.size() == en.size() && !zh.empty(),
+        "(6) both renders produced a buffer");
+    std::size_t yellowZh = 0;
+    for (auto px : zh) if (px == 14) ++yellowZh;
+    chk(yellowZh > 0, "(6) yellow border (palette 14) present in render");
+    std::size_t diffPixels = 0;
+    for (std::size_t i = 0; i < zh.size() && i < en.size(); ++i)
+        if (zh[i] != en[i]) ++diffPixels;
+    chk(diffPixels > 0, "(6) Chinese vs English render pixels DIFFER");
+
+    Translator::instance().enabled = true;
+    if (fail) std::printf("WIZARDTEST: %d failure(s)\n", fail);
+    else      std::printf("WIZARDTEST: PASS (%zu yellow px, %zu localized diff px)\n",
+                          yellowZh, diffPixels);
+    return fail ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     bool dump = false, english = false, test = false, res = false, gfx = false;
     bool play = false, title = false, newgame = false, intro = false, gameMode = false;
@@ -8809,6 +9013,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--morewonderstest")) { return morewonderstest(); }
         else if (!std::strcmp(argv[i], "--civtest")) { return civtest(); }
         else if (!std::strcmp(argv[i], "--halltest")) { return halltest(); }
+        else if (!std::strcmp(argv[i], "--creditstest")) { return creditstest(); }
+        else if (!std::strcmp(argv[i], "--wizardtest")) { return wizardtest(); }
         else if (!std::strcmp(argv[i], "--playdump") && i + 2 < argc) {
             // --playdump <dosAssetDir> <out.ppm>: headless real-tile map frame.
             // Add `--realgen` (anywhere on the command line) to use the
@@ -8891,7 +9097,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--test")) {
             int f = 0;
-            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest();
+            f += selftest(); f += restest(); f += gfxtest(); f += gdtest(); f += compositetest(); f += paltest(); f += drawtest(); f += imgtest(); f += langtest(); f += txttest(); f += menutest(); f += navtest(); f += commontest(); f += textboxtest(); f += flowtest(); f += gamemenutest(); f += playtest(); f += maptest(); f += titletest(); f += newgametest(); f += mousetest(); f += introtest(); f += realgentest(); f += citytest(); f += turntest(); f += gameflowtest(); f += aitest(); f += aibehaviortest(); f += cityviewtest(); f += combattest(); f += aimovetest(); f += savetest(); f += techtest(); f += minimaptest(); f += improvementtest(); f += buildingtest(); f += buildingstest2(); f += foodtest(); f += governmenttest(); f += wondertest(); f += diplomacytest(); f += moreunitstest(); f += goldtest(); f += happinesstest(); f += roadmovetest(); f += aiexpandtest(); f += fortifytest(); f += slidertest(); f += huttest(); f += barbtest(); f += spacetest(); f += morewonderstest(); f += civtest(); f += halltest(); f += creditstest(); f += wizardtest();
             std::printf(f ? "==> SUITE FAILED (%d)\n" : "==> SUITE: ALL PASS\n", f);
             return f ? 1 : 0;
         }

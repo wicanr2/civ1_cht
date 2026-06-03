@@ -30,6 +30,7 @@ class CheckPlayerTurn;// ported CodeObject (fwd-declared to break the include cy
 class CityView;      // ported CodeObject (fwd-declared to break the include cycle)
 class GameLoadAndSave;// ported CodeObject (fwd-declared to break the include cycle)
 class TechResearch;  // ported CodeObject (fwd-declared to break the include cycle)
+class NewGameWizard; // A2: DOS-style cascade frame (left portraits + right list)
 
 class OpenCiv1Game {
 public:
@@ -80,6 +81,7 @@ public:
     CityView& cityView() { return *cityView_; }
     GameLoadAndSave& gameLoadAndSave() { return *gameLoadAndSave_; }
     TechResearch& techResearch() { return *techResearch_; }
+    NewGameWizard& newGameWizard() { return *newGameWizard_; }
 
 private:
     std::string resourcePath_ = ".";
@@ -99,6 +101,7 @@ private:
     std::unique_ptr<CityView> cityView_;
     std::unique_ptr<GameLoadAndSave> gameLoadAndSave_;
     std::unique_ptr<TechResearch> techResearch_;
+    std::unique_ptr<NewGameWizard> newGameWizard_;
 };
 
 } // namespace oc1
