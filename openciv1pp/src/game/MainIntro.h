@@ -79,9 +79,44 @@ public:
     // intro asset (LOGO.PIC). Used by the no-asset short-circuit in play().
     bool hasAssets() const;
 
+    // ---------------- A1: pre-title studio credits ----------------
+    //
+    // DOS Civ1 shows a fade-in credits sequence (credits.txt is read by
+    // F2_0000_0000 — see MainIntro.cs:133 fopen("credits.txt","rt")) BEFORE
+    // the LOGO/PLANET/BIRTH slideshow. The .txt asset isn't always present,
+    // so we hard-code the three canonical 1991-box credit lines. They flow
+    // through Translator at draw time, so assets/zh_TW.json provides the
+    // Chinese rendering.
+    struct CreditLine {
+        std::string text;
+    };
+    static const std::vector<CreditLine>& creditLines();
+
+    static constexpr int kFadeInTicks  = 12;
+    static constexpr int kHoldTicks    = 60;
+    static constexpr int kFadeOutTicks = 12;
+    static constexpr int kLineTicks    = kFadeInTicks + kHoldTicks + kFadeOutTicks;
+
+    enum class CreditPhase { FadeIn, Hold, FadeOut, Done };
+
+    void playCredits();
+    bool stepCredits();
+
+    int currentCreditLine() const { return creditLine_; }
+    CreditPhase currentCreditPhase() const { return creditPhase_; }
+    int currentCreditIntensity() const { return creditIntensity_; }
+    bool creditsDone() const { return creditPhase_ == CreditPhase::Done; }
+
+    void drawCurrentCredit(GBitmap& fb);
+
 private:
     OpenCiv1Game& p;
     int cursor_ = 0;
+
+    int creditLine_       = 0;
+    int creditTickInLine_ = 0;
+    int creditIntensity_  = 0;
+    CreditPhase creditPhase_ = CreditPhase::Done;
 };
 
 } // namespace oc1

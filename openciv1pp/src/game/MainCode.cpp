@@ -106,11 +106,17 @@ int MainCode::F0_11a8_0486_LogoAndMainGameMenu(int forcedSelection, bool* logoLo
 }
 
 void MainCode::F0_11a8_0008_Main() {
-    // TODO(port): the full entry sequence — InitMouse, NewGameMenu, the GameTurn
-    // loop, CloseSound/StopTimer — is not driven by the port. We do call the
-    // (now-ported) MainIntro slideshow before the logo+menu screen-build so the
-    // authentic intro plays first when DOS assets are available; without assets
-    // mainIntro().play() is a safe no-op.
+    // A1: pre-title studio credits (Sid Meier / Bruce Shelley / Jeffery L
+    // Briggs / Harry Teasley) — DOS F2_0000_0000 plays these BEFORE the
+    // LOGO/PLANET/BIRTH slideshow. Tick them through headlessly here.
+    {
+        MainIntro& mi = p.mainIntro();
+        mi.playCredits();
+        const int hardCap = 4 * MainIntro::kLineTicks *
+                            int(MainIntro::creditLines().size() + 1);
+        int guard = 0;
+        while (mi.stepCredits() && guard < hardCap) ++guard;
+    }
     p.mainIntro().play();
     F0_11a8_0486_LogoAndMainGameMenu();
 }
