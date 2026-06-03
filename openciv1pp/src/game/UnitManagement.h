@@ -500,6 +500,15 @@ struct CivState {
     uint8_t spaceshipComponent  = 0;
     uint8_t spaceshipModule     = 0;
     int     spaceshipLaunchTurn = -1;  // -1 = not yet launched
+
+    // ---- CIVILIZATION NOTE first-time event flags (A4) --------------------
+    // Bitset of CivNoteKind values that this civ has ALREADY fired (and so
+    // should NOT re-fire the green-banner notification). Bit 0 = FirstCity,
+    // 1 = FirstTech, 2 = FirstWonder, 3 = FirstContact. Persisted in save
+    // format v17 as 'notesfired <civ> <bitset>'; v1..v16 readers default it
+    // to 0 (no notes fired yet -> all four events will banner on first
+    // occurrence, as if this were a brand-new game).
+    uint8_t notesFired = 0;
 };
 
 struct City {

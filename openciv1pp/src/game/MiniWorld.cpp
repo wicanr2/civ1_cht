@@ -660,6 +660,10 @@ void MiniWorld::renderMinimap(GBitmap& screen) const {
 
 void MiniWorld::endTurn() {
     ++turn_;
+    // A4: age down the CIVILIZATION NOTE banner queue. Notes display for
+    // PendingNote::turnsLeft turns then auto-pop. Independent of whether a
+    // host game is attached (the queue is on MiniWorld itself).
+    civNotes_.tick();
     // When a host game is attached, run the per-turn housekeeping pass
     // (per-civ city loop -> shields/units; then GameData.Year advance).
     if (game_) {
@@ -1218,6 +1222,36 @@ void MiniWorld::draw(GDriver& gd, int fontId, int tileSize) const {
             penX3 = fb.drawString(font, penX3, line3Y, " -", 207);
         }
     }
+
+    // A4: CIVILIZATION NOTE banner. Drawn ABOVE the HUD strip so it
+    // overlays the bottom 32 px of the game viewport. No-op when the queue
+    // is empty (most turns). The banner pops automatically once turnsLeft
+    // hits 0 via MiniWorld::endTurn -> CivNoteBanner::tick().
+    civNotes_.draw(gd, fontId);
+
+    // A3: first-turn tutorial overlay. Layered LAST so it sits on top of
+    // every other UI element. Only shown when (armed AND turn==1 AND
+    // !tutorial.shown); a single key press dismisses it for the rest of the
+    // game. `armed` defaults false so unit tests don't get the overlay
+    // painted over minimap / city pixels they assert.
+    if (tutorial_.armed && !tutorial_.shown && turn_ == 1) {
+        tutorial_.show(gd, fontId);
+    }
+}
+
+bool MiniWorld::queueFirstNote(int civId, CivNoteKind k, std::string textKey) {
+    // No host game: passthrough (tests use this).
+    if (!game_) {
+        civNotes_.queueNote(std::move(textKey));
+        return true;
+    }
+    auto& civs = game_->unitManagement().civsMut();
+    if (civId < 0 || std::size_t(civId) >= civs.size()) return false;
+    const uint8_t bit = uint8_t(1u << uint8_t(k));
+    if (civs[std::size_t(civId)].notesFired & bit) return false;
+    civs[std::size_t(civId)].notesFired |= bit;
+    civNotes_.queueNote(std::move(textKey));
+    return true;
 }
 
 } // namespace oc1
