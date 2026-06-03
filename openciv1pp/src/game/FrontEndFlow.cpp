@@ -322,7 +322,12 @@ void FrontEndFlow::draw() {
                 leftIdx = mb.highlight;
             } else { // NAME
                 ws = NewGameWizard::Stage::NAME;
-                std::string dn = defaultName_;
+                // B6 FIX: show the live-typed buffer when the user has typed
+                // anything; otherwise fall back to defaultName_ (the tribe
+                // leader). This makes the xdotool type-then-ENTER flow
+                // visible on screen ("Claude" appears as it's typed).
+                std::string dn = nameBuffer_;
+                if (dn.empty()) dn = defaultName_;
                 if (dn.empty() && chosenTribe_ >= 0 &&
                     chosenTribe_ < int(MainCode::tribes().size())) {
                     dn = MainCode::tribes()[std::size_t(chosenTribe_)].leader;

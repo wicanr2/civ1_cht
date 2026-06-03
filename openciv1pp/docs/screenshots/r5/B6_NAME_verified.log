@@ -1,0 +1,13 @@
+[game] -> MAIN_MENU
+[game] -> DIFFICULTY
+[game] -> TRIBE
+[game] -> NAME
+[game] NAME +'C' buffer='C'
+[game] NAME +'l' buffer='Cl'
+[game] NAME +'a' buffer='Cla'
+[game] NAME +'u' buffer='Clau'
+[game] NAME +'d' buffer='Claud'
+[game] NAME +'e' buffer='Claude'
+[game] -> STARTING
+[game] chosenName="Claude"
+[game] ended in STARTING
