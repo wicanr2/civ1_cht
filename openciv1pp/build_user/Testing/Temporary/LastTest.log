@@ -1,0 +1,1034 @@
+Start testing: Jun 03 18:58 CST
+----------------------------------------------------------
+1/64 Testing: selftest
+1/64 Test: selftest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--selftest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"selftest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+SELFTEST: all pass
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"selftest" end time: Jun 03 18:58 CST
+"selftest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/64 Testing: restest
+2/64 Test: restest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--restest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"restest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+RESTEST: all pass (pic encode->decode pixel-exact)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"restest" end time: Jun 03 18:58 CST
+"restest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/64 Testing: gfxtest
+3/64 Test: gfxtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--gfxtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"gfxtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+GFXTEST: all pass (drawing primitives)
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"gfxtest" end time: Jun 03 18:58 CST
+"gfxtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/64 Testing: gdtest
+4/64 Test: gdtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--gdtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"gdtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+GDTEST: all pass (screen manager + entry points)
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"gdtest" end time: Jun 03 18:58 CST
+"gdtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/64 Testing: compositetest
+5/64 Test: compositetest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--compositetest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"compositetest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+COMPOSITETEST: all pass
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"compositetest" end time: Jun 03 18:58 CST
+"compositetest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/64 Testing: paltest
+6/64 Test: paltest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--paltest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"paltest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+PALTEST: all pass (palette color-struct)
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"paltest" end time: Jun 03 18:58 CST
+"paltest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/64 Testing: drawtest
+7/64 Test: drawtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--drawtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"drawtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+DRAWTEST: all pass (DrawTools CodeObject)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"drawtest" end time: Jun 03 18:58 CST
+"drawtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/64 Testing: imgtest
+8/64 Test: imgtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--imgtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"imgtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+IMGTEST: all pass (ImageTools .pic loader CodeObject)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"imgtest" end time: Jun 03 18:58 CST
+"imgtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+9/64 Testing: langtest
+9/64 Test: langtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--langtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"langtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+LANGTEST: all pass (LanguageTools CodeObject)
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"langtest" end time: Jun 03 18:58 CST
+"langtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+10/64 Testing: txttest
+10/64 Test: txttest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--txttest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"txttest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+TXTTEST: all pass (TextResource .TXT reader)
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"txttest" end time: Jun 03 18:58 CST
+"txttest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+11/64 Testing: menutest
+11/64 Test: menutest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--menutest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"menutest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+MENUTEST: all pass (MenuBoxDialog render CodeObject; 11379 localized pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"menutest" end time: Jun 03 18:58 CST
+"menutest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+12/64 Testing: navtest
+12/64 Test: navtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--navtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"navtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+NAVTEST: all pass (MenuBoxDialog navigation core)
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"navtest" end time: Jun 03 18:58 CST
+"navtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+13/64 Testing: commontest
+13/64 Test: commontest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--commontest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"commontest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+COMMONTEST: all pass (CommonTools services CodeObject)
+<end of output>
+Test time =   0.07 sec
+----------------------------------------------------------
+Test Passed.
+"commontest" end time: Jun 03 18:58 CST
+"commontest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+14/64 Testing: textboxtest
+14/64 Test: textboxtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--textboxtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"textboxtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+TEXTBOXTEST: all pass (TextBoxDialogs render CodeObject; 225 localized pixels differ)
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"textboxtest" end time: Jun 03 18:58 CST
+"textboxtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+15/64 Testing: flowtest
+15/64 Test: flowtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--flowtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"flowtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+FLOWTEST: all pass (FrontEndFlow start-sequence state machine; 2511 localized pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"flowtest" end time: Jun 03 18:58 CST
+"flowtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+16/64 Testing: gamemenutest
+16/64 Test: gamemenutest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--gamemenutest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"gamemenutest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+GAMEMENUTEST: all pass (GameMenus in-game menu system; 14520 localized pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"gamemenutest" end time: Jun 03 18:58 CST
+"gamemenutest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+17/64 Testing: playtest
+17/64 Test: playtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--playtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"playtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+  (no DOS assets; real-tile sub-check skipped)
+PLAYTEST: all pass (MiniWorld playable slice; 2431 localized HUD pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"playtest" end time: Jun 03 18:58 CST
+"playtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+18/64 Testing: maptest
+18/64 Test: maptest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--maptest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"maptest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+  (no DOS assets at OPENCIV1_DOS_ASSETS; real-tile sub-check skipped)
+MAPTEST: all pass (faithful TER257 base-tile mapping verified)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"maptest" end time: Jun 03 18:58 CST
+"maptest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+19/64 Testing: titletest
+19/64 Test: titletest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--titletest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"titletest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+  (no DOS assets; real-LOGO sub-check skipped)
+TITLETEST: all pass (MainCode boot-screen; 9656 localized pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"titletest" end time: Jun 03 18:58 CST
+"titletest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+20/64 Testing: newgametest
+20/64 Test: newgametest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--newgametest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"newgametest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+NEWGAMETEST: all pass (new-game flow TITLE/MAIN/DIFFICULTY/TRIBE/NAME/STARTING; 2511 localized pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"newgametest" end time: Jun 03 18:58 CST
+"newgametest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+21/64 Testing: mousetest
+21/64 Test: mousetest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--mousetest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"mousetest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+MOUSETEST: all pass (mouse hit-test/dispatch)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"mousetest" end time: Jun 03 18:58 CST
+"mousetest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+22/64 Testing: introtest
+22/64 Test: introtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--introtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"introtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+  (no DOS assets at OPENCIV1_DOS_ASSETS; real-intro sub-check skipped)
+INTROTEST: all pass
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"introtest" end time: Jun 03 18:58 CST
+"introtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+23/64 Testing: realgentest
+23/64 Test: realgentest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--realgentest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"realgentest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+  realgen counts: water=3145 land=855 (grass=242 plains=167 forest=84 mtn=47 desert=45 hills=81 tundra=7 arctic=23 swamp=30 jungle=51 river=78)
+  (no DOS assets at OPENCIV1_DOS_ASSETS; real-tile render sub-check skipped)
+REALGENTEST: all pass
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"realgentest" end time: Jun 03 18:58 CST
+"realgentest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+24/64 Testing: citytest
+24/64 Test: citytest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--citytest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"citytest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+CITYTEST: all pass (BuildCity action; 522 city-ink + 3257 i18n pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"citytest" end time: Jun 03 18:58 CST
+"citytest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+25/64 Testing: turntest
+25/64 Test: turntest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--turntest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"turntest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+TURNTEST: all pass (turn advances, year -4000->-3740, 5 units produced; 4016 i18n pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"turntest" end time: Jun 03 18:58 CST
+"turntest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+26/64 Testing: gameflowtest
+26/64 Test: gameflowtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--gameflowtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"gameflowtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+GAMEFLOWTEST: all pass (TITLE..PLAYING integrated flow; 7259 localized PLAYING pixels differ)
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"gameflowtest" end time: Jun 03 18:58 CST
+"gameflowtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+27/64 Testing: aitest
+27/64 Test: aitest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--aitest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"aitest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+AITEST: all pass (multi-civ spawn + AI markers; 113 AI-marker pixels differ)
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"aitest" end time: Jun 03 18:58 CST
+"aitest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+28/64 Testing: aibehaviortest
+28/64 Test: aibehaviortest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--aibehaviortest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"aibehaviortest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+AIBEHAVIORTEST: all pass (6 AI capitals founded in 1 turn)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"aibehaviortest" end time: Jun 03 18:58 CST
+"aibehaviortest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+29/64 Testing: cityviewtest
+29/64 Test: cityviewtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--cityviewtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"cityviewtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+CITYVIEWTEST: all pass (cityView panel + 960 name-ink + 16773 i18n pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"cityviewtest" end time: Jun 03 18:58 CST
+"cityviewtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+30/64 Testing: combattest
+30/64 Test: combattest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--combattest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"combattest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+COMBATTEST: all pass (unit types + combat + production-of-types; 3480 i18n pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"combattest" end time: Jun 03 18:58 CST
+"combattest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+31/64 Testing: aimovetest
+31/64 Test: aimovetest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--aimovetest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"aimovetest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+AIMOVETEST: all pass (AI greedy-step movement; 2 AI combat units produced, alive 3 -> 20 over 30 turns)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"aimovetest" end time: Jun 03 18:58 CST
+"aimovetest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+32/64 Testing: savetest
+32/64 Test: savetest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--savetest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"savetest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+SAVETEST: all pass (save/load round-trip: 8 civs, 9 units, 7 cities, turn=1, year=-3920)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"savetest" end time: Jun 03 18:58 CST
+"savetest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+33/64 Testing: techtest
+33/64 Test: techtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--techtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"techtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+TECHTEST: all pass (tech tree: init/addPoints/tech-gate/save-load round-trip; HUD delta=7192 px)
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"techtest" end time: Jun 03 18:58 CST
+"techtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+34/64 Testing: minimaptest
+34/64 Test: minimaptest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--minimaptest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"minimaptest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+MINIMAPTEST: all pass (Civ1 minimap overlay; 4257 minimap-palette pixels with ON)
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"minimaptest" end time: Jun 03 18:58 CST
+"minimaptest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+35/64 Testing: improvementtest
+35/64 Test: improvementtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--improvementtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"improvementtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+IMPROVEMENTTEST: all pass
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"improvementtest" end time: Jun 03 18:58 CST
+"improvementtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+36/64 Testing: buildingtest
+36/64 Test: buildingtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--buildingtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"buildingtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+BUILDINGTEST: all pass (Granary/Barracks/Walls + veteran/walls combat + save round-trip; 4676 i18n pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"buildingtest" end time: Jun 03 18:58 CST
+"buildingtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+37/64 Testing: buildingstest2
+37/64 Test: buildingstest2
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--buildingstest2"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"buildingstest2" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+BUILDINGSTEST2: all pass (Marketplace/Library/Cathedral/Aqueduct + tech gating + save round-trip; 5028 i18n pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"buildingstest2" end time: Jun 03 18:58 CST
+"buildingstest2" time elapsed: 00:00:00
+----------------------------------------------------------
+
+38/64 Testing: foodtest
+38/64 Test: foodtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--foodtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"foodtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+FOODTEST: all pass (grow in 3 turns no-granary, 2 w/granary; irrigation bumps foodPerTurn; v5 save/load round-trip; 12997 i18n pixels differ)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"foodtest" end time: Jun 03 18:58 CST
+"foodtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+39/64 Testing: governmenttest
+39/64 Test: governmenttest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--governmenttest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"governmenttest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+GOVERNMENTTEST: all pass (5 governments: default Despotism / tech-gate / 3-turn Anarchy transition / science+production multipliers / v6 round-trip; HUD delta=7214 px)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"governmenttest" end time: Jun 03 18:58 CST
+"governmenttest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+40/64 Testing: wondertest
+40/64 Test: wondertest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--wondertest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"wondertest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+WONDERTEST: all pass (Pyramids/Hanging Gardens/Great Wall/Colossus + tech gate + single-owner + Great Wall combat + Pyramids food bonus + v7 round-trip; 16039 i18n pixels differ)
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"wondertest" end time: Jun 03 18:58 CST
+"wondertest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+41/64 Testing: diplomacytest
+41/64 Test: diplomacytest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--diplomacytest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"diplomacytest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+DIPLOMACYTEST: all pass (Relation NoContact/Peace/War + meetCheck + Peace gates combat + War allows combat + v8 round-trip; HUD delta=7192 px)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"diplomacytest" end time: Jun 03 18:58 CST
+"diplomacytest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+42/64 Testing: moreunitstest
+42/64 Test: moreunitstest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--moreunitstest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"moreunitstest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+MOREUNITSTEST: all pass (5 new units + 4 new techs + tech gating + AI smart-pick + Chinese render; CityView delta=16355 px)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"moreunitstest" end time: Jun 03 18:58 CST
+"moreunitstest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+43/64 Testing: goldtest
+43/64 Test: goldtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--goldtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"goldtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+GOLDTEST: all pass (initial 50, predictable delta, bankruptcy disbands non-Settlers, save/load v9 round-trip; HUD delta=7192 px)
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"goldtest" end time: Jun 03 18:58 CST
+"goldtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+44/64 Testing: happinesstest
+44/64 Test: happinesstest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--happinesstest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"happinesstest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+HAPPINESSTEST: all pass (pop<=4 no unhappy, pop=5 disorder, Temple/HangingGardens placate, disorder freezes shields+growth, v10 save/load round-trip; CityView delta=16790 px)
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"happinesstest" end time: Jun 03 18:58 CST
+"happinesstest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+45/64 Testing: roadmovetest
+45/64 Test: roadmovetest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--roadmovetest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"roadmovetest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+ROADMOVETEST: all pass (Militia mvp=3 -> 1 non-road step OR 3 road steps; Trireme on Water mvp=9 -> 3 Water steps; land refused on Water; Trireme refused on land; EOT resets mvp; v11 save/load round-trip; HUD delta=7299 px)
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"roadmovetest" end time: Jun 03 18:58 CST
+"roadmovetest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+46/64 Testing: aiexpandtest
+46/64 Test: aiexpandtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--aiexpandtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"aiexpandtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+AIEXPANDTEST: all pass (50-turn expansion > 7 cities; >=1 AI civ has 2+ cities; Settlers cost 1 pop; pop<2 refuses; HUD delta=7318 px)
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"aiexpandtest" end time: Jun 03 18:58 CST
+"aiexpandtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+47/64 Testing: fortifytest
+47/64 Test: fortifytest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--fortifytest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"fortifytest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+FORTIFYTEST: all pass (fortify cycle + terrain bonus + stack + move-clears + v12 save/load + HUD delta=3643 px)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"fortifytest" end time: Jun 03 18:58 CST
+"fortifytest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+48/64 Testing: slidertest
+48/64 Test: slidertest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--slidertest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"slidertest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+SLIDERTEST: all pass (defaults 5/0/5; Despotism cap=6 refuses 7; Democracy sci=10 > sci=5; lux>0 reduces unhappy; v13 save/load + v12 back-compat; HUD delta=7299 px)
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"slidertest" end time: Jun 03 18:58 CST
+"slidertest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+49/64 Testing: huttest
+49/64 Test: huttest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--huttest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"huttest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+HUTTEST: all pass
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"huttest" end time: Jun 03 18:58 CST
+"huttest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+50/64 Testing: barbtest
+50/64 Test: barbtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--barbtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"barbtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+BARBTEST: all pass
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"barbtest" end time: Jun 03 18:58 CST
+"barbtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+51/64 Testing: spacetest
+51/64 Test: spacetest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--spacetest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"spacetest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+SPACETEST: PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"spacetest" end time: Jun 03 18:58 CST
+"spacetest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+52/64 Testing: morewonderstest
+52/64 Test: morewonderstest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--morewonderstest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"morewonderstest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+MOREWONDERSTEST: PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"morewonderstest" end time: Jun 03 18:58 CST
+"morewonderstest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+53/64 Testing: civtest
+53/64 Test: civtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--civtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"civtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+CIVTEST: PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"civtest" end time: Jun 03 18:58 CST
+"civtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+54/64 Testing: halltest
+54/64 Test: halltest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--halltest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"halltest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+HALLTEST: PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"halltest" end time: Jun 03 18:58 CST
+"halltest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+55/64 Testing: creditstest
+55/64 Test: creditstest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--creditstest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"creditstest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+CREDITSTEST: PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"creditstest" end time: Jun 03 18:58 CST
+"creditstest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+56/64 Testing: wizardtest
+56/64 Test: wizardtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--wizardtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"wizardtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+WIZARDTEST: PASS (25692 yellow px, 2511 localized diff px)
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"wizardtest" end time: Jun 03 18:58 CST
+"wizardtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+57/64 Testing: tutorialtest
+57/64 Test: tutorialtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--tutorialtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"tutorialtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+TUTORIALTEST: PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"tutorialtest" end time: Jun 03 18:58 CST
+"tutorialtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+58/64 Testing: civnotetest
+58/64 Test: civnotetest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--civnotetest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"civnotetest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+CIVNOTETEST: PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"civnotetest" end time: Jun 03 18:58 CST
+"civnotetest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+59/64 Testing: yeargatetest
+59/64 Test: yeargatetest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--yeargatetest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"yeargatetest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+YEARGATETEST: PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"yeargatetest" end time: Jun 03 18:58 CST
+"yeargatetest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+60/64 Testing: nameinputtest
+60/64 Test: nameinputtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--nameinputtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"nameinputtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+NAMEINPUTTEST: PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"nameinputtest" end time: Jun 03 18:58 CST
+"nameinputtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+61/64 Testing: tutorialarmedtest
+61/64 Test: tutorialarmedtest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--tutorialarmedtest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"tutorialarmedtest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+NAMEINPUTLIVETEST: PASS
+TUTORIALARMEDTEST: PASS
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"tutorialarmedtest" end time: Jun 03 18:58 CST
+"tutorialarmedtest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+62/64 Testing: firstcitynotetest
+62/64 Test: firstcitynotetest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--firstcitynotetest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"firstcitynotetest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+FIRSTCITYNOTETEST: PASS
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"firstcitynotetest" end time: Jun 03 18:58 CST
+"firstcitynotetest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+63/64 Testing: wizarddraworderptest
+63/64 Test: wizarddraworderptest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--wizarddraworderptest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"wizarddraworderptest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+WIZARDDRAWORDERPTEST: PASS
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"wizarddraworderptest" end time: Jun 03 18:58 CST
+"wizarddraworderptest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+64/64 Testing: nameinputlivetest
+64/64 Test: nameinputlivetest
+Command: "/home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp/build_user/openciv1pp" "--nameinputlivetest"
+Directory: /home/anr2/civ1_cht/civ1_cht/.claude/worktrees/agent-a254ac7589d60c432/openciv1pp
+"nameinputlivetest" start time: Jun 03 18:58 CST
+Output:
+----------------------------------------------------------
+NAMEINPUTLIVETEST: PASS
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"nameinputlivetest" end time: Jun 03 18:58 CST
+"nameinputlivetest" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Jun 03 18:58 CST

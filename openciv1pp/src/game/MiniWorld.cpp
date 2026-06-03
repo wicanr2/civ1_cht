@@ -234,6 +234,10 @@ bool MiniWorld::buildCityAtUnit(std::string& outName, int playerId) {
             u.alive = false;
             break;
         }
+        // A4: queue the first-city CIVILIZATION NOTE banner. queueFirstNote
+        // dedupes on CivState::notesFired so subsequent build-city calls do
+        // NOT re-queue the banner.
+        queueFirstNote(playerId, CivNoteKind::FirstCity, "First city founded!");
         return true;
     }
     return false;
